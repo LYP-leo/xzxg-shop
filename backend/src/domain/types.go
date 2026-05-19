@@ -66,7 +66,7 @@ type Citation struct {
 
 type AgentBlock struct {
 	Type     string       `json:"type"`
-	Product *ProductCard `json:"product,omitempty"`
+	Product  *ProductCard `json:"product,omitempty"`
 	Citation *Citation    `json:"citation,omitempty"`
 	Content  string       `json:"content,omitempty"`
 	Code     string       `json:"code,omitempty"`
