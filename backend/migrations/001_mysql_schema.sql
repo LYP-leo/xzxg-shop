@@ -72,6 +72,29 @@ CREATE TABLE IF NOT EXISTS knowledge_chunks (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS accounts (
+  account_id VARCHAR(64) PRIMARY KEY,
+  username VARCHAR(64) NOT NULL,
+  password_hash VARCHAR(64) NOT NULL,
+  display_name VARCHAR(128) NOT NULL,
+  role VARCHAR(32) NOT NULL,
+  merchant_id VARCHAR(64) NOT NULL DEFAULT '',
+  status VARCHAR(32) NOT NULL DEFAULT 'active',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_accounts_username (username),
+  INDEX idx_accounts_role (role)
+);
+
+CREATE TABLE IF NOT EXISTS auth_tokens (
+  token VARCHAR(96) PRIMARY KEY,
+  account_id VARCHAR(64) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at DATETIME NOT NULL,
+  INDEX idx_auth_tokens_account_id (account_id),
+  INDEX idx_auth_tokens_expires_at (expires_at)
+);
+
 CREATE TABLE IF NOT EXISTS cart_items (
   cart_item_id VARCHAR(64) PRIMARY KEY,
   product_id VARCHAR(64) NOT NULL,
@@ -181,3 +204,8 @@ INSERT IGNORE INTO product_skus (sku_id, product_id, sku_name, price, stock_quan
 INSERT IGNORE INTO knowledge_chunks (chunk_id, title, snippet, source, sort_order) VALUES
 ('ck_phone_001', 'X Phone 12 商品详情', 'X Phone 12 支持高速对焦、儿童抓拍模式，官方零售价 2999 元。', 'mysql_seed', 10),
 ('ck_mouse_001', 'Quiet Mouse S 商品详情', 'Quiet Mouse S 主打静音按键、无线连接和人体工学握持。', 'mysql_seed', 20);
+
+INSERT IGNORE INTO accounts (account_id, username, password_hash, display_name, role, merchant_id, status) VALUES
+('acct_user_001', 'user', '90aae915da86d3b3a4da7a996bc264bfbaf50a953cbbe8cd3478a2a6ccc7b900', '演示用户', 'user', '', 'active'),
+('acct_merchant_001', 'merchant', '0b2a8a42a665ad403419c5f3f0d6cea853357272459d8e4c30a0900dd4718ebc', '小猪数码运营', 'merchant', 'm_001', 'active'),
+('acct_admin_001', 'admin', 'ac0e7d037817094e9e0b4441f9bae3209d67b02fa484917065f71b16109a1a78', '平台管理员', 'admin', '', 'active');

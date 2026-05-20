@@ -58,6 +58,65 @@ func (s *MySQLStore) Migrate(ctx context.Context) error {
 	return nil
 }
 
+func (s *MySQLStore) GetAccountByUsername(ctx context.Context, username string) (domain.Account, string, bool) {
+	var account domain.Account
+	var role string
+	var passwordHash string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT account_id, username, password_hash, display_name, role, merchant_id, created_at
+		FROM accounts
+		WHERE username = ? AND status = 'active'
+	`, username).Scan(
+		&account.AccountID,
+		&account.Username,
+		&passwordHash,
+		&account.DisplayName,
+		&role,
+		&account.MerchantID,
+		&account.CreatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Account{}, "", false
+	}
+	account.Role = domain.AccountRole(role)
+	return account, passwordHash, err == nil
+}
+
+func (s *MySQLStore) GetAccountByToken(ctx context.Context, token string) (domain.Account, bool) {
+	var account domain.Account
+	var role string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT a.account_id, a.username, a.display_name, a.role, a.merchant_id, a.created_at
+		FROM auth_tokens t
+		JOIN accounts a ON a.account_id = t.account_id
+		WHERE t.token = ? AND t.expires_at > ? AND a.status = 'active'
+	`, token, time.Now()).Scan(
+		&account.AccountID,
+		&account.Username,
+		&account.DisplayName,
+		&role,
+		&account.MerchantID,
+		&account.CreatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Account{}, false
+	}
+	account.Role = domain.AccountRole(role)
+	return account, err == nil
+}
+
+func (s *MySQLStore) CreateAuthToken(ctx context.Context, accountID string) (string, error) {
+	token := nextID("tok")
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO auth_tokens (token, account_id, created_at, expires_at)
+		VALUES (?, ?, ?, ?)
+	`, token, accountID, time.Now(), time.Now().Add(24*time.Hour))
+	if err != nil {
+		return "", fmt.Errorf("insert auth token: %w", err)
+	}
+	return token, nil
+}
+
 func (s *MySQLStore) CreateSession(ctx context.Context, title string) (domain.ChatSession, error) {
 	now := time.Now()
 	session := domain.ChatSession{

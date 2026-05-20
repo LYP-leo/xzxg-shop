@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -24,6 +26,8 @@ func NewServer(store store.Store, runtime *agent.Runtime, logger *slog.Logger) *
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
+	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
+	mux.HandleFunc("GET /api/v1/auth/me", s.handleMe)
 	mux.HandleFunc("GET /api/v1/categories/tree", s.handleListCategories)
 	mux.HandleFunc("GET /api/v1/merchants", s.handleListMerchants)
 	mux.HandleFunc("GET /api/v1/products", s.handleListProducts)
@@ -40,6 +44,42 @@ func (s *Server) Routes() http.Handler {
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	username := strings.TrimSpace(request.Username)
+	if username == "" || request.Password == "" {
+		writeError(w, http.StatusBadRequest, "empty_credential", "账号和密码不能为空")
+		return
+	}
+	account, passwordHash, ok := s.store.GetAccountByUsername(r.Context(), username)
+	if !ok || passwordHash != hashPassword(request.Password) {
+		writeError(w, http.StatusUnauthorized, "invalid_credential", "账号或密码错误")
+		return
+	}
+	token, err := s.store.CreateAuthToken(r.Context(), account.AccountID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "create_token_failed", "登录失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"token": token, "account": account})
+}
+
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.accountFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "请先登录")
+		return
+	}
+	writeJSON(w, http.StatusOK, account)
 }
 
 func (s *Server) handleCreateAgentSession(w http.ResponseWriter, r *http.Request) {
@@ -251,7 +291,7 @@ func (s *Server) streamAgentRun(w http.ResponseWriter, r *http.Request, run doma
 func (s *Server) withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Accept")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -259,6 +299,20 @@ func (s *Server) withCORS(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) accountFromRequest(r *http.Request) (domain.Account, bool) {
+	header := r.Header.Get("Authorization")
+	token := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+	if token == "" || token == header {
+		return domain.Account{}, false
+	}
+	return s.store.GetAccountByToken(r.Context(), token)
+}
+
+func hashPassword(password string) string {
+	sum := sha256.Sum256([]byte(password))
+	return hex.EncodeToString(sum[:])
 }
 
 func splitSessionAction(path string) (string, string, bool) {

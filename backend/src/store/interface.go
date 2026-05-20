@@ -7,6 +7,9 @@ import (
 )
 
 type Store interface {
+	GetAccountByUsername(ctx context.Context, username string) (domain.Account, string, bool)
+	GetAccountByToken(ctx context.Context, token string) (domain.Account, bool)
+	CreateAuthToken(ctx context.Context, accountID string) (string, error)
 	CreateSession(ctx context.Context, title string) (domain.ChatSession, error)
 	GetSession(ctx context.Context, sessionID string) (domain.ChatSession, bool)
 	CreateUserMessage(ctx context.Context, input domain.UserMessage) (domain.UserMessage, error)

@@ -2,6 +2,23 @@ package domain
 
 import "time"
 
+type AccountRole string
+
+const (
+	AccountRoleUser     AccountRole = "user"
+	AccountRoleMerchant AccountRole = "merchant"
+	AccountRoleAdmin    AccountRole = "admin"
+)
+
+type Account struct {
+	AccountID   string      `json:"account_id"`
+	Username    string      `json:"username"`
+	DisplayName string      `json:"display_name"`
+	Role        AccountRole `json:"role"`
+	MerchantID  string      `json:"merchant_id,omitempty"`
+	CreatedAt   time.Time   `json:"created_at"`
+}
+
 type ChatSession struct {
 	SessionID string    `json:"session_id"`
 	Title     string    `json:"title"`
