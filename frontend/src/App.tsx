@@ -131,7 +131,7 @@ export function App() {
           />
         ) : null}
         {route === 'cart' && isUser ? <CartPage refreshToken={cartRefreshToken} /> : null}
-        {route === 'merchant' && isMerchant ? <MerchantPage account={account} /> : null}
+        {route === 'merchant' && isMerchant ? <MerchantPage account={account} token={session.token} /> : null}
         {route === 'admin' && isAdmin ? <AdminPage /> : null}
       </main>
     </div>

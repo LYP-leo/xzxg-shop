@@ -590,6 +590,65 @@ button {
   margin-bottom: 16px;
 }
 
+.merchant-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+  margin-bottom: 16px;
+}
+
+.form-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.form-grid--single {
+  grid-template-columns: 1fr;
+}
+
+.form-grid label {
+  color: #465367;
+  display: grid;
+  gap: 7px;
+  font-size: 13px;
+}
+
+.form-grid input,
+.form-grid select,
+.form-grid textarea {
+  background: #ffffff;
+  border: 1px solid #ccd6e5;
+  border-radius: 8px;
+  min-height: 38px;
+  padding: 8px 10px;
+}
+
+.form-grid textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+
+.form-span {
+  grid-column: 1 / -1;
+}
+
+.panel-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
+.notice {
+  background: #edf8f2;
+  border: 1px solid #bfe7cf;
+  border-radius: 8px;
+  color: #17643a;
+  margin: 0 0 16px;
+  padding: 10px 12px;
+}
+
 .metric-card,
 .action-panel {
   background: #ffffff;
@@ -651,7 +710,9 @@ button {
 
   .toolbar,
   .detail-layout,
-  .cart-item {
+  .cart-item,
+  .merchant-grid,
+  .form-grid {
     grid-template-columns: 1fr;
   }
 
