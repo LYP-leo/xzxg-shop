@@ -1,5 +1,7 @@
 # 电商 AI 导购 Agent 框架设计 v2
 
+> 实现状态更新（2026-05-20）：当前 `main` 已具备可演示 Agent 主链路：用户创建会话、发送问题、后端返回 SSE、前端渲染文本/商品卡片/引用/追问。当前 Agent Runtime 仍是规则化演示实现，尚未接入真实 Query Rewrite、Intent Router、LLM、Embedding、Qdrant 和重排链路。
+
 ## 1. v2 设计目标
 
 v2 基于 [Agent框架设计_v1.md](./Agent框架设计_v1.md) 和 [v1_问题.md](./v1_问题.md) 调整。核心目标是把 v1 中偏抽象或不够明确的部分落到可实现的工程契约上，尤其解决以下问题：
@@ -29,6 +31,39 @@ Chat Session
   -> SSE Stream
   -> Trace & Evaluation
 ```
+
+当前已落地主链路：
+
+```text
+Login
+  -> Role Portal
+  -> Agent Session
+  -> User Message
+  -> MySQL Product Search
+  -> MySQL Knowledge Chunk Search
+  -> Rule-based Runtime
+  -> SSE Stream
+  -> React Render
+```
+
+当前已落地事件：
+
+- `message_start`
+- `status`
+- `text_delta`
+- `block_delta` with `product_card`
+- `block_delta` with `citation`
+- `followups`
+- `message_end`
+
+当前缺口：
+
+- Query Rewriter 未接真实 LLM。
+- Intent Router 未接真实意图模型。
+- Tool Plan Builder 仍是固定流程。
+- `assistant_message` 调用日志未落库。
+- 图片理解、OCR、图片向量召回未实现。
+- 评测 Trace 和自动评分未实现。
 
 ## 2. 对 v1 问题的逐条调整
 
