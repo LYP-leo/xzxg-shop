@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
+	"github.com/LYP-leo/xzxg-shop/backend/src/rag"
 	_ "github.com/go-sql-driver/mysql"
 )
 
@@ -922,38 +923,70 @@ func (s *MySQLStore) UpdateOrderStatus(ctx context.Context, merchantID string, o
 }
 
 func (s *MySQLStore) SearchKnowledge(ctx context.Context, query string) []domain.Citation {
-	items := s.searchKnowledge(ctx, query)
+	plan := rag.DefaultRetrievalPlan(query)
+	items := s.SearchKnowledgeByPlan(ctx, plan)
 	if len(items) == 0 && query != "" {
-		return s.searchKnowledge(ctx, "")
+		return s.SearchKnowledgeByPlan(ctx, rag.DefaultRetrievalPlan(""))
 	}
 	return items
 }
 
-func (s *MySQLStore) searchKnowledge(ctx context.Context, query string) []domain.Citation {
-	args := make([]any, 0, 2)
+func (s *MySQLStore) SearchKnowledgeByPlan(ctx context.Context, plan rag.RetrievalPlan) []domain.Citation {
+	plan = rag.NormalizePlan(plan)
+	args := make([]any, 0, 8)
 	sqlQuery := `
 		SELECT chunk_id, title, snippet, source
 		FROM knowledge_chunks
 	`
-	if query != "" {
-		like := "%" + query + "%"
-		sqlQuery += ` WHERE title LIKE ? OR snippet LIKE ?`
+	terms := rag.QueryTerms(plan.Query)
+	if plan.Query != "" {
+		clauses := []string{`title LIKE ?`, `snippet LIKE ?`}
+		like := "%" + plan.Query + "%"
 		args = append(args, like, like)
+		for _, term := range terms {
+			clauses = append(clauses, `title LIKE ?`, `snippet LIKE ?`)
+			termLike := "%" + term + "%"
+			args = append(args, termLike, termLike)
+			if len(clauses) >= 14 {
+				break
+			}
+		}
+		sqlQuery += ` WHERE ` + strings.Join(clauses, ` OR `)
 	}
-	sqlQuery += ` ORDER BY sort_order, chunk_id LIMIT 5`
+	sqlQuery += ` ORDER BY sort_order, chunk_id LIMIT ?`
+	limit := plan.Recall.Keyword.TopN
+	if limit <= 0 {
+		limit = rag.DefaultKeywordTopN
+	}
+	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, sqlQuery, args...)
 	if err != nil {
 		return nil
 	}
 	defer rows.Close()
 
-	items := make([]domain.Citation, 0)
+	candidates := make([]rag.Candidate, 0)
 	for rows.Next() {
 		var item domain.Citation
 		if err := rows.Scan(&item.ChunkID, &item.Title, &item.Snippet, &item.Source); err != nil {
 			return nil
 		}
-		items = append(items, item)
+		candidates = append(candidates, rag.Candidate{
+			ChunkID: item.ChunkID,
+			Title:   item.Title,
+			Snippet: item.Snippet,
+			Source:  item.Source,
+		})
+	}
+	ranked := rag.RankCandidates(plan, candidates)
+	items := make([]domain.Citation, 0, len(ranked))
+	for _, item := range ranked {
+		items = append(items, domain.Citation{
+			ChunkID: item.ChunkID,
+			Title:   item.Title,
+			Snippet: rag.Snippet(item.Snippet, plan.Compress.MaxCharsPerChunk),
+			Source:  item.Source,
+		})
 	}
 	return items
 }
@@ -1004,13 +1037,17 @@ func (s *MySQLStore) ListAllDocuments(ctx context.Context) []domain.KnowledgeDoc
 }
 
 func (s *MySQLStore) CreateMerchantDocument(ctx context.Context, input domain.KnowledgeDocumentInput) (domain.KnowledgeDocument, error) {
+	chunks := rag.SplitDocument(input.Title, input.Content, input.DocType)
+	if len(chunks) == 0 {
+		chunks = []rag.ChunkDraft{{Title: input.Title, Content: input.Content, Snippet: rag.Snippet(input.Content, rag.DefaultSnippetRunes), SortOrder: 10}}
+	}
 	document := domain.KnowledgeDocument{
 		DocumentID: nextID("doc"),
 		MerchantID: input.MerchantID,
 		Title:      input.Title,
 		DocType:    input.DocType,
 		Status:     "indexed",
-		ChunkCount: 1,
+		ChunkCount: len(chunks),
 		CreatedAt:  time.Now(),
 	}
 	_, err := s.db.ExecContext(ctx, `
@@ -1020,16 +1057,14 @@ func (s *MySQLStore) CreateMerchantDocument(ctx context.Context, input domain.Kn
 	if err != nil {
 		return domain.KnowledgeDocument{}, fmt.Errorf("insert knowledge document: %w", err)
 	}
-	snippet := input.Content
-	if len([]rune(snippet)) > 160 {
-		snippet = string([]rune(snippet)[:160])
-	}
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO knowledge_chunks (chunk_id, title, snippet, source, sort_order)
-		VALUES (?, ?, ?, ?, ?)
-	`, nextID("ck"), document.Title, snippet, document.DocumentID, 100)
-	if err != nil {
-		return domain.KnowledgeDocument{}, fmt.Errorf("insert knowledge chunk: %w", err)
+	for _, chunk := range chunks {
+		_, err = s.db.ExecContext(ctx, `
+			INSERT INTO knowledge_chunks (chunk_id, title, snippet, source, sort_order)
+			VALUES (?, ?, ?, ?, ?)
+		`, nextID("ck"), chunk.Title, chunk.Snippet, document.DocumentID, chunk.SortOrder)
+		if err != nil {
+			return domain.KnowledgeDocument{}, fmt.Errorf("insert knowledge chunk: %w", err)
+		}
 	}
 	return document, nil
 }

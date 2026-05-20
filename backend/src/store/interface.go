@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
+	"github.com/LYP-leo/xzxg-shop/backend/src/rag"
 )
 
 type Store interface {
@@ -42,6 +43,7 @@ type Store interface {
 	ListAllOrders(ctx context.Context) []domain.Order
 	UpdateOrderStatus(ctx context.Context, merchantID string, orderID string, status string) (domain.Order, bool)
 	SearchKnowledge(ctx context.Context, query string) []domain.Citation
+	SearchKnowledgeByPlan(ctx context.Context, plan rag.RetrievalPlan) []domain.Citation
 	ListMerchantDocuments(ctx context.Context, merchantID string) []domain.KnowledgeDocument
 	ListAllDocuments(ctx context.Context) []domain.KnowledgeDocument
 	CreateMerchantDocument(ctx context.Context, input domain.KnowledgeDocumentInput) (domain.KnowledgeDocument, error)
