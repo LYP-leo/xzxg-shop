@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
+	"github.com/LYP-leo/xzxg-shop/backend/src/rag"
 )
 
 type MemoryStore struct {
@@ -356,6 +357,10 @@ func (s *MemoryStore) DeleteCartItem(ctx context.Context, cartItemID string) (do
 }
 
 func (s *MemoryStore) SearchKnowledge(ctx context.Context, query string) []domain.Citation {
+	return s.SearchKnowledgeByPlan(ctx, rag.DefaultRetrievalPlan(query))
+}
+
+func (s *MemoryStore) SearchKnowledgeByPlan(ctx context.Context, plan rag.RetrievalPlan) []domain.Citation {
 	select {
 	case <-ctx.Done():
 		return nil
@@ -364,9 +369,25 @@ func (s *MemoryStore) SearchKnowledge(ctx context.Context, query string) []domai
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	result := make([]domain.Citation, 0, len(s.chunks))
+	plan = rag.NormalizePlan(plan)
+	candidates := make([]rag.Candidate, 0, len(s.chunks))
 	for _, chunk := range s.chunks {
-		result = append(result, chunk)
+		candidates = append(candidates, rag.Candidate{
+			ChunkID: chunk.ChunkID,
+			Title:   chunk.Title,
+			Snippet: chunk.Snippet,
+			Source:  chunk.Source,
+		})
+	}
+	ranked := rag.RankCandidates(plan, candidates)
+	result := make([]domain.Citation, 0, len(ranked))
+	for _, chunk := range ranked {
+		result = append(result, domain.Citation{
+			ChunkID: chunk.ChunkID,
+			Title:   chunk.Title,
+			Snippet: rag.Snippet(chunk.Snippet, plan.Compress.MaxCharsPerChunk),
+			Source:  chunk.Source,
+		})
 	}
 	return result
 }
