@@ -16,6 +16,7 @@ type Account struct {
 	DisplayName string      `json:"display_name"`
 	Role        AccountRole `json:"role"`
 	MerchantID  string      `json:"merchant_id,omitempty"`
+	Status      string      `json:"status,omitempty"`
 	CreatedAt   time.Time   `json:"created_at"`
 }
 
@@ -165,6 +166,29 @@ type CartSummary struct {
 type Cart struct {
 	Items   []CartItem  `json:"items"`
 	Summary CartSummary `json:"summary"`
+}
+
+type OrderItem struct {
+	OrderItemID  string `json:"order_item_id"`
+	ProductID    string `json:"product_id"`
+	SkuID        string `json:"sku_id,omitempty"`
+	Name         string `json:"name"`
+	ImageURL     string `json:"image_url"`
+	Price        string `json:"price"`
+	Quantity     int    `json:"quantity"`
+	MerchantID   string `json:"merchant_id"`
+	MerchantName string `json:"merchant_name"`
+}
+
+type Order struct {
+	OrderID      string      `json:"order_id"`
+	AccountID    string      `json:"account_id"`
+	MerchantID   string      `json:"merchant_id"`
+	MerchantName string      `json:"merchant_name"`
+	Status       string      `json:"status"`
+	TotalAmount  string      `json:"total_amount"`
+	Items        []OrderItem `json:"items"`
+	CreatedAt    time.Time   `json:"created_at"`
 }
 
 type Citation struct {

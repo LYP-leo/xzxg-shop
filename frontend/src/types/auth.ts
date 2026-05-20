@@ -6,6 +6,7 @@ export type Account = {
   display_name: string;
   role: AccountRole;
   merchant_id?: string;
+  status?: string;
   created_at: string;
 };
 

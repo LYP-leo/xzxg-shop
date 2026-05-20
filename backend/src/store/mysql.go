@@ -178,9 +178,8 @@ func (s *MySQLStore) GetAccountByToken(ctx context.Context, token string) (domai
 
 func (s *MySQLStore) ListAccounts(ctx context.Context) []domain.Account {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT account_id, username, display_name, role, merchant_id, created_at
+		SELECT account_id, username, display_name, role, merchant_id, status, created_at
 		FROM accounts
-		WHERE status = 'active'
 		ORDER BY created_at, account_id
 	`)
 	if err != nil {
@@ -192,13 +191,36 @@ func (s *MySQLStore) ListAccounts(ctx context.Context) []domain.Account {
 	for rows.Next() {
 		var item domain.Account
 		var role string
-		if err := rows.Scan(&item.AccountID, &item.Username, &item.DisplayName, &role, &item.MerchantID, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.AccountID, &item.Username, &item.DisplayName, &role, &item.MerchantID, &item.Status, &item.CreatedAt); err != nil {
 			return nil
 		}
 		item.Role = domain.AccountRole(role)
 		items = append(items, item)
 	}
 	return items
+}
+
+func (s *MySQLStore) UpdateAccountStatus(ctx context.Context, accountID string, status string) (domain.Account, bool) {
+	result, err := s.db.ExecContext(ctx, `UPDATE accounts SET status = ?, updated_at = ? WHERE account_id = ?`, status, time.Now(), accountID)
+	if err != nil {
+		return domain.Account{}, false
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return domain.Account{}, false
+	}
+	var account domain.Account
+	var role string
+	err = s.db.QueryRowContext(ctx, `
+		SELECT account_id, username, display_name, role, merchant_id, status, created_at
+		FROM accounts
+		WHERE account_id = ?
+	`, accountID).Scan(&account.AccountID, &account.Username, &account.DisplayName, &role, &account.MerchantID, &account.Status, &account.CreatedAt)
+	if err != nil {
+		return domain.Account{}, false
+	}
+	account.Role = domain.AccountRole(role)
+	return account, true
 }
 
 func (s *MySQLStore) CreateAuthToken(ctx context.Context, accountID string) (string, error) {
@@ -242,6 +264,29 @@ func (s *MySQLStore) GetSession(ctx context.Context, accountID string, sessionID
 		return domain.ChatSession{}, false
 	}
 	return session, err == nil
+}
+
+func (s *MySQLStore) ListUserSessions(ctx context.Context, accountID string) []domain.ChatSession {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT session_id, account_id, title, created_at
+		FROM chat_sessions
+		WHERE account_id = ?
+		ORDER BY created_at DESC
+	`, accountID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	items := make([]domain.ChatSession, 0)
+	for rows.Next() {
+		var item domain.ChatSession
+		if err := rows.Scan(&item.SessionID, &item.AccountID, &item.Title, &item.CreatedAt); err != nil {
+			return nil
+		}
+		items = append(items, item)
+	}
+	return items
 }
 
 func (s *MySQLStore) CreateUserMessage(ctx context.Context, input domain.UserMessage) (domain.UserMessage, error) {
@@ -376,6 +421,10 @@ func (s *MySQLStore) ListProducts(ctx context.Context, keyword string, categoryI
 	return s.queryProductCards(ctx, query, args...)
 }
 
+func (s *MySQLStore) ListAllProducts(ctx context.Context) []domain.ProductCard {
+	return s.queryProductCards(ctx, productCardSelect()+" ORDER BY p.sort_order, p.product_id")
+}
+
 func (s *MySQLStore) GetProduct(ctx context.Context, productID string) (domain.ProductDetail, bool) {
 	row := s.db.QueryRowContext(ctx, productDetailSelect()+` WHERE p.product_id = ?`, productID)
 	product, err := scanProductDetail(row)
@@ -508,6 +557,25 @@ func (s *MySQLStore) UpdateProduct(ctx context.Context, productID string, input 
 	return product, ok
 }
 
+func (s *MySQLStore) UpdateProductStatus(ctx context.Context, merchantID string, productID string, status string) (domain.ProductDetail, bool) {
+	args := []any{status, time.Now(), productID}
+	query := `UPDATE products SET status = ?, updated_at = ? WHERE product_id = ?`
+	if merchantID != "" {
+		query += ` AND merchant_id = ?`
+		args = append(args, merchantID)
+	}
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return domain.ProductDetail{}, false
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return domain.ProductDetail{}, false
+	}
+	product, ok := s.GetProduct(ctx, productID)
+	return product, ok
+}
+
 func (s *MySQLStore) ListProductSKUs(ctx context.Context, productID string) []domain.ProductSKU {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT sku_id, product_id, sku_name, price, stock_quantity, stock_status, specs_json
@@ -606,6 +674,122 @@ func (s *MySQLStore) DeleteCartItem(ctx context.Context, accountID string, cartI
 		return domain.Cart{}, false
 	}
 	return s.loadCart(ctx, accountID), true
+}
+
+func (s *MySQLStore) CreateOrderFromCart(ctx context.Context, accountID string) ([]domain.Order, bool) {
+	cart := s.loadCart(ctx, accountID)
+	selected := make([]domain.CartItem, 0)
+	for _, item := range cart.Items {
+		if item.Selected {
+			selected = append(selected, item)
+		}
+	}
+	if len(selected) == 0 {
+		return nil, false
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false
+	}
+	defer tx.Rollback()
+
+	byMerchant := make(map[string][]domain.CartItem)
+	for _, item := range selected {
+		byMerchant[item.MerchantID] = append(byMerchant[item.MerchantID], item)
+	}
+
+	orders := make([]domain.Order, 0, len(byMerchant))
+	for merchantID, items := range byMerchant {
+		orderID := nextID("ord")
+		total := 0.0
+		merchantName := ""
+		for _, item := range items {
+			price, _ := parseAmount(item.Price)
+			total += price * float64(item.Quantity)
+			merchantName = item.MerchantName
+		}
+		amount := fmt.Sprintf("%.2f", total)
+		createdAt := time.Now()
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO orders (order_id, account_id, merchant_id, status, total_amount, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, orderID, accountID, merchantID, "pending_ship", amount, createdAt, createdAt); err != nil {
+			return nil, false
+		}
+		orderItems := make([]domain.OrderItem, 0, len(items))
+		for _, item := range items {
+			orderItem := domain.OrderItem{
+				OrderItemID:  nextID("ord_item"),
+				ProductID:    item.ProductID,
+				SkuID:        item.SkuID,
+				Name:         item.Name,
+				ImageURL:     item.ImageURL,
+				Price:        item.Price,
+				Quantity:     item.Quantity,
+				MerchantID:   item.MerchantID,
+				MerchantName: item.MerchantName,
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO order_items (order_item_id, order_id, product_id, sku_id, name, image_url, price, quantity, merchant_id, merchant_name, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, orderItem.OrderItemID, orderID, orderItem.ProductID, orderItem.SkuID, orderItem.Name, orderItem.ImageURL, orderItem.Price, orderItem.Quantity, orderItem.MerchantID, orderItem.MerchantName, createdAt); err != nil {
+				return nil, false
+			}
+			orderItems = append(orderItems, orderItem)
+		}
+		orders = append(orders, domain.Order{
+			OrderID:      orderID,
+			AccountID:    accountID,
+			MerchantID:   merchantID,
+			MerchantName: merchantName,
+			Status:       "pending_ship",
+			TotalAmount:  amount,
+			Items:        orderItems,
+			CreatedAt:    createdAt,
+		})
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM cart_items WHERE account_id = ? AND selected = TRUE`, accountID); err != nil {
+		return nil, false
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false
+	}
+	return orders, true
+}
+
+func (s *MySQLStore) ListUserOrders(ctx context.Context, accountID string) []domain.Order {
+	return s.listOrders(ctx, "WHERE o.account_id = ?", accountID)
+}
+
+func (s *MySQLStore) ListMerchantOrders(ctx context.Context, merchantID string) []domain.Order {
+	return s.listOrders(ctx, "WHERE o.merchant_id = ?", merchantID)
+}
+
+func (s *MySQLStore) ListAllOrders(ctx context.Context) []domain.Order {
+	return s.listOrders(ctx, "", nil)
+}
+
+func (s *MySQLStore) UpdateOrderStatus(ctx context.Context, merchantID string, orderID string, status string) (domain.Order, bool) {
+	args := []any{status, time.Now(), orderID}
+	query := `UPDATE orders SET status = ?, updated_at = ? WHERE order_id = ?`
+	if merchantID != "" {
+		query += ` AND merchant_id = ?`
+		args = append(args, merchantID)
+	}
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return domain.Order{}, false
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return domain.Order{}, false
+	}
+	orders := s.listOrders(ctx, "WHERE o.order_id = ?", orderID)
+	if len(orders) == 0 {
+		return domain.Order{}, false
+	}
+	return orders[0], true
 }
 
 func (s *MySQLStore) SearchKnowledge(ctx context.Context, query string) []domain.Citation {
@@ -806,8 +990,69 @@ func (s *MySQLStore) loadCart(ctx context.Context, accountID string) domain.Cart
 	return buildCart(items)
 }
 
+func (s *MySQLStore) listOrders(ctx context.Context, where string, arg any) []domain.Order {
+	query := `
+		SELECT o.order_id, o.account_id, o.merchant_id, m.name, o.status, o.total_amount, o.created_at
+		FROM orders o
+		JOIN merchants m ON m.merchant_id = o.merchant_id
+	`
+	args := make([]any, 0, 1)
+	if where != "" {
+		query += " " + where
+		if arg != nil {
+			args = append(args, arg)
+		}
+	}
+	query += " ORDER BY o.created_at DESC, o.order_id DESC"
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	orders := make([]domain.Order, 0)
+	for rows.Next() {
+		var order domain.Order
+		if err := rows.Scan(&order.OrderID, &order.AccountID, &order.MerchantID, &order.MerchantName, &order.Status, &order.TotalAmount, &order.CreatedAt); err != nil {
+			return nil
+		}
+		order.Items = s.listOrderItems(ctx, order.OrderID)
+		orders = append(orders, order)
+	}
+	return orders
+}
+
+func (s *MySQLStore) listOrderItems(ctx context.Context, orderID string) []domain.OrderItem {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT order_item_id, product_id, sku_id, name, image_url, price, quantity, merchant_id, merchant_name
+		FROM order_items
+		WHERE order_id = ?
+		ORDER BY order_item_id
+	`, orderID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	items := make([]domain.OrderItem, 0)
+	for rows.Next() {
+		var item domain.OrderItem
+		if err := rows.Scan(&item.OrderItemID, &item.ProductID, &item.SkuID, &item.Name, &item.ImageURL, &item.Price, &item.Quantity, &item.MerchantID, &item.MerchantName); err != nil {
+			return nil
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
 type productCardScanner interface {
 	Scan(dest ...any) error
+}
+
+func parseAmount(input string) (float64, error) {
+	var value float64
+	_, err := fmt.Sscanf(input, "%f", &value)
+	return value, err
 }
 
 func scanProductCard(scanner productCardScanner) (domain.ProductCard, error) {

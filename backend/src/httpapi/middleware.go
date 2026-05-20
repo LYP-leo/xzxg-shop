@@ -169,7 +169,7 @@ func routePolicy(method string, path string) (bool, []domain.AccountRole) {
 	if path == "/api/v1/auth/me" {
 		return true, []domain.AccountRole{domain.AccountRoleUser, domain.AccountRoleMerchant, domain.AccountRoleAdmin}
 	}
-	if strings.HasPrefix(path, "/api/v1/cart") || strings.HasPrefix(path, "/api/v1/agent") {
+	if strings.HasPrefix(path, "/api/v1/cart") || strings.HasPrefix(path, "/api/v1/agent") || strings.HasPrefix(path, "/api/v1/orders") {
 		return true, []domain.AccountRole{domain.AccountRoleUser}
 	}
 	if strings.HasPrefix(path, "/api/v1/merchant") {

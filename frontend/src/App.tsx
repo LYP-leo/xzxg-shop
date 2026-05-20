@@ -5,12 +5,13 @@ import { AgentSessionPage } from './pages/AgentSessionPage';
 import { CartPage } from './pages/CartPage';
 import { LoginPage } from './pages/LoginPage';
 import { MerchantPage } from './pages/MerchantPage';
+import { OrderPage } from './pages/OrderPage';
 import { ProductDetailPage } from './pages/ProductDetailPage';
 import { ProductListPage } from './pages/ProductListPage';
 import { UserHomePage } from './pages/UserHomePage';
 import type { AuthSession } from './types/auth';
 
-type Route = 'home' | 'agent' | 'products' | 'cart' | 'merchant' | 'admin' | 'detail';
+type Route = 'home' | 'agent' | 'products' | 'cart' | 'orders' | 'merchant' | 'admin' | 'detail';
 
 export function App() {
   const [session, setSession] = useState<AuthSession | undefined>(() => loadSession());
@@ -83,6 +84,9 @@ export function App() {
               <button className={route === 'cart' ? 'active' : ''} onClick={() => setRoute('cart')}>
                 购物车
               </button>
+              <button className={route === 'orders' ? 'active' : ''} onClick={() => setRoute('orders')}>
+                订单
+              </button>
             </>
           ) : null}
           {isMerchant ? (
@@ -131,6 +135,7 @@ export function App() {
           />
         ) : null}
         {route === 'cart' && isUser ? <CartPage refreshToken={cartRefreshToken} /> : null}
+        {route === 'orders' && isUser ? <OrderPage /> : null}
         {route === 'merchant' && isMerchant ? <MerchantPage account={account} token={session.token} /> : null}
         {route === 'admin' && isAdmin ? <AdminPage token={session.token} /> : null}
       </main>

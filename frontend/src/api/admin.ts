@@ -1,4 +1,6 @@
 import type { Account } from '../types/auth';
+import type { Order } from '../types/order';
+import type { ProductCard } from '../types/product';
 import { requestJSON } from './http';
 
 export type DocumentItem = {
@@ -26,6 +28,36 @@ export type EvalRun = {
 
 export async function listAccounts(token: string): Promise<Account[]> {
   const data = await requestJSON<{ items: Account[] }>('/admin/accounts', {
+    headers: authHeaders(token)
+  });
+  return data.items;
+}
+
+export async function updateAccountStatus(token: string, accountId: string, status: 'active' | 'inactive'): Promise<Account> {
+  return requestJSON<Account>(`/admin/accounts/${accountId}`, {
+    method: 'PATCH',
+    headers: authHeaders(token),
+    body: JSON.stringify({ status })
+  });
+}
+
+export async function listAdminProducts(token: string): Promise<ProductCard[]> {
+  const data = await requestJSON<{ items: ProductCard[] }>('/admin/products', {
+    headers: authHeaders(token)
+  });
+  return data.items;
+}
+
+export async function updateAdminProductStatus(token: string, productId: string, status: 'active' | 'inactive' | 'deleted'): Promise<ProductCard> {
+  return requestJSON<ProductCard>(`/admin/products/${productId}`, {
+    method: 'PATCH',
+    headers: authHeaders(token),
+    body: JSON.stringify({ status })
+  });
+}
+
+export async function listAdminOrders(token: string): Promise<Order[]> {
+  const data = await requestJSON<{ items: Order[] }>('/admin/orders', {
     headers: authHeaders(token)
   });
   return data.items;

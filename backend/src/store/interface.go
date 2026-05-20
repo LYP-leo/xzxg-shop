@@ -10,7 +10,9 @@ type Store interface {
 	GetAccountByUsername(ctx context.Context, username string) (domain.Account, string, bool)
 	GetAccountByToken(ctx context.Context, token string) (domain.Account, bool)
 	ListAccounts(ctx context.Context) []domain.Account
+	UpdateAccountStatus(ctx context.Context, accountID string, status string) (domain.Account, bool)
 	CreateAuthToken(ctx context.Context, accountID string) (string, error)
+	ListUserSessions(ctx context.Context, accountID string) []domain.ChatSession
 	CreateSession(ctx context.Context, accountID string, title string) (domain.ChatSession, error)
 	GetSession(ctx context.Context, accountID string, sessionID string) (domain.ChatSession, bool)
 	CreateUserMessage(ctx context.Context, input domain.UserMessage) (domain.UserMessage, error)
@@ -21,14 +23,21 @@ type Store interface {
 	ListCategories(ctx context.Context) []domain.Category
 	ListMerchants(ctx context.Context) []domain.Merchant
 	ListProducts(ctx context.Context, keyword string, categoryID string) []domain.ProductCard
+	ListAllProducts(ctx context.Context) []domain.ProductCard
 	GetProduct(ctx context.Context, productID string) (domain.ProductDetail, bool)
 	CreateProduct(ctx context.Context, input domain.ProductUpsertInput) (domain.ProductDetail, error)
 	UpdateProduct(ctx context.Context, productID string, input domain.ProductUpsertInput) (domain.ProductDetail, bool)
+	UpdateProductStatus(ctx context.Context, merchantID string, productID string, status string) (domain.ProductDetail, bool)
 	ListProductSKUs(ctx context.Context, productID string) []domain.ProductSKU
 	GetCart(ctx context.Context, accountID string) domain.Cart
 	AddCartItem(ctx context.Context, accountID string, productID string, skuID string, quantity int) (domain.Cart, bool)
 	UpdateCartItem(ctx context.Context, accountID string, cartItemID string, quantity *int, selected *bool) (domain.Cart, bool)
 	DeleteCartItem(ctx context.Context, accountID string, cartItemID string) (domain.Cart, bool)
+	CreateOrderFromCart(ctx context.Context, accountID string) ([]domain.Order, bool)
+	ListUserOrders(ctx context.Context, accountID string) []domain.Order
+	ListMerchantOrders(ctx context.Context, merchantID string) []domain.Order
+	ListAllOrders(ctx context.Context) []domain.Order
+	UpdateOrderStatus(ctx context.Context, merchantID string, orderID string, status string) (domain.Order, bool)
 	SearchKnowledge(ctx context.Context, query string) []domain.Citation
 	ListMerchantDocuments(ctx context.Context, merchantID string) []domain.KnowledgeDocument
 	ListAllDocuments(ctx context.Context) []domain.KnowledgeDocument

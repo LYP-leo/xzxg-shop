@@ -34,14 +34,24 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/products/", s.handleProductAction)
 	mux.HandleFunc("GET /api/v1/merchant/documents", s.handleListMerchantDocuments)
 	mux.HandleFunc("POST /api/v1/merchant/documents", s.handleCreateMerchantDocument)
+	mux.HandleFunc("GET /api/v1/merchant/orders", s.handleListMerchantOrders)
+	mux.HandleFunc("PATCH /api/v1/merchant/orders/", s.handleUpdateMerchantOrder)
 	mux.HandleFunc("POST /api/v1/merchant/products", s.handleCreateMerchantProduct)
 	mux.HandleFunc("PATCH /api/v1/merchant/products/", s.handleUpdateMerchantProduct)
+	mux.HandleFunc("DELETE /api/v1/merchant/products/", s.handleDeleteMerchantProduct)
 	mux.HandleFunc("GET /api/v1/admin/accounts", s.handleListAdminAccounts)
+	mux.HandleFunc("PATCH /api/v1/admin/accounts/", s.handleUpdateAdminAccount)
 	mux.HandleFunc("GET /api/v1/admin/documents", s.handleListAdminDocuments)
+	mux.HandleFunc("GET /api/v1/admin/orders", s.handleListAdminOrders)
+	mux.HandleFunc("GET /api/v1/admin/products", s.handleListAdminProducts)
+	mux.HandleFunc("PATCH /api/v1/admin/products/", s.handleUpdateAdminProduct)
 	mux.HandleFunc("GET /api/v1/cart", s.handleGetCart)
 	mux.HandleFunc("POST /api/v1/cart/items", s.handleAddCartItem)
 	mux.HandleFunc("PATCH /api/v1/cart/items/", s.handleCartItemAction)
 	mux.HandleFunc("DELETE /api/v1/cart/items/", s.handleCartItemAction)
+	mux.HandleFunc("GET /api/v1/orders", s.handleListUserOrders)
+	mux.HandleFunc("POST /api/v1/orders:checkout", s.handleCheckout)
+	mux.HandleFunc("GET /api/v1/agent/sessions", s.handleListAgentSessions)
 	mux.HandleFunc("POST /api/v1/agent/sessions", s.handleCreateAgentSession)
 	mux.HandleFunc("POST /api/v1/agent/sessions/", s.handleAgentSessionAction)
 	mux.HandleFunc("POST /api/v1/agent/runs/", s.handleAgentRunAction)
@@ -199,6 +209,23 @@ func (s *Server) handleUpdateMerchantProduct(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, product)
 }
 
+func (s *Server) handleDeleteMerchantProduct(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireMerchant(w, r)
+	if !ok {
+		return
+	}
+	productID := strings.TrimPrefix(r.URL.Path, "/api/v1/merchant/products/")
+	if productID == "" {
+		writeError(w, http.StatusNotFound, "not_found", "接口不存在")
+		return
+	}
+	if _, ok := s.store.UpdateProductStatus(r.Context(), account.MerchantID, productID, "deleted"); !ok {
+		writeError(w, http.StatusNotFound, "product_not_found", "商品不存在或不属于当前商家")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"product_id": productID, "status": "deleted"})
+}
+
 func (s *Server) handleListMerchantDocuments(w http.ResponseWriter, r *http.Request) {
 	account, ok := s.requireMerchant(w, r)
 	if !ok {
@@ -234,6 +261,39 @@ func (s *Server) handleCreateMerchantDocument(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, document)
 }
 
+func (s *Server) handleListMerchantOrders(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireMerchant(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListMerchantOrders(r.Context(), account.MerchantID)})
+}
+
+func (s *Server) handleUpdateMerchantOrder(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireMerchant(w, r)
+	if !ok {
+		return
+	}
+	orderID := strings.TrimPrefix(r.URL.Path, "/api/v1/merchant/orders/")
+	var request struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	if !allowedOrderStatus(request.Status) {
+		writeError(w, http.StatusBadRequest, "bad_status", "订单状态不合法")
+		return
+	}
+	order, ok := s.store.UpdateOrderStatus(r.Context(), account.MerchantID, orderID, request.Status)
+	if !ok {
+		writeError(w, http.StatusNotFound, "order_not_found", "订单不存在或不属于当前商家")
+		return
+	}
+	writeJSON(w, http.StatusOK, order)
+}
+
 func (s *Server) handleListAdminAccounts(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
@@ -241,11 +301,73 @@ func (s *Server) handleListAdminAccounts(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListAccounts(r.Context())})
 }
 
+func (s *Server) handleUpdateAdminAccount(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	accountID := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/accounts/")
+	var request struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	if request.Status != "active" && request.Status != "inactive" {
+		writeError(w, http.StatusBadRequest, "bad_status", "账号状态不合法")
+		return
+	}
+	account, ok := s.store.UpdateAccountStatus(r.Context(), accountID, request.Status)
+	if !ok {
+		writeError(w, http.StatusNotFound, "account_not_found", "账号不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, account)
+}
+
 func (s *Server) handleListAdminDocuments(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListAllDocuments(r.Context())})
+}
+
+func (s *Server) handleListAdminOrders(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListAllOrders(r.Context())})
+}
+
+func (s *Server) handleListAdminProducts(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListAllProducts(r.Context())})
+}
+
+func (s *Server) handleUpdateAdminProduct(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	productID := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/products/")
+	var request struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	if request.Status != "active" && request.Status != "inactive" && request.Status != "deleted" {
+		writeError(w, http.StatusBadRequest, "bad_status", "商品状态不合法")
+		return
+	}
+	product, ok := s.store.UpdateProductStatus(r.Context(), "", productID, request.Status)
+	if !ok {
+		writeError(w, http.StatusNotFound, "product_not_found", "商品不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, product)
 }
 
 func (s *Server) handleGetCart(w http.ResponseWriter, r *http.Request) {
@@ -317,6 +439,35 @@ func (s *Server) handleCartItemAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, cart)
+}
+
+func (s *Server) handleListUserOrders(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListUserOrders(r.Context(), account.AccountID)})
+}
+
+func (s *Server) handleCheckout(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	orders, ok := s.store.CreateOrderFromCart(r.Context(), account.AccountID)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "empty_cart", "请选择购物车商品后再下单")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": orders})
+}
+
+func (s *Server) handleListAgentSessions(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListUserSessions(r.Context(), account.AccountID)})
 }
 
 func (s *Server) handleAgentSessionAction(w http.ResponseWriter, r *http.Request) {
@@ -487,6 +638,15 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (domain.Ac
 func hashPassword(password string) string {
 	sum := sha256.Sum256([]byte(password))
 	return hex.EncodeToString(sum[:])
+}
+
+func allowedOrderStatus(status string) bool {
+	switch status {
+	case "pending_ship", "shipped", "completed", "canceled":
+		return true
+	default:
+		return false
+	}
 }
 
 func splitSessionAction(path string) (string, string, bool) {

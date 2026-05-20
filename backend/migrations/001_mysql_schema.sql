@@ -159,6 +159,35 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   INDEX idx_agent_runs_message_id (message_id)
 );
 
+CREATE TABLE IF NOT EXISTS orders (
+  order_id VARCHAR(64) PRIMARY KEY,
+  account_id VARCHAR(64) NOT NULL,
+  merchant_id VARCHAR(64) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  total_amount DECIMAL(10, 2) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_orders_account_id (account_id),
+  INDEX idx_orders_merchant_id (merchant_id),
+  INDEX idx_orders_status (status)
+);
+
+CREATE TABLE IF NOT EXISTS order_items (
+  order_item_id VARCHAR(64) PRIMARY KEY,
+  order_id VARCHAR(64) NOT NULL,
+  product_id VARCHAR(64) NOT NULL,
+  sku_id VARCHAR(64) NOT NULL DEFAULT '',
+  name VARCHAR(128) NOT NULL,
+  image_url VARCHAR(512) NOT NULL,
+  price DECIMAL(10, 2) NOT NULL,
+  quantity INT NOT NULL,
+  merchant_id VARCHAR(64) NOT NULL,
+  merchant_name VARCHAR(128) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_order_items_order_id (order_id),
+  INDEX idx_order_items_product_id (product_id)
+);
+
 INSERT IGNORE INTO merchants (merchant_id, name, logo_url, description, service_phone, status) VALUES
 ('m_001', '小猪数码旗舰店', '/placeholder-merchant.svg', '主营手机、耳机、智能设备和办公外设。', '400-000-0000', 'active');
 
