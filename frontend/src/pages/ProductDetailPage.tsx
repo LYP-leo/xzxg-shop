@@ -8,9 +8,11 @@ type Props = {
   onBack: () => void;
   onAskAgent: (question: string) => void;
   onCartChange: () => void;
+  canAddToCart?: boolean;
+  canAskAgent?: boolean;
 };
 
-export function ProductDetailPage({ productId, onBack, onAskAgent, onCartChange }: Props) {
+export function ProductDetailPage({ productId, onBack, onAskAgent, onCartChange, canAddToCart = true, canAskAgent = true }: Props) {
   const [product, setProduct] = useState<ProductDetail>();
   const [skus, setSkus] = useState<ProductSku[]>([]);
   const [selectedSkuId, setSelectedSkuId] = useState<string>();
@@ -69,12 +71,16 @@ export function ProductDetailPage({ productId, onBack, onAskAgent, onCartChange 
             </select>
           </label>
           <div className="detail-actions">
-            <button className="button" onClick={addProduct}>
-              加入购物车
-            </button>
-            <button className="button button--ghost" onClick={() => onAskAgent(`帮我分析 ${currentProduct.name} 是否适合我`)}>
-              问问 Agent
-            </button>
+            {canAddToCart ? (
+              <button className="button" onClick={addProduct}>
+                加入购物车
+              </button>
+            ) : null}
+            {canAskAgent ? (
+              <button className="button button--ghost" onClick={() => onAskAgent(`帮我分析 ${currentProduct.name} 是否适合我`)}>
+                问问 Agent
+              </button>
+            ) : null}
           </div>
         </div>
       </div>

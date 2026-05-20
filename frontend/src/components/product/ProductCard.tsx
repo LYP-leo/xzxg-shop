@@ -34,9 +34,11 @@ export function ProductCard({ product, onOpen, onAddToCart }: Props) {
           <button className="button button--ghost" onClick={() => onOpen?.(product.productId)}>
             详情
           </button>
-          <button className="button" disabled={product.stockStatus !== 'in_stock'} onClick={() => onAddToCart?.(product)}>
-            加购
-          </button>
+          {onAddToCart ? (
+            <button className="button" disabled={product.stockStatus !== 'in_stock'} onClick={() => onAddToCart(product)}>
+              加购
+            </button>
+          ) : null}
         </div>
       </div>
     </article>

@@ -7,9 +7,10 @@ import type { Category, ProductCard as ProductCardType } from '../types/product'
 type Props = {
   onOpenProduct: (productId: string) => void;
   onCartChange: () => void;
+  canAddToCart?: boolean;
 };
 
-export function ProductListPage({ onOpenProduct, onCartChange }: Props) {
+export function ProductListPage({ onOpenProduct, onCartChange, canAddToCart = true }: Props) {
   const [keyword, setKeyword] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [categories, setCategories] = useState<Category[]>([]);
@@ -49,7 +50,7 @@ export function ProductListPage({ onOpenProduct, onCartChange }: Props) {
       </div>
       <div className="product-grid">
         {products.map((product) => (
-          <ProductCard product={product} key={product.productId} onOpen={onOpenProduct} onAddToCart={addProduct} />
+          <ProductCard product={product} key={product.productId} onOpen={onOpenProduct} onAddToCart={canAddToCart ? addProduct : undefined} />
         ))}
       </div>
     </section>

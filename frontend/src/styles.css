@@ -27,6 +27,81 @@ button {
   cursor: pointer;
 }
 
+.login-page {
+  align-items: center;
+  background: #eef3f8;
+  display: grid;
+  min-height: 100vh;
+  padding: 20px;
+}
+
+.login-panel {
+  background: #ffffff;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  box-shadow: 0 18px 60px rgb(23 32 51 / 10%);
+  display: grid;
+  gap: 18px;
+  justify-self: center;
+  max-width: 460px;
+  padding: 24px;
+  width: 100%;
+}
+
+.login-brand {
+  margin-bottom: 0;
+}
+
+.login-brand strong {
+  color: #172033;
+}
+
+.login-form {
+  display: grid;
+  gap: 12px;
+}
+
+.login-form label {
+  color: #465367;
+  display: grid;
+  gap: 7px;
+  font-size: 14px;
+}
+
+.login-form input {
+  border: 1px solid #ccd6e5;
+  border-radius: 8px;
+  min-height: 40px;
+  padding: 8px 10px;
+}
+
+.form-error {
+  color: #b42318;
+  margin: 0;
+}
+
+.demo-account-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.demo-account {
+  background: #f8fafc;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  color: #253044;
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  text-align: left;
+}
+
+.demo-account span {
+  color: #657285;
+  font-size: 12px;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 240px 1fr;
@@ -62,6 +137,29 @@ button {
   color: #9aa7bd;
   display: block;
   margin-top: 3px;
+}
+
+.account-card {
+  background: #172235;
+  border: 1px solid #2b3a53;
+  border-radius: 8px;
+  display: grid;
+  gap: 7px;
+  margin-bottom: 18px;
+  padding: 12px;
+}
+
+.account-card span {
+  color: #9aa7bd;
+  font-size: 13px;
+}
+
+.account-card button {
+  background: transparent;
+  border: 0;
+  color: #e9b949;
+  padding: 0;
+  text-align: left;
 }
 
 .sidebar nav {
@@ -484,6 +582,43 @@ button {
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
 }
 
+.metric-grid,
+.user-action-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin-bottom: 16px;
+}
+
+.metric-card,
+.action-panel {
+  background: #ffffff;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  padding: 18px;
+}
+
+.metric-card span,
+.action-panel span {
+  color: #657285;
+}
+
+.metric-card strong {
+  font-size: 30px;
+}
+
+.action-panel {
+  color: #172033;
+  min-height: 120px;
+  text-align: left;
+}
+
+.action-panel strong {
+  font-size: 20px;
+}
+
 .panel h2 {
   margin: 0 0 12px;
 }
@@ -522,5 +657,9 @@ button {
 
   .cart-item img {
     height: 160px;
+  }
+
+  .demo-account-grid {
+    grid-template-columns: 1fr;
   }
 }
