@@ -21,10 +21,14 @@ type Store interface {
 	ListMerchants(ctx context.Context) []domain.Merchant
 	ListProducts(ctx context.Context, keyword string, categoryID string) []domain.ProductCard
 	GetProduct(ctx context.Context, productID string) (domain.ProductDetail, bool)
+	CreateProduct(ctx context.Context, input domain.ProductUpsertInput) (domain.ProductDetail, error)
+	UpdateProduct(ctx context.Context, productID string, input domain.ProductUpsertInput) (domain.ProductDetail, bool)
 	ListProductSKUs(ctx context.Context, productID string) []domain.ProductSKU
 	GetCart(ctx context.Context) domain.Cart
 	AddCartItem(ctx context.Context, productID string, skuID string, quantity int) (domain.Cart, bool)
 	UpdateCartItem(ctx context.Context, cartItemID string, quantity *int, selected *bool) (domain.Cart, bool)
 	DeleteCartItem(ctx context.Context, cartItemID string) (domain.Cart, bool)
 	SearchKnowledge(ctx context.Context, query string) []domain.Citation
+	ListMerchantDocuments(ctx context.Context, merchantID string) []domain.KnowledgeDocument
+	CreateMerchantDocument(ctx context.Context, input domain.KnowledgeDocumentInput) (domain.KnowledgeDocument, error)
 }

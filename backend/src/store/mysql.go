@@ -290,6 +290,126 @@ func (s *MySQLStore) GetProduct(ctx context.Context, productID string) (domain.P
 	return product, true
 }
 
+func (s *MySQLStore) CreateProduct(ctx context.Context, input domain.ProductUpsertInput) (domain.ProductDetail, error) {
+	productID := input.ProductID
+	if productID == "" {
+		productID = nextID("prod")
+	}
+	input.ProductID = productID
+	normalized := normalizeProductInput(input)
+	if err := s.insertProduct(ctx, normalized); err != nil {
+		return domain.ProductDetail{}, err
+	}
+	if err := s.upsertDefaultSKU(ctx, normalized); err != nil {
+		return domain.ProductDetail{}, err
+	}
+	product, ok := s.GetProduct(ctx, productID)
+	if !ok {
+		return domain.ProductDetail{}, errors.New("created product not found")
+	}
+	return product, nil
+}
+
+func (s *MySQLStore) insertProduct(ctx context.Context, input domain.ProductUpsertInput) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO products (
+			product_id, merchant_id, name, brand, category_id, image_url, image_urls_json,
+			price, market_price, stock_quantity, stock_status, tags_json, selling_points_json,
+			recommend_reason, risk_notes_json, attributes_json, suitable_for_json,
+			not_suitable_for_json, description, status, sort_order, created_at, updated_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 100, ?, ?)
+	`,
+		input.ProductID,
+		input.MerchantID,
+		input.Name,
+		input.Brand,
+		input.CategoryID,
+		input.ImageURL,
+		mustJSON([]string{input.ImageURL}),
+		input.Price,
+		input.MarketPrice,
+		input.StockQuantity,
+		input.StockStatus,
+		mustJSON(input.Tags),
+		mustJSON(input.SellingPoints),
+		input.RecommendReason,
+		mustJSON(input.RiskNotes),
+		mustJSON([]domain.ProductAttribute{}),
+		mustJSON([]string{}),
+		mustJSON([]string{}),
+		input.Description,
+		time.Now(),
+		time.Now(),
+	)
+	if err != nil {
+		return fmt.Errorf("insert product: %w", err)
+	}
+	return nil
+}
+
+func (s *MySQLStore) upsertDefaultSKU(ctx context.Context, input domain.ProductUpsertInput) error {
+	skuID := "sku_" + input.ProductID
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO product_skus (sku_id, product_id, sku_name, price, stock_quantity, stock_status, specs_json, is_default, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, TRUE, ?, ?)
+		ON DUPLICATE KEY UPDATE sku_name = VALUES(sku_name), price = VALUES(price),
+			stock_quantity = VALUES(stock_quantity), stock_status = VALUES(stock_status),
+			specs_json = VALUES(specs_json), is_default = TRUE, updated_at = VALUES(updated_at)
+	`, skuID, input.ProductID, input.Name+" 默认款", input.Price, input.StockQuantity, input.StockStatus, mustJSON(map[string]string{"版本": "默认款"}), time.Now(), time.Now())
+	if err != nil {
+		return fmt.Errorf("upsert default sku: %w", err)
+	}
+	return nil
+}
+
+func (s *MySQLStore) UpdateProduct(ctx context.Context, productID string, input domain.ProductUpsertInput) (domain.ProductDetail, bool) {
+	input.ProductID = productID
+	normalized := normalizeProductInput(input)
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE products
+		SET name = ?, brand = ?, category_id = ?, image_url = ?, image_urls_json = ?,
+			price = ?, market_price = ?, stock_quantity = ?, stock_status = ?,
+			tags_json = ?, selling_points_json = ?, recommend_reason = ?,
+			risk_notes_json = ?, attributes_json = ?, suitable_for_json = ?,
+			not_suitable_for_json = ?, description = ?, updated_at = ?
+		WHERE product_id = ? AND merchant_id = ?
+	`,
+		normalized.Name,
+		normalized.Brand,
+		normalized.CategoryID,
+		normalized.ImageURL,
+		mustJSON([]string{normalized.ImageURL}),
+		normalized.Price,
+		normalized.MarketPrice,
+		normalized.StockQuantity,
+		normalized.StockStatus,
+		mustJSON(normalized.Tags),
+		mustJSON(normalized.SellingPoints),
+		normalized.RecommendReason,
+		mustJSON(normalized.RiskNotes),
+		mustJSON([]domain.ProductAttribute{}),
+		mustJSON([]string{}),
+		mustJSON([]string{}),
+		normalized.Description,
+		time.Now(),
+		productID,
+		normalized.MerchantID,
+	)
+	if err != nil {
+		return domain.ProductDetail{}, false
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return domain.ProductDetail{}, false
+	}
+	if err := s.upsertDefaultSKU(ctx, normalized); err != nil {
+		return domain.ProductDetail{}, false
+	}
+	product, ok := s.GetProduct(ctx, productID)
+	return product, ok
+}
+
 func (s *MySQLStore) ListProductSKUs(ctx context.Context, productID string) []domain.ProductSKU {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT sku_id, product_id, sku_name, price, stock_quantity, stock_status, specs_json
@@ -425,6 +545,60 @@ func (s *MySQLStore) searchKnowledge(ctx context.Context, query string) []domain
 		items = append(items, item)
 	}
 	return items
+}
+
+func (s *MySQLStore) ListMerchantDocuments(ctx context.Context, merchantID string) []domain.KnowledgeDocument {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT document_id, merchant_id, title, doc_type, status, chunk_count, created_at
+		FROM knowledge_documents
+		WHERE merchant_id = ?
+		ORDER BY created_at DESC, document_id DESC
+	`, merchantID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	items := make([]domain.KnowledgeDocument, 0)
+	for rows.Next() {
+		var item domain.KnowledgeDocument
+		if err := rows.Scan(&item.DocumentID, &item.MerchantID, &item.Title, &item.DocType, &item.Status, &item.ChunkCount, &item.CreatedAt); err != nil {
+			return nil
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func (s *MySQLStore) CreateMerchantDocument(ctx context.Context, input domain.KnowledgeDocumentInput) (domain.KnowledgeDocument, error) {
+	document := domain.KnowledgeDocument{
+		DocumentID: nextID("doc"),
+		MerchantID: input.MerchantID,
+		Title:      input.Title,
+		DocType:    input.DocType,
+		Status:     "indexed",
+		ChunkCount: 1,
+		CreatedAt:  time.Now(),
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO knowledge_documents (document_id, merchant_id, title, doc_type, content, status, chunk_count, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, document.DocumentID, document.MerchantID, document.Title, document.DocType, input.Content, document.Status, document.ChunkCount, document.CreatedAt, document.CreatedAt)
+	if err != nil {
+		return domain.KnowledgeDocument{}, fmt.Errorf("insert knowledge document: %w", err)
+	}
+	snippet := input.Content
+	if len([]rune(snippet)) > 160 {
+		snippet = string([]rune(snippet)[:160])
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO knowledge_chunks (chunk_id, title, snippet, source, sort_order)
+		VALUES (?, ?, ?, ?, ?)
+	`, nextID("ck"), document.Title, snippet, document.DocumentID, 100)
+	if err != nil {
+		return domain.KnowledgeDocument{}, fmt.Errorf("insert knowledge chunk: %w", err)
+	}
+	return document, nil
 }
 
 func (s *MySQLStore) getRun(ctx context.Context, runID string) (domain.AgentRun, bool) {
@@ -632,6 +806,45 @@ func decodeJSON(input string, output any) {
 		return
 	}
 	_ = json.Unmarshal([]byte(input), output)
+}
+
+func mustJSON(input any) string {
+	payload, err := json.Marshal(input)
+	if err != nil {
+		return "null"
+	}
+	return string(payload)
+}
+
+func normalizeProductInput(input domain.ProductUpsertInput) domain.ProductUpsertInput {
+	if input.Brand == "" {
+		input.Brand = "未设置"
+	}
+	if input.CategoryID == "" {
+		input.CategoryID = "c_phone"
+	}
+	if input.ImageURL == "" {
+		input.ImageURL = "https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=640&q=80"
+	}
+	if input.Price == "" {
+		input.Price = "0.00"
+	}
+	if input.MarketPrice == "" {
+		input.MarketPrice = input.Price
+	}
+	if input.StockStatus == "" {
+		input.StockStatus = "in_stock"
+	}
+	if input.Tags == nil {
+		input.Tags = []string{}
+	}
+	if input.SellingPoints == nil {
+		input.SellingPoints = []string{}
+	}
+	if input.RiskNotes == nil {
+		input.RiskNotes = []string{}
+	}
+	return input
 }
 
 func buildCategoryTree(categories []domain.Category) []domain.Category {

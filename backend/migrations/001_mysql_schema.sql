@@ -72,6 +72,20 @@ CREATE TABLE IF NOT EXISTS knowledge_chunks (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS knowledge_documents (
+  document_id VARCHAR(64) PRIMARY KEY,
+  merchant_id VARCHAR(64) NOT NULL,
+  title VARCHAR(256) NOT NULL,
+  doc_type VARCHAR(64) NOT NULL,
+  content MEDIUMTEXT NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  chunk_count INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_knowledge_documents_merchant_id (merchant_id),
+  INDEX idx_knowledge_documents_status (status)
+);
+
 CREATE TABLE IF NOT EXISTS accounts (
   account_id VARCHAR(64) PRIMARY KEY,
   username VARCHAR(64) NOT NULL,
@@ -204,6 +218,10 @@ INSERT IGNORE INTO product_skus (sku_id, product_id, sku_name, price, stock_quan
 INSERT IGNORE INTO knowledge_chunks (chunk_id, title, snippet, source, sort_order) VALUES
 ('ck_phone_001', 'X Phone 12 商品详情', 'X Phone 12 支持高速对焦、儿童抓拍模式，官方零售价 2999 元。', 'mysql_seed', 10),
 ('ck_mouse_001', 'Quiet Mouse S 商品详情', 'Quiet Mouse S 主打静音按键、无线连接和人体工学握持。', 'mysql_seed', 20);
+
+INSERT IGNORE INTO knowledge_documents (document_id, merchant_id, title, doc_type, content, status, chunk_count) VALUES
+('doc_001', 'm_001', '手机商品详情', 'product_detail', 'X Phone 12 支持高速对焦、儿童抓拍模式，官方零售价 2999 元。', 'indexed', 1),
+('doc_002', 'm_001', 'Quiet Mouse S 商品详情', 'product_detail', 'Quiet Mouse S 主打静音按键、无线连接和人体工学握持。', 'indexed', 1);
 
 INSERT IGNORE INTO accounts (account_id, username, password_hash, display_name, role, merchant_id, status) VALUES
 ('acct_user_001', 'user', '90aae915da86d3b3a4da7a996bc264bfbaf50a953cbbe8cd3478a2a6ccc7b900', '演示用户', 'user', '', 'active'),

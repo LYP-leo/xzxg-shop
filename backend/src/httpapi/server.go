@@ -32,6 +32,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/merchants", s.handleListMerchants)
 	mux.HandleFunc("GET /api/v1/products", s.handleListProducts)
 	mux.HandleFunc("GET /api/v1/products/", s.handleProductAction)
+	mux.HandleFunc("GET /api/v1/merchant/documents", s.handleListMerchantDocuments)
+	mux.HandleFunc("POST /api/v1/merchant/documents", s.handleCreateMerchantDocument)
+	mux.HandleFunc("POST /api/v1/merchant/products", s.handleCreateMerchantProduct)
+	mux.HandleFunc("PATCH /api/v1/merchant/products/", s.handleUpdateMerchantProduct)
 	mux.HandleFunc("GET /api/v1/cart", s.handleGetCart)
 	mux.HandleFunc("POST /api/v1/cart/items", s.handleAddCartItem)
 	mux.HandleFunc("PATCH /api/v1/cart/items/", s.handleCartItemAction)
@@ -135,6 +139,93 @@ func (s *Server) handleProductAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, product)
+}
+
+func (s *Server) handleCreateMerchantProduct(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireMerchant(w, r)
+	if !ok {
+		return
+	}
+	var request domain.ProductUpsertInput
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	if strings.TrimSpace(request.Name) == "" {
+		writeError(w, http.StatusBadRequest, "empty_name", "商品名称不能为空")
+		return
+	}
+	request.MerchantID = account.MerchantID
+	product, err := s.store.CreateProduct(r.Context(), request)
+	if err != nil {
+		s.logger.Error("create merchant product failed", "error", err, "merchant_id", account.MerchantID)
+		writeError(w, http.StatusInternalServerError, "create_product_failed", "创建商品失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, product)
+}
+
+func (s *Server) handleUpdateMerchantProduct(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireMerchant(w, r)
+	if !ok {
+		return
+	}
+	productID := strings.TrimPrefix(r.URL.Path, "/api/v1/merchant/products/")
+	if productID == "" {
+		writeError(w, http.StatusNotFound, "not_found", "接口不存在")
+		return
+	}
+	var request domain.ProductUpsertInput
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	if strings.TrimSpace(request.Name) == "" {
+		writeError(w, http.StatusBadRequest, "empty_name", "商品名称不能为空")
+		return
+	}
+	request.MerchantID = account.MerchantID
+	product, ok := s.store.UpdateProduct(r.Context(), productID, request)
+	if !ok {
+		writeError(w, http.StatusNotFound, "product_not_found", "商品不存在或不属于当前商家")
+		return
+	}
+	writeJSON(w, http.StatusOK, product)
+}
+
+func (s *Server) handleListMerchantDocuments(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireMerchant(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListMerchantDocuments(r.Context(), account.MerchantID)})
+}
+
+func (s *Server) handleCreateMerchantDocument(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireMerchant(w, r)
+	if !ok {
+		return
+	}
+	var request domain.KnowledgeDocumentInput
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	if strings.TrimSpace(request.Title) == "" || strings.TrimSpace(request.Content) == "" {
+		writeError(w, http.StatusBadRequest, "empty_document", "资料标题和内容不能为空")
+		return
+	}
+	if request.DocType == "" {
+		request.DocType = "product_detail"
+	}
+	request.MerchantID = account.MerchantID
+	document, err := s.store.CreateMerchantDocument(r.Context(), request)
+	if err != nil {
+		s.logger.Error("create merchant document failed", "error", err, "merchant_id", account.MerchantID)
+		writeError(w, http.StatusInternalServerError, "create_document_failed", "上传资料失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, document)
 }
 
 func (s *Server) handleGetCart(w http.ResponseWriter, r *http.Request) {
@@ -308,6 +399,19 @@ func (s *Server) accountFromRequest(r *http.Request) (domain.Account, bool) {
 		return domain.Account{}, false
 	}
 	return s.store.GetAccountByToken(r.Context(), token)
+}
+
+func (s *Server) requireMerchant(w http.ResponseWriter, r *http.Request) (domain.Account, bool) {
+	account, ok := s.accountFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "请先登录")
+		return domain.Account{}, false
+	}
+	if account.Role != domain.AccountRoleMerchant || account.MerchantID == "" {
+		writeError(w, http.StatusForbidden, "forbidden", "当前账号不是商家")
+		return domain.Account{}, false
+	}
+	return account, true
 }
 
 func hashPassword(password string) string {

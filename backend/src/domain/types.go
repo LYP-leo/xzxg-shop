@@ -110,6 +110,24 @@ type ProductDetail struct {
 	Description    string             `json:"description"`
 }
 
+type ProductUpsertInput struct {
+	ProductID       string   `json:"product_id,omitempty"`
+	MerchantID      string   `json:"merchant_id"`
+	Name            string   `json:"name"`
+	Brand           string   `json:"brand"`
+	CategoryID      string   `json:"category_id"`
+	ImageURL        string   `json:"image_url"`
+	Price           string   `json:"price"`
+	MarketPrice     string   `json:"market_price"`
+	StockQuantity   int      `json:"stock_quantity"`
+	StockStatus     string   `json:"stock_status"`
+	Tags            []string `json:"tags"`
+	SellingPoints   []string `json:"selling_points"`
+	RecommendReason string   `json:"recommend_reason"`
+	RiskNotes       []string `json:"risk_notes"`
+	Description     string   `json:"description"`
+}
+
 type ProductSKU struct {
 	SkuID         string            `json:"skuId"`
 	ProductID     string            `json:"productId"`
@@ -151,6 +169,23 @@ type Citation struct {
 	Title   string `json:"title"`
 	Snippet string `json:"snippet"`
 	Source  string `json:"source,omitempty"`
+}
+
+type KnowledgeDocument struct {
+	DocumentID string    `json:"document_id"`
+	MerchantID string    `json:"merchant_id"`
+	Title      string    `json:"title"`
+	DocType    string    `json:"doc_type"`
+	Status     string    `json:"status"`
+	ChunkCount int       `json:"chunk_count"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+type KnowledgeDocumentInput struct {
+	MerchantID string `json:"merchant_id"`
+	Title      string `json:"title"`
+	DocType    string `json:"doc_type"`
+	Content    string `json:"content"`
 }
 
 type AgentBlock struct {
