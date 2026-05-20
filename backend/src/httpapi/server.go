@@ -24,6 +24,14 @@ func NewServer(store *store.MemoryStore, runtime *agent.Runtime, logger *slog.Lo
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
+	mux.HandleFunc("GET /api/v1/categories/tree", s.handleListCategories)
+	mux.HandleFunc("GET /api/v1/merchants", s.handleListMerchants)
+	mux.HandleFunc("GET /api/v1/products", s.handleListProducts)
+	mux.HandleFunc("GET /api/v1/products/", s.handleProductAction)
+	mux.HandleFunc("GET /api/v1/cart", s.handleGetCart)
+	mux.HandleFunc("POST /api/v1/cart/items", s.handleAddCartItem)
+	mux.HandleFunc("PATCH /api/v1/cart/items/", s.handleCartItemAction)
+	mux.HandleFunc("DELETE /api/v1/cart/items/", s.handleCartItemAction)
 	mux.HandleFunc("POST /api/v1/agent/sessions", s.handleCreateAgentSession)
 	mux.HandleFunc("POST /api/v1/agent/sessions/", s.handleAgentSessionAction)
 	mux.HandleFunc("POST /api/v1/agent/runs/", s.handleAgentRunAction)
@@ -51,6 +59,101 @@ func (s *Server) handleCreateAgentSession(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, session)
+}
+
+func (s *Server) handleListCategories(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListCategories(r.Context())})
+}
+
+func (s *Server) handleListMerchants(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListMerchants(r.Context())})
+}
+
+func (s *Server) handleListProducts(w http.ResponseWriter, r *http.Request) {
+	keyword := r.URL.Query().Get("keyword")
+	categoryID := r.URL.Query().Get("category_id")
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListProducts(r.Context(), keyword, categoryID)})
+}
+
+func (s *Server) handleProductAction(w http.ResponseWriter, r *http.Request) {
+	productID, action, ok := splitProductAction(r.URL.Path)
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "接口不存在")
+		return
+	}
+	if action == "skus" {
+		writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListProductSKUs(r.Context(), productID)})
+		return
+	}
+	if action != "" {
+		writeError(w, http.StatusNotFound, "not_found", "接口不存在")
+		return
+	}
+	product, ok := s.store.GetProduct(r.Context(), productID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "product_not_found", "商品不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, product)
+}
+
+func (s *Server) handleGetCart(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.store.GetCart(r.Context()))
+}
+
+func (s *Server) handleAddCartItem(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		ProductID string `json:"product_id"`
+		SkuID     string `json:"sku_id"`
+		Quantity  int    `json:"quantity"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	if request.ProductID == "" {
+		writeError(w, http.StatusBadRequest, "empty_product_id", "商品 ID 不能为空")
+		return
+	}
+	cart, ok := s.store.AddCartItem(r.Context(), request.ProductID, request.SkuID, request.Quantity)
+	if !ok {
+		writeError(w, http.StatusNotFound, "product_not_found", "商品不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, cart)
+}
+
+func (s *Server) handleCartItemAction(w http.ResponseWriter, r *http.Request) {
+	cartItemID := strings.TrimPrefix(r.URL.Path, "/api/v1/cart/items/")
+	if cartItemID == "" {
+		writeError(w, http.StatusNotFound, "not_found", "接口不存在")
+		return
+	}
+
+	if r.Method == http.MethodDelete {
+		cart, ok := s.store.DeleteCartItem(r.Context(), cartItemID)
+		if !ok {
+			writeError(w, http.StatusNotFound, "cart_item_not_found", "购物车项不存在")
+			return
+		}
+		writeJSON(w, http.StatusOK, cart)
+		return
+	}
+
+	var request struct {
+		Quantity *int  `json:"quantity"`
+		Selected *bool `json:"selected"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	cart, ok := s.store.UpdateCartItem(r.Context(), cartItemID, request.Quantity, request.Selected)
+	if !ok {
+		writeError(w, http.StatusNotFound, "cart_item_not_found", "购物车项不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, cart)
 }
 
 func (s *Server) handleAgentSessionAction(w http.ResponseWriter, r *http.Request) {
@@ -174,6 +277,18 @@ func splitRunAction(path string) (string, string, bool) {
 		return "", "", false
 	}
 	return parts[0], parts[1], true
+}
+
+func splitProductAction(path string) (string, string, bool) {
+	rest := strings.TrimPrefix(path, "/api/v1/products/")
+	parts := strings.Split(rest, "/")
+	if len(parts) == 1 && parts[0] != "" {
+		return parts[0], "", true
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+		return parts[0], parts[1], true
+	}
+	return "", "", false
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
