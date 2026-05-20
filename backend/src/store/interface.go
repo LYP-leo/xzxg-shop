@@ -15,6 +15,7 @@ type Store interface {
 	ListUserSessions(ctx context.Context, accountID string) []domain.ChatSession
 	CreateSession(ctx context.Context, accountID string, title string) (domain.ChatSession, error)
 	GetSession(ctx context.Context, accountID string, sessionID string) (domain.ChatSession, bool)
+	GetSessionDetail(ctx context.Context, accountID string, sessionID string) (domain.ChatSessionDetail, bool)
 	CreateUserMessage(ctx context.Context, input domain.UserMessage) (domain.UserMessage, error)
 	CreateRun(ctx context.Context, accountID string, sessionID string, messageID string) (domain.AgentRun, error)
 	UpdateRunStatus(ctx context.Context, accountID string, runID string, status domain.RunStatus) (domain.AgentRun, bool)

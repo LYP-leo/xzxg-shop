@@ -53,6 +53,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/orders:checkout", s.handleCheckout)
 	mux.HandleFunc("GET /api/v1/agent/sessions", s.handleListAgentSessions)
 	mux.HandleFunc("POST /api/v1/agent/sessions", s.handleCreateAgentSession)
+	mux.HandleFunc("GET /api/v1/agent/sessions/", s.handleAgentSessionAction)
 	mux.HandleFunc("POST /api/v1/agent/sessions/", s.handleAgentSessionAction)
 	mux.HandleFunc("GET /api/v1/agent/runs/", s.handleAgentRunTrace)
 	mux.HandleFunc("POST /api/v1/agent/runs/", s.handleAgentRunAction)
@@ -476,6 +477,21 @@ func (s *Server) handleAgentSessionAction(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	if r.Method == http.MethodGet {
+		sessionID := strings.TrimPrefix(r.URL.Path, "/api/v1/agent/sessions/")
+		if sessionID == "" || strings.Contains(sessionID, "/") {
+			writeError(w, http.StatusNotFound, "not_found", "接口不存在")
+			return
+		}
+		detail, ok := s.store.GetSessionDetail(r.Context(), account.AccountID, sessionID)
+		if !ok {
+			writeError(w, http.StatusNotFound, "session_not_found", "会话不存在")
+			return
+		}
+		writeJSON(w, http.StatusOK, detail)
+		return
+	}
+
 	sessionID, action, ok := splitSessionAction(r.URL.Path)
 	if !ok || action != "messages:stream" {
 		writeError(w, http.StatusNotFound, "not_found", "接口不存在")

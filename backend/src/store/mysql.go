@@ -289,6 +289,46 @@ func (s *MySQLStore) ListUserSessions(ctx context.Context, accountID string) []d
 	return items
 }
 
+func (s *MySQLStore) GetSessionDetail(ctx context.Context, accountID string, sessionID string) (domain.ChatSessionDetail, bool) {
+	session, ok := s.GetSession(ctx, accountID, sessionID)
+	if !ok {
+		return domain.ChatSessionDetail{}, false
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT message_id, session_id, account_id, client_message_id, content, attachments_json, created_at
+		FROM user_messages
+		WHERE account_id = ? AND session_id = ?
+		ORDER BY created_at, message_id
+	`, accountID, sessionID)
+	if err != nil {
+		return domain.ChatSessionDetail{}, false
+	}
+	defer rows.Close()
+
+	messages := make([]domain.UserMessageWithRuns, 0)
+	for rows.Next() {
+		var message domain.UserMessageWithRuns
+		var attachmentsJSON string
+		if err := rows.Scan(
+			&message.MessageID,
+			&message.SessionID,
+			&message.AccountID,
+			&message.ClientMessageID,
+			&message.Content,
+			&attachmentsJSON,
+			&message.CreatedAt,
+		); err != nil {
+			return domain.ChatSessionDetail{}, false
+		}
+		if strings.TrimSpace(attachmentsJSON) != "" {
+			_ = json.Unmarshal([]byte(attachmentsJSON), &message.Attachments)
+		}
+		message.Runs = s.listRunsByMessage(ctx, accountID, message.MessageID)
+		messages = append(messages, message)
+	}
+	return domain.ChatSessionDetail{Session: session, Messages: messages}, true
+}
+
 func (s *MySQLStore) CreateUserMessage(ctx context.Context, input domain.UserMessage) (domain.UserMessage, error) {
 	input.MessageID = nextID("msg")
 	input.CreatedAt = time.Now()
@@ -304,6 +344,40 @@ func (s *MySQLStore) CreateUserMessage(ctx context.Context, input domain.UserMes
 		return domain.UserMessage{}, fmt.Errorf("insert user message: %w", err)
 	}
 	return input, nil
+}
+
+func (s *MySQLStore) listRunsByMessage(ctx context.Context, accountID string, messageID string) []domain.AgentRun {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT run_id, session_id, message_id, account_id, status, trace_id, created_at, updated_at
+		FROM agent_runs
+		WHERE account_id = ? AND message_id = ?
+		ORDER BY created_at, run_id
+	`, accountID, messageID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	items := make([]domain.AgentRun, 0)
+	for rows.Next() {
+		var item domain.AgentRun
+		var status string
+		if err := rows.Scan(
+			&item.RunID,
+			&item.SessionID,
+			&item.MessageID,
+			&item.AccountID,
+			&status,
+			&item.TraceID,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil
+		}
+		item.Status = domain.RunStatus(status)
+		items = append(items, item)
+	}
+	return items
 }
 
 func (s *MySQLStore) CreateRun(ctx context.Context, accountID string, sessionID string, messageID string) (domain.AgentRun, error) {

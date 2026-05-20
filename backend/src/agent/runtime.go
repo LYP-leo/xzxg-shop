@@ -45,9 +45,7 @@ func (r *Runtime) Stream(ctx context.Context, run domain.AgentRun, message domai
 	plan := r.plan(ctx, run, message.Content)
 	r.logger.Info("agent plan selected", "run_id", run.RunID, "intent", plan.Intent, "answer_model", plan.AnswerModel)
 	r.trace(ctx, run, "planner", "selected", plan.AnswerModel, "ok", 0, "", map[string]any{
-		"intent":       plan.Intent,
-		"answer_mode":  plan.AnswerMode,
-		"need_compare": plan.NeedCompare,
+		"intent": plan.Intent,
 	})
 
 	var products []domain.ProductCard
@@ -70,15 +68,8 @@ func (r *Runtime) Stream(ctx context.Context, run domain.AgentRun, message domai
 		return err
 	}
 
-	text := r.answer(ctx, run, plan, message.Content, products, chunks)
-	for _, delta := range splitText(text, 14) {
-		if r.store.IsRunCanceled(ctx, run.RunID) {
-			return emit(domain.SSEEvent{Type: "error", RunID: run.RunID, Code: "canceled", Message: "已停止生成"})
-		}
-		if err := emit(domain.SSEEvent{Type: "text_delta", RunID: run.RunID, Delta: delta}); err != nil {
-			return err
-		}
-		time.Sleep(80 * time.Millisecond)
+	if err := r.streamAnswer(ctx, run, plan, message.Content, products, chunks, emit); err != nil {
+		return err
 	}
 
 	if plan.UsesCatalog() && len(products) > 0 {
@@ -130,11 +121,8 @@ func (r *Runtime) emitStatus(ctx context.Context, runID string, stage string, te
 }
 
 type runPlan struct {
-	Intent      string   `json:"intent"`
-	AnswerMode  string   `json:"answer_mode"`
-	AnswerModel string   `json:"answer_model"`
-	Keywords    []string `json:"keywords"`
-	NeedCompare bool     `json:"need_compare"`
+	Intent      string `json:"intent"`
+	AnswerModel string `json:"-"`
 }
 
 func (p runPlan) UsesCatalog() bool {
@@ -156,11 +144,11 @@ func (r *Runtime) plan(ctx context.Context, run domain.AgentRun, query string) r
 	content, err := r.llm.Complete(ctx, r.llm.SmallModel(), []ChatMessage{
 		{
 			Role:    "system",
-			Content: "你是电商导购 Agent 的规划器。只输出 JSON，不要解释。intent 只能是 product_recommendation、product_comparison、product_detail_qa、promotion_rule_qa、after_sales_qa、shopping_decision_support、general_shopping_chat、unsupported。answer_mode 只能是 small 或 large。",
+			Content: "你是电商导购 Agent 的意图识别器。只判断用户请求的主意图，只输出 JSON，不要解释。intent 只能是 product_recommendation、product_comparison、product_detail_qa、promotion_rule_qa、after_sales_qa、shopping_decision_support、general_shopping_chat、unsupported。",
 		},
 		{
 			Role:    "user",
-			Content: "用户问题：" + query + "\n输出字段：intent, answer_mode, keywords, need_compare。",
+			Content: "用户问题：" + query + "\n只输出字段：intent。",
 		},
 	}, 0.1)
 	if err != nil {
@@ -178,35 +166,23 @@ func (r *Runtime) plan(ctx context.Context, run domain.AgentRun, query string) r
 	if plan.Intent == "" {
 		plan.Intent = fallback.Intent
 	}
-	if plan.AnswerMode == "" {
-		plan.AnswerMode = fallback.AnswerMode
-	}
-	if plan.AnswerMode == "large" {
-		plan.AnswerModel = r.llm.LargeModel()
-	} else {
-		plan.AnswerModel = r.llm.SmallModel()
-	}
+	plan.AnswerModel = r.answerModelForIntent(plan.Intent)
 	return plan
 }
 
-func (r *Runtime) answer(ctx context.Context, run domain.AgentRun, plan runPlan, query string, products []domain.ProductCard, chunks []domain.Citation) string {
+func (r *Runtime) streamAnswer(ctx context.Context, run domain.AgentRun, plan runPlan, query string, products []domain.ProductCard, chunks []domain.Citation, emit func(domain.SSEEvent) error) error {
 	if !r.llm.Enabled() {
-		return buildAnswer(query, plan, products)
+		return r.emitFallbackAnswer(ctx, run, buildAnswer(query, plan, products), emit)
 	}
 
 	productContext := formatProducts(products, 5)
 	knowledgeContext := formatCitations(chunks, 3)
 	startedAt := time.Now()
-	content, err := r.llm.Complete(ctx, plan.AnswerModel, []ChatMessage{
+	var content strings.Builder
+	err := r.llm.Stream(ctx, plan.AnswerModel, []ChatMessage{
 		{
-			Role: "system",
-			Content: strings.Join([]string{
-				"你是小猪小狗电商平台的 AI 导购主 Agent。",
-				"请基于商品上下文回答，不要编造不存在的价格、库存、优惠和售后承诺。",
-				"输出中文，结构清晰，先给结论，再给理由和风险提示。",
-				"如果商品上下文不足，明确说明还需要用户补充的信息。",
-				"不要输出 JSON，不要输出 markdown 表格。",
-			}, "\n"),
+			Role:    "system",
+			Content: systemPromptForIntent(plan.Intent),
 		},
 		{
 			Role: "user",
@@ -217,14 +193,35 @@ func (r *Runtime) answer(ctx context.Context, run domain.AgentRun, plan runPlan,
 				knowledgeContext,
 			),
 		},
-	}, 0.4)
+	}, 0.4, func(delta string) error {
+		if r.store.IsRunCanceled(ctx, run.RunID) {
+			return emit(domain.SSEEvent{Type: "error", RunID: run.RunID, Code: "canceled", Message: "已停止生成"})
+		}
+		content.WriteString(delta)
+		return emit(domain.SSEEvent{Type: "text_delta", RunID: run.RunID, Delta: delta})
+	})
 	if err != nil {
 		r.logger.Warn("agent answer fallback", "error", err, "model", plan.AnswerModel)
 		r.traceLLM(ctx, run, "answer", plan.AnswerModel, startedAt, err, map[string]any{"intent": plan.Intent})
-		return buildAnswer(query, plan, products)
+		if content.Len() > 0 {
+			return nil
+		}
+		return r.emitFallbackAnswer(ctx, run, buildAnswer(query, plan, products), emit)
 	}
-	r.traceLLM(ctx, run, "answer", plan.AnswerModel, startedAt, nil, map[string]any{"intent": plan.Intent, "raw_length": len([]rune(content))})
-	return content
+	r.traceLLM(ctx, run, "answer", plan.AnswerModel, startedAt, nil, map[string]any{"intent": plan.Intent, "raw_length": len([]rune(content.String()))})
+	return nil
+}
+
+func (r *Runtime) emitFallbackAnswer(ctx context.Context, run domain.AgentRun, text string, emit func(domain.SSEEvent) error) error {
+	for _, delta := range splitText(text, 28) {
+		if r.store.IsRunCanceled(ctx, run.RunID) {
+			return emit(domain.SSEEvent{Type: "error", RunID: run.RunID, Code: "canceled", Message: "已停止生成"})
+		}
+		if err := emit(domain.SSEEvent{Type: "text_delta", RunID: run.RunID, Delta: delta}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) followups(ctx context.Context, run domain.AgentRun, query string, products []domain.ProductCard) []string {
@@ -267,10 +264,13 @@ func (r *Runtime) followups(ctx context.Context, run domain.AgentRun, query stri
 func heuristicPlan(query string, smallModel string, largeModel string) runPlan {
 	plan := runPlan{
 		Intent:      "general_shopping_chat",
-		AnswerMode:  "small",
 		AnswerModel: smallModel,
 	}
 	if isGreeting(query) {
+		return plan
+	}
+	if looksUnsupported(query) {
+		plan.Intent = "unsupported"
 		return plan
 	}
 	if looksCatalogRelated(query) {
@@ -278,9 +278,7 @@ func heuristicPlan(query string, smallModel string, largeModel string) runPlan {
 	}
 	if strings.Contains(query, "对比") || strings.Contains(query, "比较") || strings.Contains(query, "哪个") || strings.Contains(query, "推荐") {
 		plan.Intent = "shopping_decision_support"
-		plan.AnswerMode = "large"
 		plan.AnswerModel = largeModel
-		plan.NeedCompare = true
 	}
 	if strings.Contains(query, "售后") || strings.Contains(query, "退货") || strings.Contains(query, "保修") {
 		plan.Intent = "after_sales_qa"
@@ -288,7 +286,44 @@ func heuristicPlan(query string, smallModel string, largeModel string) runPlan {
 	return plan
 }
 
+func (r *Runtime) answerModelForIntent(intent string) string {
+	switch intent {
+	case "product_comparison", "shopping_decision_support":
+		return r.llm.LargeModel()
+	default:
+		return r.llm.SmallModel()
+	}
+}
+
+func systemPromptForIntent(intent string) string {
+	base := []string{
+		"你是小猪小狗电商平台的 AI 导购主 Agent。",
+		"你可以在内部使用 ReAct 思路判断下一步，但不要输出推理过程、Action、Observation 或工具调用文本。",
+		"请自己判断候选商品和资料片段是否与用户问题相关；不相关时不要强行推荐或引用。",
+		"不要编造不存在的价格、库存、优惠、售后承诺或商品能力。",
+		"输出中文，先给结论，再给理由、风险提示和需要补充的信息。",
+		"不要输出 JSON，不要输出 markdown 表格。",
+	}
+	intentPrompts := map[string]string{
+		"product_recommendation":    "当前意图是商品推荐。重点根据预算、使用场景、人群约束和商品风险给出 1 个优先候选；若候选不足，先澄清。",
+		"product_comparison":        "当前意图是商品对比。重点比较用户关心的维度，指出每个候选适合/不适合的人群，并给出明确选择建议。",
+		"product_detail_qa":         "当前意图是商品详情问答。只回答商品资料中能支持的信息；资料不足时明确说明不能确认。",
+		"promotion_rule_qa":         "当前意图是优惠促销咨询。没有明确促销资料时，必须说明无法确认优惠，不要暗示某商品正在优惠。",
+		"after_sales_qa":            "当前意图是售后咨询。没有明确售后规则时，必须说明需要以平台/商家规则为准，并给出用户下单前应确认的问题。",
+		"shopping_decision_support": "当前意图是购物决策支持。重点权衡多目标约束，给出稳妥方案、取舍理由和踩坑风险。",
+		"general_shopping_chat":     "当前意图是普通购物闲聊。简短回应，并引导用户提供品类、预算、使用场景或候选商品。",
+		"unsupported":               "当前意图不属于购物导购。礼貌拒绝非购物任务，并把用户引导回购物相关问题。",
+	}
+	if prompt, ok := intentPrompts[intent]; ok {
+		base = append(base, prompt)
+	}
+	return strings.Join(base, "\n")
+}
+
 func buildAnswer(query string, plan runPlan, products []domain.ProductCard) string {
+	if plan.Intent == "unsupported" {
+		return "这个请求不属于购物导购范围，我不能帮你完成。你可以告诉我想买的商品、预算、使用场景或想对比的候选商品，我会继续帮你筛选。"
+	}
 	if !plan.UsesCatalog() {
 		return "你好，我是小猪小狗 AI 导购。你可以告诉我预算、品类、使用场景或想对比的商品，我会帮你缩小选择范围。"
 	}
@@ -309,6 +344,16 @@ func isGreeting(query string) bool {
 
 func looksCatalogRelated(query string) bool {
 	keywords := []string{"推荐", "买", "商品", "手机", "鼠标", "电脑", "耳机", "价格", "预算", "对比", "比较", "售后", "退货", "保修", "优惠", "拍照", "办公"}
+	for _, keyword := range keywords {
+		if strings.Contains(query, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksUnsupported(query string) bool {
+	keywords := []string{"论文", "破解", "股票", "吃什么药", "起诉书", "代写"}
 	for _, keyword := range keywords {
 		if strings.Contains(query, keyword) {
 			return true

@@ -37,6 +37,16 @@ type UserMessage struct {
 	CreatedAt       time.Time    `json:"created_at"`
 }
 
+type ChatSessionDetail struct {
+	Session  ChatSession           `json:"session"`
+	Messages []UserMessageWithRuns `json:"messages"`
+}
+
+type UserMessageWithRuns struct {
+	UserMessage
+	Runs []AgentRun `json:"runs"`
+}
+
 type AgentRun struct {
 	RunID     string    `json:"run_id"`
 	SessionID string    `json:"session_id"`
