@@ -12,12 +12,12 @@ import (
 )
 
 type Server struct {
-	store   *store.MemoryStore
+	store   store.Store
 	runtime *agent.Runtime
 	logger  *slog.Logger
 }
 
-func NewServer(store *store.MemoryStore, runtime *agent.Runtime, logger *slog.Logger) *Server {
+func NewServer(store store.Store, runtime *agent.Runtime, logger *slog.Logger) *Server {
 	return &Server{store: store, runtime: runtime, logger: logger}
 }
 

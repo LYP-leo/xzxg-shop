@@ -11,11 +11,11 @@ import (
 )
 
 type Runtime struct {
-	store  *store.MemoryStore
+	store  store.Store
 	logger *slog.Logger
 }
 
-func NewRuntime(store *store.MemoryStore, logger *slog.Logger) *Runtime {
+func NewRuntime(store store.Store, logger *slog.Logger) *Runtime {
 	return &Runtime{store: store, logger: logger}
 }
 

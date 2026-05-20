@@ -18,10 +18,24 @@ import (
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	addr := env("API_ADDR", ":8080")
+	dsn := env("MYSQL_DSN", "root:root@tcp(127.0.0.1:3306)/xzxg_shop?parseTime=true&loc=Local")
 
-	memoryStore := store.NewMemoryStore()
-	runtime := agent.NewRuntime(memoryStore, logger)
-	server := httpapi.NewServer(memoryStore, runtime, logger)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	mysqlStore, err := store.OpenMySQL(ctx, dsn)
+	if err != nil {
+		logger.Error("mysql unavailable", "error", err)
+		os.Exit(1)
+	}
+	defer mysqlStore.Close()
+	if err := mysqlStore.Migrate(ctx); err != nil {
+		logger.Error("mysql migration failed", "error", err)
+		os.Exit(1)
+	}
+
+	runtime := agent.NewRuntime(mysqlStore, logger)
+	server := httpapi.NewServer(mysqlStore, runtime, logger)
 
 	httpServer := &http.Server{
 		Addr:              addr,
@@ -37,8 +51,6 @@ func main() {
 		}
 	}()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	<-ctx.Done()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

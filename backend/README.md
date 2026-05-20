@@ -4,6 +4,12 @@ Go API foundation for the xzxg-shop Agent demo.
 
 ## Run
 
+Start MySQL first. The default local DSN matches the Docker container used in this repo:
+
+```text
+root:root@tcp(127.0.0.1:3306)/xzxg_shop?parseTime=true&loc=Local
+```
+
 ```bash
 cd backend
 go run ./cmd/api
@@ -19,6 +25,7 @@ Override:
 
 ```bash
 API_ADDR=:8081 go run ./cmd/api
+MYSQL_DSN='root:root@tcp(127.0.0.1:3306)/xzxg_shop?parseTime=true&loc=Local' go run ./cmd/api
 ```
 
 ## Current APIs
@@ -28,4 +35,4 @@ API_ADDR=:8081 go run ./cmd/api
 - `POST /api/v1/agent/sessions/{session_id}/messages:stream`
 - `POST /api/v1/agent/runs/{run_id}:cancel`
 
-The first version uses in-memory sessions, runs, mock products, and mock knowledge chunks. It is intentionally shaped so MySQL, Redis, Qdrant, and LLM providers can replace the in-memory pieces without changing the frontend contract.
+The API uses MySQL for sessions, runs, products, SKUs, cart items, and knowledge chunks. On startup it applies `migrations/001_mysql_schema.sql`, which creates the required tables and inserts initial demo catalog data if missing.
