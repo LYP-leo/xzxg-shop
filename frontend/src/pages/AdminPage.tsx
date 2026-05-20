@@ -1,14 +1,21 @@
 import { useEffect, useState } from 'react';
-import { DocumentItem, EvalRun, listDocuments, listEvalRuns } from '../api/admin';
+import { DocumentItem, EvalRun, listAccounts, listDocuments, listEvalRuns } from '../api/admin';
+import type { Account } from '../types/auth';
 
-export function AdminPage() {
+type AdminPageProps = {
+  token: string;
+};
+
+export function AdminPage({ token }: AdminPageProps) {
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [evalRuns, setEvalRuns] = useState<EvalRun[]>([]);
 
   useEffect(() => {
-    listDocuments().then(setDocuments);
+    listAccounts(token).then(setAccounts);
+    listDocuments(token).then(setDocuments);
     listEvalRuns().then(setEvalRuns);
-  }, []);
+  }, [token]);
 
   return (
     <section>
@@ -19,6 +26,27 @@ export function AdminPage() {
         </div>
       </header>
       <div className="admin-grid">
+        <section className="panel">
+          <h2>账号</h2>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>账号</th>
+                <th>角色</th>
+                <th>名称</th>
+              </tr>
+            </thead>
+            <tbody>
+              {accounts.map((account) => (
+                <tr key={account.account_id}>
+                  <td>{account.username}</td>
+                  <td>{account.role}</td>
+                  <td>{account.display_name}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
         <section className="panel">
           <h2>文档</h2>
           <table className="data-table">

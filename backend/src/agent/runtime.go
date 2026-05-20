@@ -84,7 +84,7 @@ func (r *Runtime) Stream(ctx context.Context, run domain.AgentRun, message domai
 		return err
 	}
 
-	if _, ok := r.store.UpdateRunStatus(ctx, run.RunID, domain.RunStatusCompleted); !ok {
+	if _, ok := r.store.UpdateRunStatus(ctx, run.AccountID, run.RunID, domain.RunStatusCompleted); !ok {
 		r.logger.Warn("agent run status update skipped", "run_id", run.RunID)
 	}
 	return emit(domain.SSEEvent{Type: "message_end", RunID: run.RunID})

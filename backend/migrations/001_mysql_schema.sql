@@ -111,30 +111,36 @@ CREATE TABLE IF NOT EXISTS auth_tokens (
 
 CREATE TABLE IF NOT EXISTS cart_items (
   cart_item_id VARCHAR(64) PRIMARY KEY,
+  account_id VARCHAR(64) NOT NULL DEFAULT '',
   product_id VARCHAR(64) NOT NULL,
   sku_id VARCHAR(64) NOT NULL DEFAULT '',
   quantity INT NOT NULL,
   selected BOOLEAN NOT NULL DEFAULT TRUE,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY uk_cart_product_sku (product_id, sku_id),
+  UNIQUE KEY uk_cart_account_product_sku (account_id, product_id, sku_id),
+  INDEX idx_cart_items_account_id (account_id),
   INDEX idx_cart_items_product_id (product_id)
 );
 
 CREATE TABLE IF NOT EXISTS chat_sessions (
   session_id VARCHAR(64) PRIMARY KEY,
+  account_id VARCHAR(64) NOT NULL DEFAULT '',
   title VARCHAR(128) NOT NULL,
   created_at DATETIME NOT NULL,
+  INDEX idx_chat_sessions_account_id (account_id),
   INDEX idx_chat_sessions_created_at (created_at)
 );
 
 CREATE TABLE IF NOT EXISTS user_messages (
   message_id VARCHAR(64) PRIMARY KEY,
   session_id VARCHAR(64) NOT NULL,
+  account_id VARCHAR(64) NOT NULL DEFAULT '',
   client_message_id VARCHAR(128) NOT NULL DEFAULT '',
   content TEXT NOT NULL,
   attachments_json JSON NOT NULL,
   created_at DATETIME NOT NULL,
+  INDEX idx_user_messages_account_id (account_id),
   INDEX idx_user_messages_session_id (session_id),
   INDEX idx_user_messages_client_message_id (client_message_id)
 );
@@ -143,10 +149,12 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   run_id VARCHAR(64) PRIMARY KEY,
   session_id VARCHAR(64) NOT NULL,
   message_id VARCHAR(64) NOT NULL,
+  account_id VARCHAR(64) NOT NULL DEFAULT '',
   status VARCHAR(32) NOT NULL,
   trace_id VARCHAR(64) NOT NULL,
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL,
+  INDEX idx_agent_runs_account_id (account_id),
   INDEX idx_agent_runs_session_id (session_id),
   INDEX idx_agent_runs_message_id (message_id)
 );

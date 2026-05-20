@@ -1,11 +1,13 @@
 import { buildMockAgentEvents, createMockSession } from '../mock/data';
 import type { AgentSseEvent, AgentSession, Attachment } from '../types/agent';
+import { loadSession } from './auth';
 import { requestJSON } from './http';
 
 export async function createAgentSession(): Promise<AgentSession> {
   try {
     const data = await requestJSON<{ session_id: string; title: string }>('/agent/sessions', {
       method: 'POST',
+      headers: authHeaders(),
       body: JSON.stringify({ title: 'AI 导购', entry_source: 'chat_home' })
     });
     return {
@@ -27,7 +29,7 @@ export async function streamAgentMessage(input: {
   try {
     const response = await fetch(`/api/v1/agent/sessions/${input.sessionId}/messages:stream`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...authHeaders() },
       body: JSON.stringify({
         client_message_id: crypto.randomUUID(),
         content: input.content,
@@ -77,8 +79,13 @@ async function readSseStream(body: ReadableStream<Uint8Array>, onEvent: (event: 
 
 export async function cancelAgentRun(runId: string): Promise<void> {
   try {
-    await requestJSON(`/agent/runs/${runId}:cancel`, { method: 'POST' });
+    await requestJSON(`/agent/runs/${runId}:cancel`, { method: 'POST', headers: authHeaders() });
   } catch {
     return;
   }
+}
+
+function authHeaders(): Record<string, string> {
+	const token = loadSession()?.token;
+	return token ? { Authorization: `Bearer ${token}` } : {};
 }

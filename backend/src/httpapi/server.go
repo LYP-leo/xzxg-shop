@@ -36,6 +36,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/merchant/documents", s.handleCreateMerchantDocument)
 	mux.HandleFunc("POST /api/v1/merchant/products", s.handleCreateMerchantProduct)
 	mux.HandleFunc("PATCH /api/v1/merchant/products/", s.handleUpdateMerchantProduct)
+	mux.HandleFunc("GET /api/v1/admin/accounts", s.handleListAdminAccounts)
+	mux.HandleFunc("GET /api/v1/admin/documents", s.handleListAdminDocuments)
 	mux.HandleFunc("GET /api/v1/cart", s.handleGetCart)
 	mux.HandleFunc("POST /api/v1/cart/items", s.handleAddCartItem)
 	mux.HandleFunc("PATCH /api/v1/cart/items/", s.handleCartItemAction)
@@ -43,7 +45,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/agent/sessions", s.handleCreateAgentSession)
 	mux.HandleFunc("POST /api/v1/agent/sessions/", s.handleAgentSessionAction)
 	mux.HandleFunc("POST /api/v1/agent/runs/", s.handleAgentRunAction)
-	return s.withCORS(mux)
+	return s.withCORS(s.withRequestContext(s.withAccessLog(s.withBodyLimit(s.withAuth(s.withRateLimit(mux))))))
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -78,7 +80,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
-	account, ok := s.accountFromRequest(r)
+	account, ok := accountFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "请先登录")
 		return
@@ -87,6 +89,10 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateAgentSession(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
 	var request struct {
 		Title string `json:"title"`
 	}
@@ -97,7 +103,7 @@ func (s *Server) handleCreateAgentSession(w http.ResponseWriter, r *http.Request
 	if request.Title == "" {
 		request.Title = "AI 导购"
 	}
-	session, err := s.store.CreateSession(r.Context(), request.Title)
+	session, err := s.store.CreateSession(r.Context(), account.AccountID, request.Title)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "create_session_failed", "创建会话失败")
 		return
@@ -228,11 +234,33 @@ func (s *Server) handleCreateMerchantDocument(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, document)
 }
 
+func (s *Server) handleListAdminAccounts(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListAccounts(r.Context())})
+}
+
+func (s *Server) handleListAdminDocuments(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListAllDocuments(r.Context())})
+}
+
 func (s *Server) handleGetCart(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.store.GetCart(r.Context()))
+	account, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, s.store.GetCart(r.Context(), account.AccountID))
 }
 
 func (s *Server) handleAddCartItem(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
 	var request struct {
 		ProductID string `json:"product_id"`
 		SkuID     string `json:"sku_id"`
@@ -246,7 +274,7 @@ func (s *Server) handleAddCartItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "empty_product_id", "商品 ID 不能为空")
 		return
 	}
-	cart, ok := s.store.AddCartItem(r.Context(), request.ProductID, request.SkuID, request.Quantity)
+	cart, ok := s.store.AddCartItem(r.Context(), account.AccountID, request.ProductID, request.SkuID, request.Quantity)
 	if !ok {
 		writeError(w, http.StatusNotFound, "product_not_found", "商品不存在")
 		return
@@ -255,6 +283,10 @@ func (s *Server) handleAddCartItem(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCartItemAction(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
 	cartItemID := strings.TrimPrefix(r.URL.Path, "/api/v1/cart/items/")
 	if cartItemID == "" {
 		writeError(w, http.StatusNotFound, "not_found", "接口不存在")
@@ -262,7 +294,7 @@ func (s *Server) handleCartItemAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodDelete {
-		cart, ok := s.store.DeleteCartItem(r.Context(), cartItemID)
+		cart, ok := s.store.DeleteCartItem(r.Context(), account.AccountID, cartItemID)
 		if !ok {
 			writeError(w, http.StatusNotFound, "cart_item_not_found", "购物车项不存在")
 			return
@@ -279,7 +311,7 @@ func (s *Server) handleCartItemAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
 		return
 	}
-	cart, ok := s.store.UpdateCartItem(r.Context(), cartItemID, request.Quantity, request.Selected)
+	cart, ok := s.store.UpdateCartItem(r.Context(), account.AccountID, cartItemID, request.Quantity, request.Selected)
 	if !ok {
 		writeError(w, http.StatusNotFound, "cart_item_not_found", "购物车项不存在")
 		return
@@ -288,13 +320,17 @@ func (s *Server) handleCartItemAction(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAgentSessionAction(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
 	sessionID, action, ok := splitSessionAction(r.URL.Path)
 	if !ok || action != "messages:stream" {
 		writeError(w, http.StatusNotFound, "not_found", "接口不存在")
 		return
 	}
 
-	if _, ok := s.store.GetSession(r.Context(), sessionID); !ok {
+	if _, ok := s.store.GetSession(r.Context(), account.AccountID, sessionID); !ok {
 		writeError(w, http.StatusNotFound, "session_not_found", "会话不存在")
 		return
 	}
@@ -315,6 +351,7 @@ func (s *Server) handleAgentSessionAction(w http.ResponseWriter, r *http.Request
 
 	message, err := s.store.CreateUserMessage(r.Context(), domain.UserMessage{
 		SessionID:       sessionID,
+		AccountID:       account.AccountID,
 		ClientMessageID: request.ClientMessageID,
 		Content:         request.Content,
 		Attachments:     request.Attachments,
@@ -324,7 +361,7 @@ func (s *Server) handleAgentSessionAction(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	run, err := s.store.CreateRun(r.Context(), sessionID, message.MessageID)
+	run, err := s.store.CreateRun(r.Context(), account.AccountID, sessionID, message.MessageID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "create_run_failed", "创建 Agent 执行失败")
 		return
@@ -334,12 +371,16 @@ func (s *Server) handleAgentSessionAction(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleAgentRunAction(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
 	runID, action, ok := splitRunAction(r.URL.Path)
 	if !ok || action != "cancel" {
 		writeError(w, http.StatusNotFound, "not_found", "接口不存在")
 		return
 	}
-	run, ok := s.store.UpdateRunStatus(r.Context(), runID, domain.RunStatusCanceled)
+	run, ok := s.store.UpdateRunStatus(r.Context(), account.AccountID, runID, domain.RunStatusCanceled)
 	if !ok {
 		writeError(w, http.StatusNotFound, "run_not_found", "执行不存在")
 		return
@@ -375,7 +416,7 @@ func (s *Server) streamAgentRun(w http.ResponseWriter, r *http.Request, run doma
 
 	if err := s.runtime.Stream(r.Context(), run, message, emit); err != nil {
 		s.logger.Error("stream agent run failed", "run_id", run.RunID, "error", err)
-		s.store.UpdateRunStatus(r.Context(), run.RunID, domain.RunStatusFailed)
+		s.store.UpdateRunStatus(r.Context(), run.AccountID, run.RunID, domain.RunStatusFailed)
 	}
 }
 
@@ -393,6 +434,9 @@ func (s *Server) withCORS(next http.Handler) http.Handler {
 }
 
 func (s *Server) accountFromRequest(r *http.Request) (domain.Account, bool) {
+	if account, ok := accountFromContext(r.Context()); ok {
+		return account, true
+	}
 	header := r.Header.Get("Authorization")
 	token := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
 	if token == "" || token == header {
@@ -401,14 +445,40 @@ func (s *Server) accountFromRequest(r *http.Request) (domain.Account, bool) {
 	return s.store.GetAccountByToken(r.Context(), token)
 }
 
+func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (domain.Account, bool) {
+	account, ok := accountFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "请先登录")
+		return domain.Account{}, false
+	}
+	if account.Role != domain.AccountRoleUser {
+		writeError(w, http.StatusForbidden, "forbidden", "当前账号不是用户端账号")
+		return domain.Account{}, false
+	}
+	return account, true
+}
+
 func (s *Server) requireMerchant(w http.ResponseWriter, r *http.Request) (domain.Account, bool) {
-	account, ok := s.accountFromRequest(r)
+	account, ok := accountFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "请先登录")
 		return domain.Account{}, false
 	}
 	if account.Role != domain.AccountRoleMerchant || account.MerchantID == "" {
 		writeError(w, http.StatusForbidden, "forbidden", "当前账号不是商家")
+		return domain.Account{}, false
+	}
+	return account, true
+}
+
+func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (domain.Account, bool) {
+	account, ok := accountFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "请先登录")
+		return domain.Account{}, false
+	}
+	if account.Role != domain.AccountRoleAdmin {
+		writeError(w, http.StatusForbidden, "forbidden", "当前账号不是管理员")
 		return domain.Account{}, false
 	}
 	return account, true
@@ -456,5 +526,6 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 }
 
 func writeError(w http.ResponseWriter, status int, code string, message string) {
-	writeJSON(w, status, map[string]string{"code": code, "message": message})
+	requestID := w.Header().Get("X-Request-ID")
+	writeJSON(w, status, map[string]string{"code": code, "message": message, "request_id": requestID})
 }

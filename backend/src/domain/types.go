@@ -21,6 +21,7 @@ type Account struct {
 
 type ChatSession struct {
 	SessionID string    `json:"session_id"`
+	AccountID string    `json:"account_id,omitempty"`
 	Title     string    `json:"title"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -28,6 +29,7 @@ type ChatSession struct {
 type UserMessage struct {
 	MessageID       string       `json:"message_id"`
 	SessionID       string       `json:"session_id"`
+	AccountID       string       `json:"account_id,omitempty"`
 	ClientMessageID string       `json:"client_message_id"`
 	Content         string       `json:"content"`
 	Attachments     []Attachment `json:"attachments"`
@@ -38,6 +40,7 @@ type AgentRun struct {
 	RunID     string    `json:"run_id"`
 	SessionID string    `json:"session_id"`
 	MessageID string    `json:"message_id"`
+	AccountID string    `json:"account_id,omitempty"`
 	Status    RunStatus `json:"status"`
 	TraceID   string    `json:"trace_id"`
 	CreatedAt time.Time `json:"created_at"`
