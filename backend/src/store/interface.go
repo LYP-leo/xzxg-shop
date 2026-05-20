@@ -19,6 +19,8 @@ type Store interface {
 	CreateRun(ctx context.Context, accountID string, sessionID string, messageID string) (domain.AgentRun, error)
 	UpdateRunStatus(ctx context.Context, accountID string, runID string, status domain.RunStatus) (domain.AgentRun, bool)
 	IsRunCanceled(ctx context.Context, runID string) bool
+	RecordAgentTrace(ctx context.Context, input domain.AgentTraceInput) error
+	ListAgentTrace(ctx context.Context, accountID string, runID string) []domain.AgentTraceEvent
 	SearchProducts(ctx context.Context, query string) []domain.ProductCard
 	ListCategories(ctx context.Context) []domain.Category
 	ListMerchants(ctx context.Context) []domain.Merchant

@@ -48,6 +48,34 @@ type AgentRun struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+type AgentTraceEvent struct {
+	TraceEventID string    `json:"trace_event_id"`
+	RunID        string    `json:"run_id"`
+	TraceID      string    `json:"trace_id"`
+	AccountID    string    `json:"account_id,omitempty"`
+	Stage        string    `json:"stage"`
+	EventType    string    `json:"event_type"`
+	Model        string    `json:"model,omitempty"`
+	Status       string    `json:"status"`
+	DurationMS   int64     `json:"duration_ms,omitempty"`
+	Error        string    `json:"error,omitempty"`
+	MetadataJSON string    `json:"metadata_json,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type AgentTraceInput struct {
+	RunID        string
+	TraceID      string
+	AccountID    string
+	Stage        string
+	EventType    string
+	Model        string
+	Status       string
+	DurationMS   int64
+	Error        string
+	MetadataJSON string
+}
+
 type RunStatus string
 
 const (

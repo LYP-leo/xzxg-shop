@@ -159,6 +159,25 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   INDEX idx_agent_runs_message_id (message_id)
 );
 
+CREATE TABLE IF NOT EXISTS agent_trace_events (
+  trace_event_id VARCHAR(64) PRIMARY KEY,
+  run_id VARCHAR(64) NOT NULL,
+  trace_id VARCHAR(64) NOT NULL,
+  account_id VARCHAR(64) NOT NULL DEFAULT '',
+  stage VARCHAR(64) NOT NULL,
+  event_type VARCHAR(64) NOT NULL,
+  model VARCHAR(128) NOT NULL DEFAULT '',
+  status VARCHAR(32) NOT NULL,
+  duration_ms BIGINT NOT NULL DEFAULT 0,
+  error TEXT,
+  metadata_json JSON,
+  created_at DATETIME NOT NULL,
+  INDEX idx_agent_trace_run_id (run_id),
+  INDEX idx_agent_trace_trace_id (trace_id),
+  INDEX idx_agent_trace_account_id (account_id),
+  INDEX idx_agent_trace_created_at (created_at)
+);
+
 CREATE TABLE IF NOT EXISTS orders (
   order_id VARCHAR(64) PRIMARY KEY,
   account_id VARCHAR(64) NOT NULL,

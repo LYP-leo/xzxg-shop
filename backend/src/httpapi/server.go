@@ -54,6 +54,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/agent/sessions", s.handleListAgentSessions)
 	mux.HandleFunc("POST /api/v1/agent/sessions", s.handleCreateAgentSession)
 	mux.HandleFunc("POST /api/v1/agent/sessions/", s.handleAgentSessionAction)
+	mux.HandleFunc("GET /api/v1/agent/runs/", s.handleAgentRunTrace)
 	mux.HandleFunc("POST /api/v1/agent/runs/", s.handleAgentRunAction)
 	return s.withCORS(s.withRequestContext(s.withAccessLog(s.withBodyLimit(s.withAuth(s.withRateLimit(mux))))))
 }
@@ -539,6 +540,20 @@ func (s *Server) handleAgentRunAction(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"run_id": run.RunID, "status": string(run.Status)})
 }
 
+func (s *Server) handleAgentRunTrace(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	runID, ok := splitRunTracePath(r.URL.Path)
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "接口不存在")
+		return
+	}
+	events := s.store.ListAgentTrace(r.Context(), account.AccountID, runID)
+	writeJSON(w, http.StatusOK, map[string]any{"items": events})
+}
+
 func (s *Server) streamAgentRun(w http.ResponseWriter, r *http.Request, run domain.AgentRun, message domain.UserMessage) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -665,6 +680,15 @@ func splitRunAction(path string) (string, string, bool) {
 		return "", "", false
 	}
 	return parts[0], parts[1], true
+}
+
+func splitRunTracePath(path string) (string, bool) {
+	rest := strings.TrimPrefix(path, "/api/v1/agent/runs/")
+	parts := strings.Split(rest, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] != "trace" {
+		return "", false
+	}
+	return parts[0], true
 }
 
 func splitProductAction(path string) (string, string, bool) {

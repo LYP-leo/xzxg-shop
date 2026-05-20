@@ -350,6 +350,61 @@ func (s *MySQLStore) IsRunCanceled(ctx context.Context, runID string) bool {
 	return ok && run.Status == domain.RunStatusCanceled
 }
 
+func (s *MySQLStore) RecordAgentTrace(ctx context.Context, input domain.AgentTraceInput) error {
+	metadata := input.MetadataJSON
+	if strings.TrimSpace(metadata) == "" {
+		metadata = "{}"
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO agent_trace_events (
+			trace_event_id, run_id, trace_id, account_id, stage, event_type, model, status,
+			duration_ms, error, metadata_json, created_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, nextID("trc"), input.RunID, input.TraceID, input.AccountID, input.Stage, input.EventType, input.Model, input.Status, input.DurationMS, input.Error, metadata, time.Now())
+	if err != nil {
+		return fmt.Errorf("insert agent trace event: %w", err)
+	}
+	return nil
+}
+
+func (s *MySQLStore) ListAgentTrace(ctx context.Context, accountID string, runID string) []domain.AgentTraceEvent {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT trace_event_id, run_id, trace_id, account_id, stage, event_type, model, status,
+			duration_ms, COALESCE(error, ''), COALESCE(CAST(metadata_json AS CHAR), ''), created_at
+		FROM agent_trace_events
+		WHERE run_id = ? AND account_id = ?
+		ORDER BY created_at, trace_event_id
+	`, runID, accountID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	items := make([]domain.AgentTraceEvent, 0)
+	for rows.Next() {
+		var item domain.AgentTraceEvent
+		if err := rows.Scan(
+			&item.TraceEventID,
+			&item.RunID,
+			&item.TraceID,
+			&item.AccountID,
+			&item.Stage,
+			&item.EventType,
+			&item.Model,
+			&item.Status,
+			&item.DurationMS,
+			&item.Error,
+			&item.MetadataJSON,
+			&item.CreatedAt,
+		); err != nil {
+			return nil
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
 func (s *MySQLStore) SearchProducts(ctx context.Context, query string) []domain.ProductCard {
 	items := s.ListProducts(ctx, query, "")
 	if len(items) == 0 && query != "" {

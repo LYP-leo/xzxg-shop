@@ -15,9 +15,12 @@ type Props = {
 export function AgentSessionPage({ initialQuestion, onOpenProduct, onCartChange }: Props) {
   const [session, setSession] = useState<AgentSession | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const hasCreatedSession = useRef(false);
   const hasSentInitialQuestion = useRef(false);
 
   useEffect(() => {
+    if (hasCreatedSession.current) return;
+    hasCreatedSession.current = true;
     createAgentSession().then(setSession);
   }, []);
 
@@ -90,7 +93,12 @@ export function AgentSessionPage({ initialQuestion, onOpenProduct, onCartChange 
       return;
     }
     if (event.type === 'error') {
-      setSession((current) => updateTurnByRun(current, event.run_id ?? activeRunId ?? '', { status: 'failed', statusText: event.message }));
+      const runId = event.run_id ?? activeRunId;
+      setSession((current) =>
+        runId
+          ? updateTurnByRun(current, runId, { status: 'failed', statusText: event.message })
+          : replaceLastTurn(current, { status: 'failed', statusText: event.message })
+      );
       setActiveRunId(null);
     }
   }

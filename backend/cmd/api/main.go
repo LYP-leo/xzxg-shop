@@ -34,7 +34,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	runtime := agent.NewRuntime(mysqlStore, logger)
+	runtime := agent.NewRuntime(mysqlStore, logger, agent.RuntimeConfigFromEnv())
 	server := httpapi.NewServer(mysqlStore, runtime, logger)
 
 	httpServer := &http.Server{
