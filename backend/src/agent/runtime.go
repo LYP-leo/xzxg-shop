@@ -438,6 +438,9 @@ func (r *Runtime) refreshDynamicConfig(ctx context.Context) {
 	if value := strings.TrimSpace(values["ai.large_model"]); value != "" {
 		models.LargeModel = value
 	}
+	if value := strings.TrimSpace(values["ai.enable_thinking"]); value != "" {
+		models.EnableThinking = parseBool(value, false)
+	}
 	if value := strings.TrimSpace(values["ai.enabled"]); value != "" && !parseBool(value, true) {
 		models.APIKey = ""
 	}

@@ -17,10 +17,11 @@ import (
 const defaultDashScopeBaseURL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 type ModelConfig struct {
-	BaseURL    string
-	APIKey     string
-	SmallModel string
-	LargeModel string
+	BaseURL        string
+	APIKey         string
+	SmallModel     string
+	LargeModel     string
+	EnableThinking bool
 }
 
 func (c ModelConfig) withDefaults() ModelConfig {
@@ -92,9 +93,10 @@ func (c *LLMClient) Complete(ctx context.Context, model string, messages []ChatM
 	}
 
 	requestBody := map[string]any{
-		"model":       model,
-		"messages":    messages,
-		"temperature": temperature,
+		"model":           model,
+		"messages":        messages,
+		"temperature":     temperature,
+		"enable_thinking": config.EnableThinking,
 	}
 	payload, err := json.Marshal(requestBody)
 	if err != nil {
@@ -159,10 +161,11 @@ func (c *LLMClient) Stream(ctx context.Context, model string, messages []ChatMes
 	}
 
 	requestBody := map[string]any{
-		"model":       model,
-		"messages":    messages,
-		"temperature": temperature,
-		"stream":      true,
+		"model":           model,
+		"messages":        messages,
+		"temperature":     temperature,
+		"stream":          true,
+		"enable_thinking": config.EnableThinking,
 	}
 	payload, err := json.Marshal(requestBody)
 	if err != nil {

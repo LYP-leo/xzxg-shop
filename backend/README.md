@@ -72,6 +72,7 @@ ai.base_url
 ai.api_key
 ai.small_model
 ai.large_model
+ai.enable_thinking
 agent.followups_enabled
 agent.config_refresh_seconds
 agent.prompt.planner

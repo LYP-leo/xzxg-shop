@@ -63,6 +63,7 @@ func DefaultConfigs(envAPIKey string) []domain.AppConfig {
 		{ConfigKey: "ai.large_model", ConfigValue: "qwen3.6-plus", ValueType: "string", Description: "复杂导购决策模型"},
 		{ConfigKey: "ai.api_key", ConfigValue: envAPIKey, ValueType: "string", Description: "模型服务 API Key，列表接口脱敏", IsSecret: true},
 		{ConfigKey: "ai.enabled", ConfigValue: "true", ValueType: "bool", Description: "是否启用真实模型调用"},
+		{ConfigKey: "ai.enable_thinking", ConfigValue: "false", ValueType: "bool", Description: "是否启用模型思考模式，默认关闭以降低首 token 延迟"},
 		{ConfigKey: "agent.followups_enabled", ConfigValue: "true", ValueType: "bool", Description: "是否生成追问"},
 		{ConfigKey: "agent.config_refresh_seconds", ConfigValue: "15", ValueType: "int", Description: "运行时动态配置刷新间隔秒数"},
 		{ConfigKey: "agent.prompt.planner", ConfigValue: DefaultPlannerPrompt, ValueType: "text", Description: "Planner 意图识别系统 Prompt"},
