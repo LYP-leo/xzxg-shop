@@ -1,4 +1,6 @@
 import type { ProductCard } from './product';
+import type { Cart } from './cart';
+import type { Order } from './order';
 
 export type Attachment = {
   attachmentId: string;
@@ -18,6 +20,8 @@ export type AgentBlock =
   | { type: 'markdown'; content: string }
   | { type: 'product_card'; product: ProductCard }
   | { type: 'comparison_table'; columns: string[]; rows: Array<{ productId: string; values: string[] }> }
+  | { type: 'cart_state'; cart: Cart }
+  | { type: 'order_summary'; orders: Order[] }
   | { type: 'citation'; citation: Citation }
   | { type: 'warning'; code: string; message: string };
 

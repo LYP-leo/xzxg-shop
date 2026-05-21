@@ -316,8 +316,23 @@ button {
 .detail-actions,
 .product-card__actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
+}
+
+.upload-button {
+  align-items: center;
+  display: inline-flex;
+}
+
+.upload-button input {
+  display: none;
+}
+
+.attachment-preview {
+  color: #657285;
+  font-size: 13px;
 }
 
 .empty-state {
@@ -346,6 +361,7 @@ button {
 }
 
 .toolbar input,
+.table-input,
 .toolbar select,
 .field select {
   background: #ffffff;
@@ -353,6 +369,18 @@ button {
   border-radius: 8px;
   min-height: 38px;
   padding: 8px 10px;
+}
+
+.table-input {
+  width: min(360px, 100%);
+}
+
+.table-input--textarea {
+  font-family: inherit;
+  line-height: 1.5;
+  min-height: 120px;
+  resize: vertical;
+  width: min(520px, 100%);
 }
 
 .product-grid {
@@ -434,11 +462,60 @@ button {
 
 .citation,
 .warning,
+.cart-state-block,
+.order-summary-block,
 .panel {
   background: #f8fafc;
   border: 1px solid #dbe3ef;
   border-radius: 8px;
   padding: 12px;
+}
+
+.block-title {
+  color: #172033;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.cart-state-block ul {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cart-state-block li,
+.order-summary-item {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.cart-state-block li span,
+.order-summary-item span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.cart-state-block li em,
+.order-summary-item small {
+  color: #657285;
+  font-style: normal;
+}
+
+.cart-state-summary {
+  border-top: 1px solid #dbe3ef;
+  color: #253044;
+  font-weight: 700;
+  margin-top: 10px;
+  padding-top: 10px;
+}
+
+.order-summary-block {
+  display: grid;
+  gap: 8px;
 }
 
 .compare-table,

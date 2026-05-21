@@ -1,0 +1,10 @@
+{"id":"agent_greeting_latency","group":"agent_e2e","query":"你好","expected_intent":"general_shopping_chat","must_contain":["导购"],"must_not_contain":["X Phone 12","2999"],"max_first_delta_ms":3000}
+{"id":"agent_phone_recommend_no_budget_fabrication","group":"agent_e2e","query":"手机推荐","expected_intent":"product_recommendation","must_contain":["手机"],"must_not_contain":["3000以内预算","3000 元以内预算","严格 3000","鼠标","Merchant Demo Phone"],"expected_blocks":["product_card"]}
+{"id":"agent_cart_add_phone","group":"agent_tool","query":"把手机加到购物车","expected_intent":"cart_add","must_contain":["加入购物车"],"expected_blocks":["cart_state"]}
+{"id":"agent_cart_update_quantity","group":"agent_tool","query":"把第一个商品数量改成2","expected_intent":"cart_update_quantity","must_contain":["数量"],"expected_blocks":["cart_state"]}
+{"id":"agent_cart_remove_second","group":"agent_tool","query":"删除第二个商品","expected_intent":"cart_remove","must_contain":["删除"],"expected_blocks":["cart_state"]}
+{"id":"agent_checkout_confirm","group":"agent_tool","query":"确认下单","expected_intent":"checkout_confirm","must_contain":["订单"],"expected_blocks":["order_summary"]}
+{"id":"agent_compare_products","group":"agent_e2e","query":"对比一下两款手机","expected_intent":"product_comparison","must_contain":["对比"],"expected_blocks":["comparison_table","product_card"]}
+{"id":"rag_negative_filter","group":"rag","query":"不要含酒精的护肤品","must_not_contain":["含酒精"],"notes":"用于检查否定语义和反选能力；需要真实商品数据入库后补 expected_product_ids。"}
+{"id":"rag_followup_context","group":"rag","turns":["推荐一款拍照手机","再便宜点的呢？"],"must_not_contain":["无法理解上一轮"],"notes":"用于多轮上下文记忆回归。"}
+{"id":"multimodal_photo_search_placeholder","group":"multimodal","query":"我拍照找同款","attachments":[{"type":"image","url":"https://example.com/test.jpg"}],"expected_blocks":["warning"],"notes":"当前应返回能力未完成或需要图片识别配置，不允许假装已识别图片。"}

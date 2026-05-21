@@ -26,6 +26,15 @@ export type EvalRun = {
   passRate: string;
 };
 
+export type AppConfig = {
+  config_key: string;
+  config_value: string;
+  value_type: 'string' | 'bool' | 'int' | string;
+  description: string;
+  is_secret: boolean;
+  updated_at: string;
+};
+
 export async function listAccounts(token: string): Promise<Account[]> {
   const data = await requestJSON<{ items: Account[] }>('/admin/accounts', {
     headers: authHeaders(token)
@@ -74,6 +83,21 @@ export async function listDocuments(token: string): Promise<DocumentItem[]> {
     status: item.status,
     chunkCount: item.chunk_count
   }));
+}
+
+export async function listAppConfigs(token: string): Promise<AppConfig[]> {
+  const data = await requestJSON<{ items: AppConfig[] }>('/admin/configs', {
+    headers: authHeaders(token)
+  });
+  return data.items;
+}
+
+export async function updateAppConfig(token: string, key: string, patch: { value: string; value_type?: string; description?: string; is_secret?: boolean }): Promise<AppConfig> {
+  return requestJSON<AppConfig>(`/admin/configs/${encodeURIComponent(key)}`, {
+    method: 'PATCH',
+    headers: authHeaders(token),
+    body: JSON.stringify(patch)
+  });
 }
 
 export async function listEvalRuns(): Promise<EvalRun[]> {

@@ -86,6 +86,23 @@ type AgentTraceInput struct {
 	MetadataJSON string
 }
 
+type AppConfig struct {
+	ConfigKey   string    `json:"config_key"`
+	ConfigValue string    `json:"config_value"`
+	ValueType   string    `json:"value_type"`
+	Description string    `json:"description"`
+	IsSecret    bool      `json:"is_secret"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type AppConfigInput struct {
+	ConfigKey   string
+	ConfigValue string
+	ValueType   string
+	Description string
+	IsSecret    bool
+}
+
 type RunStatus string
 
 const (
@@ -254,12 +271,22 @@ type KnowledgeDocumentInput struct {
 }
 
 type AgentBlock struct {
-	Type     string       `json:"type"`
-	Product  *ProductCard `json:"product,omitempty"`
-	Citation *Citation    `json:"citation,omitempty"`
-	Content  string       `json:"content,omitempty"`
-	Code     string       `json:"code,omitempty"`
-	Message  string       `json:"message,omitempty"`
+	Type     string                 `json:"type"`
+	Product  *ProductCard           `json:"product,omitempty"`
+	Citation *Citation              `json:"citation,omitempty"`
+	Content  string                 `json:"content,omitempty"`
+	Columns  []string               `json:"columns,omitempty"`
+	Rows     []ComparisonRow        `json:"rows,omitempty"`
+	Cart     *Cart                  `json:"cart,omitempty"`
+	Orders   []Order                `json:"orders,omitempty"`
+	Code     string                 `json:"code,omitempty"`
+	Message  string                 `json:"message,omitempty"`
+	Action   map[string]interface{} `json:"action,omitempty"`
+}
+
+type ComparisonRow struct {
+	ProductID string   `json:"productId"`
+	Values    []string `json:"values"`
 }
 
 type SSEEvent struct {

@@ -6,21 +6,25 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/LYP-leo/xzxg-shop/backend/src/agent"
+	"github.com/LYP-leo/xzxg-shop/backend/src/configcenter"
 	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
 	"github.com/LYP-leo/xzxg-shop/backend/src/store"
 )
 
 type Server struct {
 	store   store.Store
+	configs configcenter.Center
 	runtime *agent.Runtime
 	logger  *slog.Logger
 }
 
-func NewServer(store store.Store, runtime *agent.Runtime, logger *slog.Logger) *Server {
-	return &Server{store: store, runtime: runtime, logger: logger}
+func NewServer(store store.Store, configs configcenter.Center, runtime *agent.Runtime, logger *slog.Logger) *Server {
+	return &Server{store: store, configs: configs, runtime: runtime, logger: logger}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -28,6 +32,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
 	mux.HandleFunc("GET /api/v1/auth/me", s.handleMe)
+	mux.Handle("GET /api/v1/assets/ecommerce_agent_dataset/", http.StripPrefix("/api/v1/assets/ecommerce_agent_dataset/", http.FileServer(http.Dir(datasetAssetRoot()))))
 	mux.HandleFunc("GET /api/v1/categories/tree", s.handleListCategories)
 	mux.HandleFunc("GET /api/v1/merchants", s.handleListMerchants)
 	mux.HandleFunc("GET /api/v1/products", s.handleListProducts)
@@ -41,6 +46,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/merchant/products/", s.handleDeleteMerchantProduct)
 	mux.HandleFunc("GET /api/v1/admin/accounts", s.handleListAdminAccounts)
 	mux.HandleFunc("PATCH /api/v1/admin/accounts/", s.handleUpdateAdminAccount)
+	mux.HandleFunc("GET /api/v1/admin/configs", s.handleListAdminConfigs)
+	mux.HandleFunc("PATCH /api/v1/admin/configs/", s.handleUpdateAdminConfig)
 	mux.HandleFunc("GET /api/v1/admin/documents", s.handleListAdminDocuments)
 	mux.HandleFunc("GET /api/v1/admin/orders", s.handleListAdminOrders)
 	mux.HandleFunc("GET /api/v1/admin/products", s.handleListAdminProducts)
@@ -325,6 +332,62 @@ func (s *Server) handleUpdateAdminAccount(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, account)
+}
+
+func (s *Server) handleListAdminConfigs(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.configs.List(r.Context(), false)})
+}
+
+func (s *Server) handleUpdateAdminConfig(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	configKey := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/configs/")
+	if configKey == "" || strings.Contains(configKey, "/") {
+		writeError(w, http.StatusNotFound, "not_found", "接口不存在")
+		return
+	}
+	var request struct {
+		Value       string `json:"value"`
+		ValueType   string `json:"value_type"`
+		Description string `json:"description"`
+		IsSecret    *bool  `json:"is_secret"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	isSecret := strings.Contains(strings.ToLower(configKey), "key") || strings.Contains(strings.ToLower(configKey), "secret")
+	if request.IsSecret != nil {
+		isSecret = *request.IsSecret
+	}
+	if isSecret && request.Value == "******" {
+		for _, existing := range s.configs.List(r.Context(), true) {
+			if existing.ConfigKey == configKey {
+				request.Value = existing.ConfigValue
+				break
+			}
+		}
+	}
+	config, err := s.configs.Upsert(r.Context(), domain.AppConfigInput{
+		ConfigKey:   configKey,
+		ConfigValue: request.Value,
+		ValueType:   request.ValueType,
+		Description: request.Description,
+		IsSecret:    isSecret,
+	})
+	if err != nil {
+		s.logger.Error("update app config failed", "error", err, "config_key", configKey)
+		writeError(w, http.StatusInternalServerError, "update_config_failed", "更新配置失败")
+		return
+	}
+	if config.IsSecret && config.ConfigValue != "" {
+		config.ConfigValue = "******"
+	}
+	writeJSON(w, http.StatusOK, config)
 }
 
 func (s *Server) handleListAdminDocuments(w http.ResponseWriter, r *http.Request) {
@@ -669,6 +732,13 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (domain.Ac
 func hashPassword(password string) string {
 	sum := sha256.Sum256([]byte(password))
 	return hex.EncodeToString(sum[:])
+}
+
+func datasetAssetRoot() string {
+	if root := os.Getenv("ECOMMERCE_DATASET_ROOT"); root != "" {
+		return root
+	}
+	return filepath.Clean(filepath.Join("..", "quality", "data", "ecommerce_agent_dataset"))
 }
 
 func allowedOrderStatus(status string) bool {

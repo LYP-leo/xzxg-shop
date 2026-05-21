@@ -99,5 +99,42 @@ function AgentBlockView({
       </table>
     );
   }
+  if (block.type === 'cart_state') {
+    return (
+      <div className="cart-state-block">
+        <div className="block-title">购物车</div>
+        {block.cart.items.length ? (
+          <ul>
+            {block.cart.items.map((item, index) => (
+              <li key={item.cartItemId}>
+                <span>{index + 1}. {item.name}</span>
+                <strong>x{item.quantity}</strong>
+                <em>¥{item.price}</em>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p>购物车已清空。</p>
+        )}
+        <div className="cart-state-summary">
+          已选 {block.cart.summary.selectedCount} 件，应付 ¥{block.cart.summary.payAmount}
+        </div>
+      </div>
+    );
+  }
+  if (block.type === 'order_summary') {
+    return (
+      <div className="order-summary-block">
+        <div className="block-title">订单已创建</div>
+        {block.orders.map((order) => (
+          <div className="order-summary-item" key={order.order_id}>
+            <span>{order.merchant_name}</span>
+            <strong>¥{order.total_amount}</strong>
+            <small>{order.status}</small>
+          </div>
+        ))}
+      </div>
+    );
+  }
   return <div className="warning">{block.message}</div>;
 }

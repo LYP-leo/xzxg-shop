@@ -53,6 +53,44 @@ user message
 
 If `DASHSCOPE_API_KEY` is not set, the runtime falls back to a local rule-based answer so local development can still run.
 
+## Dynamic Config
+
+Runtime configuration is stored in Nacos and can be changed through the admin APIs without restarting the service. Environment variables are still supported as startup defaults and in-memory fallback values when Nacos is unavailable.
+
+Admin APIs:
+
+```text
+GET /api/v1/admin/configs
+PATCH /api/v1/admin/configs/{config_key}
+```
+
+Initial config keys:
+
+```text
+ai.enabled
+ai.base_url
+ai.api_key
+ai.small_model
+ai.large_model
+agent.followups_enabled
+agent.config_refresh_seconds
+agent.prompt.planner
+agent.prompt.answer_base
+agent.prompt.followups
+agent.prompt.intent.*
+```
+
+Secret config values such as `ai.api_key` are masked in list responses. The Agent runtime refreshes dynamic config on demand with a default 15-second cache.
+
+Nacos connection env:
+
+```text
+NACOS_ADDR=http://127.0.0.1:8848
+NACOS_NAMESPACE=
+NACOS_GROUP=XZXG_SHOP
+NACOS_DATA_ID=xzxg-shop-app-config.json
+```
+
 ## Current APIs
 
 - `GET /api/v1/health`

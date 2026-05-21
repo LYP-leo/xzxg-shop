@@ -5,24 +5,33 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/LYP-leo/xzxg-shop/backend/src/configcenter"
 	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
 	"github.com/LYP-leo/xzxg-shop/backend/src/store"
 )
 
 type Runtime struct {
-	store  store.Store
-	logger *slog.Logger
-	llm    *LLMClient
+	store      store.Store
+	configs    configcenter.Center
+	logger     *slog.Logger
+	llm        *LLMClient
+	baseConfig RuntimeConfig
+	configMu   sync.Mutex
+	configNext time.Time
 }
 
-func NewRuntime(store store.Store, logger *slog.Logger, config RuntimeConfig) *Runtime {
-	return &Runtime{store: store, logger: logger, llm: NewLLMClient(config.Models)}
+func NewRuntime(store store.Store, configs configcenter.Center, logger *slog.Logger, config RuntimeConfig) *Runtime {
+	return &Runtime{store: store, configs: configs, logger: logger, llm: NewLLMClient(config.Models), baseConfig: config}
 }
 
 func (r *Runtime) Stream(ctx context.Context, run domain.AgentRun, message domain.UserMessage, emit func(domain.SSEEvent) error) error {
+	r.refreshDynamicConfig(ctx)
 	r.logger.Info("agent run started", "run_id", run.RunID, "session_id", run.SessionID, "message_id", message.MessageID)
 	r.trace(ctx, run, "run", "start", "", "ok", 0, "", map[string]any{
 		"session_id": run.SessionID,
@@ -37,6 +46,22 @@ func (r *Runtime) Stream(ctx context.Context, run domain.AgentRun, message domai
 		TraceID:       run.TraceID,
 	}); err != nil {
 		return err
+	}
+
+	if needsPhotoSearch(message) {
+		if err := r.emitText(run, "我已收到拍照找货请求，但当前还没有配置 VLM 图片识别服务，暂时不能可靠识别图片里的商品。可以先用文字描述品牌、品类、颜色、预算，我会继续用商品库帮你找相似商品。", emit); err != nil {
+			return err
+		}
+		block := domain.AgentBlock{Type: "warning", Code: "vlm_not_configured", Message: "拍照找货需要先配置图片识别/VLM 服务，当前不会伪造识别结果。"}
+		if err := emit(domain.SSEEvent{Type: "block_delta", RunID: run.RunID, Block: &block}); err != nil {
+			return err
+		}
+		if _, ok := r.store.UpdateRunStatus(ctx, run.AccountID, run.RunID, domain.RunStatusCompleted); !ok {
+			r.logger.Warn("agent run status update skipped", "run_id", run.RunID)
+		}
+		r.trace(ctx, run, "multimodal", "photo_search", "", "degraded", 0, "", map[string]any{"reason": "vlm_not_configured"})
+		r.trace(ctx, run, "run", "completed", "", "ok", 0, "", nil)
+		return emit(domain.SSEEvent{Type: "message_end", RunID: run.RunID})
 	}
 
 	if err := r.emitStatus(ctx, run.RunID, "intent", "正在理解你的需求", emit); err != nil {
@@ -64,6 +89,17 @@ func (r *Runtime) Stream(ctx context.Context, run domain.AgentRun, message domai
 		return err
 	}
 
+	if handled, err := r.executeDeterministicIntent(ctx, run, plan, message.Content, products, emit); handled || err != nil {
+		if err != nil {
+			return err
+		}
+		if _, ok := r.store.UpdateRunStatus(ctx, run.AccountID, run.RunID, domain.RunStatusCompleted); !ok {
+			r.logger.Warn("agent run status update skipped", "run_id", run.RunID)
+		}
+		r.trace(ctx, run, "run", "completed", "", "ok", 0, "", nil)
+		return emit(domain.SSEEvent{Type: "message_end", RunID: run.RunID})
+	}
+
 	if err := r.emitStatus(ctx, run.RunID, "answer", "正在生成导购建议", emit); err != nil {
 		return err
 	}
@@ -79,6 +115,13 @@ func (r *Runtime) Stream(ctx context.Context, run domain.AgentRun, message domai
 			RunID: run.RunID,
 			Block: &domain.AgentBlock{Type: "product_card", Product: &product},
 		}); err != nil {
+			return err
+		}
+	}
+
+	if isComparisonIntent(plan.Intent, message.Content) && len(products) >= 2 {
+		block := comparisonBlock(products, 3)
+		if err := emit(domain.SSEEvent{Type: "block_delta", RunID: run.RunID, Block: &block}); err != nil {
 			return err
 		}
 	}
@@ -127,7 +170,7 @@ type runPlan struct {
 
 func (p runPlan) UsesCatalog() bool {
 	switch p.Intent {
-	case "product_recommendation", "product_comparison", "product_detail_qa", "promotion_rule_qa", "after_sales_qa", "shopping_decision_support":
+	case "product_recommendation", "product_comparison", "product_detail_qa", "promotion_rule_qa", "after_sales_qa", "shopping_decision_support", "cart_add":
 		return true
 	default:
 		return false
@@ -136,6 +179,9 @@ func (p runPlan) UsesCatalog() bool {
 
 func (r *Runtime) plan(ctx context.Context, run domain.AgentRun, query string) runPlan {
 	fallback := heuristicPlan(query, r.llm.SmallModel(), r.llm.LargeModel())
+	if isGreeting(query) || isToolIntent(fallback.Intent) {
+		return fallback
+	}
 	if !r.llm.Enabled() {
 		return fallback
 	}
@@ -144,7 +190,7 @@ func (r *Runtime) plan(ctx context.Context, run domain.AgentRun, query string) r
 	content, err := r.llm.Complete(ctx, r.llm.SmallModel(), []ChatMessage{
 		{
 			Role:    "system",
-			Content: "你是电商导购 Agent 的意图识别器。只判断用户请求的主意图，只输出 JSON，不要解释。intent 只能是 product_recommendation、product_comparison、product_detail_qa、promotion_rule_qa、after_sales_qa、shopping_decision_support、general_shopping_chat、unsupported。",
+			Content: r.stringConfig(ctx, "agent.prompt.planner", configcenter.DefaultPlannerPrompt),
 		},
 		{
 			Role:    "user",
@@ -166,6 +212,9 @@ func (r *Runtime) plan(ctx context.Context, run domain.AgentRun, query string) r
 	if plan.Intent == "" {
 		plan.Intent = fallback.Intent
 	}
+	if isToolIntent(fallback.Intent) {
+		plan.Intent = fallback.Intent
+	}
 	plan.AnswerModel = r.answerModelForIntent(plan.Intent)
 	return plan
 }
@@ -182,7 +231,7 @@ func (r *Runtime) streamAnswer(ctx context.Context, run domain.AgentRun, plan ru
 	err := r.llm.Stream(ctx, plan.AnswerModel, []ChatMessage{
 		{
 			Role:    "system",
-			Content: systemPromptForIntent(plan.Intent),
+			Content: r.systemPromptForIntent(ctx, plan.Intent),
 		},
 		{
 			Role: "user",
@@ -212,6 +261,110 @@ func (r *Runtime) streamAnswer(ctx context.Context, run domain.AgentRun, plan ru
 	return nil
 }
 
+func (r *Runtime) executeDeterministicIntent(ctx context.Context, run domain.AgentRun, plan runPlan, query string, products []domain.ProductCard, emit func(domain.SSEEvent) error) (bool, error) {
+	if isGreeting(query) {
+		if err := r.emitText(run, "你好，我是小猪小狗 AI 导购。你可以告诉我想买的品类、预算、用途，或直接说“帮我推荐一款手机”。", emit); err != nil {
+			return true, err
+		}
+		return true, nil
+	}
+	switch plan.Intent {
+	case "cart_add":
+		if len(products) == 0 {
+			return true, r.emitToolClarification(run, "我还不能确定要加入购物车的是哪件商品。请说清楚商品名称，或先让我推荐一个候选。", emit)
+		}
+		product := products[0]
+		quantity := parsePositiveNumber(query, 1)
+		cart, ok := r.store.AddCartItem(ctx, run.AccountID, product.ProductID, product.SkuID, quantity)
+		if !ok {
+			return true, r.emitToolClarification(run, "加购失败，这个商品可能已经下架或库存状态不可用。", emit)
+		}
+		r.trace(ctx, run, "tools", "cart_add", "", "ok", 0, "", map[string]any{"product_id": product.ProductID, "quantity": quantity})
+		if err := r.emitText(run, fmt.Sprintf("已把 %s 加入购物车，数量 %d。", product.Name, quantity), emit); err != nil {
+			return true, err
+		}
+		return true, emitCartBlock(run.RunID, cart, emit)
+	case "cart_update_quantity":
+		cart := r.store.GetCart(ctx, run.AccountID)
+		if len(cart.Items) == 0 {
+			return true, r.emitToolClarification(run, "购物车还是空的，暂时没有商品可以修改数量。", emit)
+		}
+		index := parseOrdinal(query, 0)
+		if index < 0 || index >= len(cart.Items) {
+			return true, r.emitToolClarification(run, "我没有找到你说的那一项。可以说“把第 1 个商品数量改成 2”。", emit)
+		}
+		quantity := parsePositiveNumber(query, 1)
+		cart, ok := r.store.UpdateCartItem(ctx, run.AccountID, cart.Items[index].CartItemID, &quantity, nil)
+		if !ok {
+			return true, r.emitToolClarification(run, "修改购物车数量失败，请刷新购物车后再试。", emit)
+		}
+		r.trace(ctx, run, "tools", "cart_update_quantity", "", "ok", 0, "", map[string]any{"cart_index": index + 1, "quantity": quantity})
+		if err := r.emitText(run, fmt.Sprintf("已把第 %d 个商品数量改成 %d。", index+1, quantity), emit); err != nil {
+			return true, err
+		}
+		return true, emitCartBlock(run.RunID, cart, emit)
+	case "cart_remove":
+		cart := r.store.GetCart(ctx, run.AccountID)
+		if len(cart.Items) == 0 {
+			return true, r.emitToolClarification(run, "购物车还是空的，暂时没有商品可以删除。", emit)
+		}
+		index := parseOrdinal(query, 0)
+		if index < 0 || index >= len(cart.Items) {
+			return true, r.emitToolClarification(run, "我没有找到你说的那一项。可以说“删除第 2 个商品”。", emit)
+		}
+		removed := cart.Items[index]
+		cart, ok := r.store.DeleteCartItem(ctx, run.AccountID, removed.CartItemID)
+		if !ok {
+			return true, r.emitToolClarification(run, "删除购物车商品失败，请刷新购物车后再试。", emit)
+		}
+		r.trace(ctx, run, "tools", "cart_remove", "", "ok", 0, "", map[string]any{"cart_index": index + 1, "product_id": removed.ProductID})
+		if err := r.emitText(run, fmt.Sprintf("已从购物车删除 %s。", removed.Name), emit); err != nil {
+			return true, err
+		}
+		return true, emitCartBlock(run.RunID, cart, emit)
+	case "checkout_confirm":
+		cart := r.store.GetCart(ctx, run.AccountID)
+		if len(cart.Items) == 0 || cart.Summary.SelectedCount == 0 {
+			return true, r.emitToolClarification(run, "购物车里还没有选中的商品，先加购或勾选商品后我再帮你下单。", emit)
+		}
+		if !containsAny(query, []string{"确认", "下单", "结算", "提交订单"}) {
+			if err := r.emitText(run, fmt.Sprintf("当前选中 %d 件商品，应付 %s 元。确认后我可以帮你提交订单。", cart.Summary.SelectedCount, cart.Summary.PayAmount), emit); err != nil {
+				return true, err
+			}
+			return true, emitCartBlock(run.RunID, cart, emit)
+		}
+		orders, ok := r.store.CreateOrderFromCart(ctx, run.AccountID)
+		if !ok {
+			return true, r.emitToolClarification(run, "提交订单失败，请确认购物车里有已选中的有效商品。", emit)
+		}
+		r.trace(ctx, run, "tools", "checkout", "", "ok", 0, "", map[string]any{"order_count": len(orders)})
+		if err := r.emitText(run, fmt.Sprintf("已提交 %d 个订单，商家会按待发货流程处理。", len(orders)), emit); err != nil {
+			return true, err
+		}
+		block := domain.AgentBlock{Type: "order_summary", Orders: orders}
+		return true, emit(domain.SSEEvent{Type: "block_delta", RunID: run.RunID, Block: &block})
+	default:
+		return false, nil
+	}
+}
+
+func (r *Runtime) emitToolClarification(run domain.AgentRun, text string, emit func(domain.SSEEvent) error) error {
+	if err := r.emitText(run, text, emit); err != nil {
+		return err
+	}
+	block := domain.AgentBlock{Type: "warning", Code: "need_clarification", Message: text}
+	return emit(domain.SSEEvent{Type: "block_delta", RunID: run.RunID, Block: &block})
+}
+
+func (r *Runtime) emitText(run domain.AgentRun, text string, emit func(domain.SSEEvent) error) error {
+	for _, delta := range splitText(text, 24) {
+		if err := emit(domain.SSEEvent{Type: "text_delta", RunID: run.RunID, Delta: delta}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *Runtime) emitFallbackAnswer(ctx context.Context, run domain.AgentRun, text string, emit func(domain.SSEEvent) error) error {
 	for _, delta := range splitText(text, 28) {
 		if r.store.IsRunCanceled(ctx, run.RunID) {
@@ -226,12 +379,15 @@ func (r *Runtime) emitFallbackAnswer(ctx context.Context, run domain.AgentRun, t
 
 func (r *Runtime) followups(ctx context.Context, run domain.AgentRun, query string, products []domain.ProductCard) []string {
 	fallback := []string{"你更重视价格、性能还是售后？", "要不要我帮你对比前两个候选？"}
+	if !r.boolConfig(ctx, "agent.followups_enabled", true) {
+		return fallback
+	}
 	if !r.llm.Enabled() {
 		return fallback
 	}
 	startedAt := time.Now()
 	content, err := r.llm.Complete(ctx, r.llm.SmallModel(), []ChatMessage{
-		{Role: "system", Content: "你是电商导购追问生成器。只输出 JSON 数组，包含 2 个简短中文追问。"},
+		{Role: "system", Content: r.stringConfig(ctx, "agent.prompt.followups", configcenter.DefaultFollowupsPrompt)},
 		{Role: "user", Content: fmt.Sprintf("用户问题：%s\n候选商品：\n%s", query, formatProducts(products, 3))},
 	}, 0.2)
 	if err != nil {
@@ -261,6 +417,69 @@ func (r *Runtime) followups(ctx context.Context, run domain.AgentRun, query stri
 	return cleaned
 }
 
+func (r *Runtime) refreshDynamicConfig(ctx context.Context) {
+	r.configMu.Lock()
+	defer r.configMu.Unlock()
+	if time.Now().Before(r.configNext) {
+		return
+	}
+
+	values := r.configs.GetMap(ctx)
+	models := r.baseConfig.Models
+	if value := strings.TrimSpace(values["ai.base_url"]); value != "" {
+		models.BaseURL = value
+	}
+	if value := strings.TrimSpace(values["ai.api_key"]); value != "" {
+		models.APIKey = value
+	}
+	if value := strings.TrimSpace(values["ai.small_model"]); value != "" {
+		models.SmallModel = value
+	}
+	if value := strings.TrimSpace(values["ai.large_model"]); value != "" {
+		models.LargeModel = value
+	}
+	if value := strings.TrimSpace(values["ai.enabled"]); value != "" && !parseBool(value, true) {
+		models.APIKey = ""
+	}
+	r.llm.UpdateConfig(models)
+
+	refreshSeconds := 15
+	if value := strings.TrimSpace(values["agent.config_refresh_seconds"]); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+			refreshSeconds = parsed
+		}
+	}
+	r.configNext = time.Now().Add(time.Duration(refreshSeconds) * time.Second)
+}
+
+func (r *Runtime) boolConfig(ctx context.Context, key string, fallback bool) bool {
+	r.refreshDynamicConfig(ctx)
+	values := r.configs.GetMap(ctx)
+	if value, ok := values[key]; ok {
+		return parseBool(value, fallback)
+	}
+	return fallback
+}
+
+func (r *Runtime) stringConfig(ctx context.Context, key string, fallback string) string {
+	values := r.configs.GetMap(ctx)
+	if value := strings.TrimSpace(values[key]); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func parseBool(value string, fallback bool) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true", "1", "yes", "on", "enabled":
+		return true
+	case "false", "0", "no", "off", "disabled":
+		return false
+	default:
+		return fallback
+	}
+}
+
 func heuristicPlan(query string, smallModel string, largeModel string) runPlan {
 	plan := runPlan{
 		Intent:      "general_shopping_chat",
@@ -271,6 +490,22 @@ func heuristicPlan(query string, smallModel string, largeModel string) runPlan {
 	}
 	if looksUnsupported(query) {
 		plan.Intent = "unsupported"
+		return plan
+	}
+	if looksCartAdd(query) {
+		plan.Intent = "cart_add"
+		return plan
+	}
+	if looksCartRemove(query) {
+		plan.Intent = "cart_remove"
+		return plan
+	}
+	if looksCartQuantityUpdate(query) {
+		plan.Intent = "cart_update_quantity"
+		return plan
+	}
+	if looksCheckout(query) {
+		plan.Intent = "checkout_confirm"
 		return plan
 	}
 	if looksCatalogRelated(query) {
@@ -295,26 +530,12 @@ func (r *Runtime) answerModelForIntent(intent string) string {
 	}
 }
 
-func systemPromptForIntent(intent string) string {
+func (r *Runtime) systemPromptForIntent(ctx context.Context, intent string) string {
 	base := []string{
-		"你是小猪小狗电商平台的 AI 导购主 Agent。",
-		"你可以在内部使用 ReAct 思路判断下一步，但不要输出推理过程、Action、Observation 或工具调用文本。",
-		"请自己判断候选商品和资料片段是否与用户问题相关；不相关时不要强行推荐或引用。",
-		"不要编造不存在的价格、库存、优惠、售后承诺或商品能力。",
-		"输出中文，先给结论，再给理由、风险提示和需要补充的信息。",
-		"不要输出 JSON，不要输出 markdown 表格。",
+		r.stringConfig(ctx, "agent.prompt.answer_base", configcenter.DefaultAnswerBasePrompt),
 	}
-	intentPrompts := map[string]string{
-		"product_recommendation":    "当前意图是商品推荐。重点根据预算、使用场景、人群约束和商品风险给出 1 个优先候选；若候选不足，先澄清。",
-		"product_comparison":        "当前意图是商品对比。重点比较用户关心的维度，指出每个候选适合/不适合的人群，并给出明确选择建议。",
-		"product_detail_qa":         "当前意图是商品详情问答。只回答商品资料中能支持的信息；资料不足时明确说明不能确认。",
-		"promotion_rule_qa":         "当前意图是优惠促销咨询。没有明确促销资料时，必须说明无法确认优惠，不要暗示某商品正在优惠。",
-		"after_sales_qa":            "当前意图是售后咨询。没有明确售后规则时，必须说明需要以平台/商家规则为准，并给出用户下单前应确认的问题。",
-		"shopping_decision_support": "当前意图是购物决策支持。重点权衡多目标约束，给出稳妥方案、取舍理由和踩坑风险。",
-		"general_shopping_chat":     "当前意图是普通购物闲聊。简短回应，并引导用户提供品类、预算、使用场景或候选商品。",
-		"unsupported":               "当前意图不属于购物导购。礼貌拒绝非购物任务，并把用户引导回购物相关问题。",
-	}
-	if prompt, ok := intentPrompts[intent]; ok {
+	fallback := configcenter.DefaultIntentPrompt(intent)
+	if prompt := r.stringConfig(ctx, "agent.prompt.intent."+intent, fallback); prompt != "" {
 		base = append(base, prompt)
 	}
 	return strings.Join(base, "\n")
@@ -343,13 +564,29 @@ func isGreeting(query string) bool {
 }
 
 func looksCatalogRelated(query string) bool {
-	keywords := []string{"推荐", "买", "商品", "手机", "鼠标", "电脑", "耳机", "价格", "预算", "对比", "比较", "售后", "退货", "保修", "优惠", "拍照", "办公"}
+	keywords := []string{"推荐", "买", "商品", "手机", "鼠标", "电脑", "耳机", "价格", "预算", "对比", "比较", "售后", "退货", "保修", "优惠", "拍照", "办公", "护肤", "美妆", "服饰", "食品"}
 	for _, keyword := range keywords {
 		if strings.Contains(query, keyword) {
 			return true
 		}
 	}
 	return false
+}
+
+func looksCartAdd(query string) bool {
+	return containsAny(query, []string{"加到购物车", "加入购物车", "加购物车", "放进购物车", "加购"})
+}
+
+func looksCartRemove(query string) bool {
+	return strings.Contains(query, "购物车") && containsAny(query, []string{"删除", "移除", "不要"})
+}
+
+func looksCartQuantityUpdate(query string) bool {
+	return strings.Contains(query, "购物车") && containsAny(query, []string{"数量", "改成", "改为", "调整到"})
+}
+
+func looksCheckout(query string) bool {
+	return containsAny(query, []string{"下单", "结算", "提交订单", "确认购买", "确认订单"})
 }
 
 func looksUnsupported(query string) bool {
@@ -372,18 +609,121 @@ func formatProducts(products []domain.ProductCard, limit int) string {
 	lines := make([]string, 0, limit)
 	for i := 0; i < limit; i++ {
 		product := products[i]
-		lines = append(lines, fmt.Sprintf("%d. 商品ID=%s 名称=%s 品牌=%s 价格=%s 库存=%s 卖点=%s 风险=%s",
+		lines = append(lines, fmt.Sprintf("%d. 商品ID=%s 名称=%s 品牌=%s 价格=%s 库存=%s 标签=%s 卖点=%s 推荐依据=%s",
 			i+1,
 			product.ProductID,
 			product.Name,
 			product.Brand,
 			product.Price,
 			product.StockStatus,
+			strings.Join(product.Tags, "；"),
 			strings.Join(product.SellingPoints, "；"),
-			strings.Join(product.RiskNotes, "；"),
+			product.RecommendReason,
 		))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func emitCartBlock(runID string, cart domain.Cart, emit func(domain.SSEEvent) error) error {
+	block := domain.AgentBlock{Type: "cart_state", Cart: &cart}
+	return emit(domain.SSEEvent{Type: "block_delta", RunID: runID, Block: &block})
+}
+
+func comparisonBlock(products []domain.ProductCard, limit int) domain.AgentBlock {
+	if len(products) < limit {
+		limit = len(products)
+	}
+	rows := make([]domain.ComparisonRow, 0, limit)
+	for i := 0; i < limit; i++ {
+		product := products[i]
+		rows = append(rows, domain.ComparisonRow{
+			ProductID: product.ProductID,
+			Values: []string{
+				product.Name,
+				product.Brand,
+				product.Price,
+				strings.Join(product.SellingPoints, "；"),
+			},
+		})
+	}
+	return domain.AgentBlock{
+		Type:    "comparison_table",
+		Columns: []string{"商品", "品牌", "价格", "核心卖点"},
+		Rows:    rows,
+	}
+}
+
+func isComparisonIntent(intent string, query string) bool {
+	return intent == "product_comparison" || strings.Contains(query, "对比") || strings.Contains(query, "比较")
+}
+
+func isToolIntent(intent string) bool {
+	switch intent {
+	case "cart_add", "cart_update_quantity", "cart_remove", "checkout_confirm":
+		return true
+	default:
+		return false
+	}
+}
+
+func parsePositiveNumber(text string, fallback int) int {
+	re := regexp.MustCompile(`\d+`)
+	values := re.FindAllString(text, -1)
+	if len(values) > 0 {
+		value := values[len(values)-1]
+		if number, err := strconv.Atoi(value); err == nil && number > 0 {
+			return number
+		}
+	}
+	numbers := []struct {
+		word   string
+		number int
+	}{
+		{"十", 10}, {"九", 9}, {"八", 8}, {"七", 7}, {"六", 6}, {"五", 5}, {"四", 4}, {"三", 3}, {"二", 2}, {"两", 2}, {"一", 1},
+	}
+	for _, item := range numbers {
+		if strings.Contains(text, "改成"+item.word) || strings.Contains(text, "改为"+item.word) || strings.Contains(text, "数量"+item.word) {
+			return item.number
+		}
+	}
+	return fallback
+}
+
+func parseOrdinal(text string, fallback int) int {
+	re := regexp.MustCompile(`第\s*(\d+)\s*个`)
+	if match := re.FindStringSubmatch(text); len(match) == 2 {
+		if number, err := strconv.Atoi(match[1]); err == nil && number > 0 {
+			return number - 1
+		}
+	}
+	ordinals := map[string]int{"第一个": 0, "第一件": 0, "第二个": 1, "第二件": 1, "第三个": 2, "第三件": 2, "第四个": 3, "第四件": 3, "第五个": 4, "第五件": 4}
+	for word, index := range ordinals {
+		if strings.Contains(text, word) {
+			return index
+		}
+	}
+	return fallback
+}
+
+func containsAny(text string, keywords []string) bool {
+	for _, keyword := range keywords {
+		if strings.Contains(text, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func needsPhotoSearch(message domain.UserMessage) bool {
+	if containsAny(message.Content, []string{"拍照找", "拍照搜", "找同款", "图片找", "识图"}) {
+		return true
+	}
+	for _, attachment := range message.Attachments {
+		if attachment.Type == "image" {
+			return true
+		}
+	}
+	return false
 }
 
 func formatCitations(chunks []domain.Citation, limit int) string {

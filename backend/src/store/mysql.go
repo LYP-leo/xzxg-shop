@@ -90,6 +90,8 @@ func (s *MySQLStore) ensureAccessSchema(ctx context.Context) error {
 		"UPDATE chat_sessions SET account_id = 'acct_user_001' WHERE account_id = ''",
 		"UPDATE user_messages SET account_id = 'acct_user_001' WHERE account_id = ''",
 		"UPDATE agent_runs SET account_id = 'acct_user_001' WHERE account_id = ''",
+		"UPDATE products SET recommend_reason = '抓拍和对焦能力适合日常拍照，价格为 2999 元。', risk_notes_json = JSON_ARRAY(), not_suitable_for_json = JSON_ARRAY() WHERE product_id = 'p_001'",
+		"UPDATE products SET recommend_reason = '影像和续航配置更高，价格为 3499 元。', risk_notes_json = JSON_ARRAY(), not_suitable_for_json = JSON_ARRAY() WHERE product_id = 'p_002'",
 	}
 	for _, stmt := range updates {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
@@ -482,9 +484,6 @@ func (s *MySQLStore) ListAgentTrace(ctx context.Context, accountID string, runID
 
 func (s *MySQLStore) SearchProducts(ctx context.Context, query string) []domain.ProductCard {
 	items := s.ListProducts(ctx, query, "")
-	if len(items) == 0 && query != "" {
-		return s.ListProducts(ctx, "", "")
-	}
 	return items
 }
 
@@ -537,15 +536,20 @@ func (s *MySQLStore) ListProducts(ctx context.Context, keyword string, categoryI
 	args := make([]any, 0, 3)
 	query := productCardSelect() + ` WHERE p.status = 'active'`
 	if categoryID != "" {
-		query += " AND p.category_id = ?"
-		args = append(args, categoryID)
+		query += " AND (p.category_id = ? OR c.parent_id = ?)"
+		args = append(args, categoryID, categoryID)
 	}
 	if keyword != "" {
-		like := "%" + keyword + "%"
-		query += ` AND (
-			p.name LIKE ? OR p.brand LIKE ? OR p.tags_json LIKE ? OR p.selling_points_json LIKE ?
-		)`
-		args = append(args, like, like, like, like)
+		terms := append([]string{keyword}, rag.QueryTerms(keyword)...)
+		clauses := make([]string, 0, len(terms)*5)
+		for _, term := range uniqueTerms(terms, 10) {
+			like := "%" + term + "%"
+			clauses = append(clauses, `p.name LIKE ?`, `p.brand LIKE ?`, `c.name LIKE ?`, `p.tags_json LIKE ?`, `p.selling_points_json LIKE ?`)
+			args = append(args, like, like, like, like, like)
+		}
+		if len(clauses) > 0 {
+			query += ` AND (` + strings.Join(clauses, ` OR `) + `)`
+		}
 	}
 	query += " ORDER BY p.sort_order, p.product_id"
 	return s.queryProductCards(ctx, query, args...)
@@ -1314,6 +1318,7 @@ func productCardSelect() string {
 			p.risk_notes_json
 		FROM products p
 		JOIN merchants m ON m.merchant_id = p.merchant_id
+		LEFT JOIN categories c ON c.category_id = p.category_id
 		LEFT JOIN product_skus ps ON ps.product_id = p.product_id AND ps.is_default = TRUE
 	`
 }
@@ -1327,8 +1332,26 @@ func productDetailSelect() string {
 			p.attributes_json, p.suitable_for_json, p.not_suitable_for_json, p.description
 		FROM products p
 		JOIN merchants m ON m.merchant_id = p.merchant_id
+		LEFT JOIN categories c ON c.category_id = p.category_id
 		LEFT JOIN product_skus ps ON ps.product_id = p.product_id AND ps.is_default = TRUE
 	`
+}
+
+func uniqueTerms(input []string, limit int) []string {
+	seen := make(map[string]bool)
+	terms := make([]string, 0, limit)
+	for _, term := range input {
+		term = strings.TrimSpace(strings.ToLower(term))
+		if term == "" || seen[term] {
+			continue
+		}
+		seen[term] = true
+		terms = append(terms, term)
+		if len(terms) == limit {
+			break
+		}
+	}
+	return terms
 }
 
 func decodeJSON(input string, output any) {

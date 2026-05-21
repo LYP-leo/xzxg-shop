@@ -3,7 +3,7 @@ import { cancelAgentRun, createAgentSession, streamAgentMessage } from '../api/a
 import { addToCart } from '../api/cart';
 import { ChatInputBar } from '../components/chat/ChatInputBar';
 import { ChatMessageList } from '../components/chat/ChatMessageList';
-import type { AgentSession, AgentSseEvent, AgentTurn } from '../types/agent';
+import type { AgentSession, AgentSseEvent, AgentTurn, Attachment } from '../types/agent';
 import type { ProductCard } from '../types/product';
 
 type Props = {
@@ -32,12 +32,12 @@ export function AgentSessionPage({ initialQuestion, onOpenProduct, onCartChange 
 
   const isStreaming = useMemo(() => Boolean(activeRunId), [activeRunId]);
 
-  async function sendMessage(content: string) {
+  async function sendMessage(content: string, attachments: Attachment[] = []) {
     if (!session || activeRunId) return;
     const optimisticTurn: AgentTurn = {
       userMessageId: `local_${Date.now()}`,
       userContent: content,
-      attachments: [],
+      attachments,
       status: 'streaming',
       text: '',
       blocks: [],
@@ -49,7 +49,7 @@ export function AgentSessionPage({ initialQuestion, onOpenProduct, onCartChange 
     await streamAgentMessage({
       sessionId: session.sessionId,
       content,
-      attachments: [],
+      attachments,
       onEvent: handleEvent
     });
   }

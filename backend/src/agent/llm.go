@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -38,6 +39,7 @@ func (c ModelConfig) withDefaults() ModelConfig {
 type LLMClient struct {
 	config ModelConfig
 	http   *http.Client
+	mu     sync.RWMutex
 }
 
 func NewLLMClient(config ModelConfig) *LLMClient {
@@ -51,15 +53,28 @@ func NewLLMClient(config ModelConfig) *LLMClient {
 }
 
 func (c *LLMClient) Enabled() bool {
-	return strings.TrimSpace(c.config.APIKey) != ""
+	config := c.Config()
+	return strings.TrimSpace(config.APIKey) != ""
 }
 
 func (c *LLMClient) SmallModel() string {
-	return c.config.SmallModel
+	return c.Config().SmallModel
 }
 
 func (c *LLMClient) LargeModel() string {
-	return c.config.LargeModel
+	return c.Config().LargeModel
+}
+
+func (c *LLMClient) Config() ModelConfig {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.config
+}
+
+func (c *LLMClient) UpdateConfig(config ModelConfig) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.config = config.withDefaults()
 }
 
 type ChatMessage struct {
@@ -68,11 +83,12 @@ type ChatMessage struct {
 }
 
 func (c *LLMClient) Complete(ctx context.Context, model string, messages []ChatMessage, temperature float64) (string, error) {
-	if !c.Enabled() {
+	config := c.Config()
+	if strings.TrimSpace(config.APIKey) == "" {
 		return "", errors.New("llm disabled: missing api key")
 	}
 	if model == "" {
-		model = c.config.SmallModel
+		model = config.SmallModel
 	}
 
 	requestBody := map[string]any{
@@ -85,12 +101,12 @@ func (c *LLMClient) Complete(ctx context.Context, model string, messages []ChatM
 		return "", fmt.Errorf("marshal llm request: %w", err)
 	}
 
-	url := strings.TrimRight(c.config.BaseURL, "/") + "/chat/completions"
+	url := strings.TrimRight(config.BaseURL, "/") + "/chat/completions"
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return "", fmt.Errorf("create llm request: %w", err)
 	}
-	request.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+	request.Header.Set("Authorization", "Bearer "+config.APIKey)
 	request.Header.Set("Content-Type", "application/json")
 
 	response, err := c.http.Do(request)
@@ -134,11 +150,12 @@ func (c *LLMClient) Complete(ctx context.Context, model string, messages []ChatM
 }
 
 func (c *LLMClient) Stream(ctx context.Context, model string, messages []ChatMessage, temperature float64, onDelta func(string) error) error {
-	if !c.Enabled() {
+	config := c.Config()
+	if strings.TrimSpace(config.APIKey) == "" {
 		return errors.New("llm disabled: missing api key")
 	}
 	if model == "" {
-		model = c.config.SmallModel
+		model = config.SmallModel
 	}
 
 	requestBody := map[string]any{
@@ -152,12 +169,12 @@ func (c *LLMClient) Stream(ctx context.Context, model string, messages []ChatMes
 		return fmt.Errorf("marshal llm stream request: %w", err)
 	}
 
-	url := strings.TrimRight(c.config.BaseURL, "/") + "/chat/completions"
+	url := strings.TrimRight(config.BaseURL, "/") + "/chat/completions"
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("create llm stream request: %w", err)
 	}
-	request.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+	request.Header.Set("Authorization", "Bearer "+config.APIKey)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "text/event-stream")
 
