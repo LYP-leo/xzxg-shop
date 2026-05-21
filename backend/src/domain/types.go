@@ -20,6 +20,36 @@ type Account struct {
 	CreatedAt   time.Time   `json:"created_at"`
 }
 
+type AccountProfile struct {
+	AccountID     string      `json:"account_id"`
+	Username      string      `json:"username"`
+	Role          AccountRole `json:"role"`
+	Nickname      string      `json:"nickname"`
+	AvatarURL     string      `json:"avatar_url"`
+	Phone         string      `json:"phone"`
+	Email         string      `json:"email"`
+	PhoneVerified bool        `json:"phone_verified"`
+	EmailVerified bool        `json:"email_verified"`
+}
+
+type AccountCreateInput struct {
+	Username     string
+	DisplayName  string
+	Role         AccountRole
+	MerchantName string
+}
+
+type AgentHomeSuggestion struct {
+	SuggestionID string `json:"suggestion_id"`
+	Text         string `json:"text"`
+	Source       string `json:"source"`
+}
+
+type AgentHome struct {
+	WelcomeText string                `json:"welcome_text"`
+	Suggestions []AgentHomeSuggestion `json:"suggestions"`
+}
+
 type ChatSession struct {
 	SessionID string    `json:"session_id"`
 	AccountID string    `json:"account_id,omitempty"`

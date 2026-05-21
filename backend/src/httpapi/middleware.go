@@ -160,14 +160,24 @@ func (r *statusRecorder) Flush() {
 }
 
 func routePolicy(method string, path string) (bool, []domain.AccountRole) {
-	if path == "/api/v1/health" || path == "/api/v1/auth/login" {
+	if path == "/api/v1/health" ||
+		path == "/api/v1/auth/login" ||
+		path == "/api/v1/auth/register" ||
+		path == "/api/v1/auth/verification-codes" ||
+		path == "/api/v1/auth/password:reset" {
 		return false, nil
 	}
 	if method == http.MethodGet && (path == "/api/v1/categories/tree" || path == "/api/v1/merchants" || path == "/api/v1/products" || strings.HasPrefix(path, "/api/v1/products/")) {
 		return false, nil
 	}
-	if path == "/api/v1/auth/me" {
+	if path == "/api/v1/auth/me" || path == "/api/v1/account/profile" {
 		return true, []domain.AccountRole{domain.AccountRoleUser, domain.AccountRoleMerchant, domain.AccountRoleAdmin}
+	}
+	if path == "/api/v1/auth/password:change" {
+		return true, []domain.AccountRole{domain.AccountRoleUser, domain.AccountRoleMerchant, domain.AccountRoleAdmin}
+	}
+	if method == http.MethodGet && path == "/api/v1/agent/home" {
+		return false, nil
 	}
 	if strings.HasPrefix(path, "/api/v1/cart") || strings.HasPrefix(path, "/api/v1/agent") || strings.HasPrefix(path, "/api/v1/orders") {
 		return true, []domain.AccountRole{domain.AccountRoleUser}

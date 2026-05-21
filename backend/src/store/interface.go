@@ -10,8 +10,11 @@ import (
 type Store interface {
 	GetAccountByUsername(ctx context.Context, username string) (domain.Account, string, bool)
 	GetAccountByToken(ctx context.Context, token string) (domain.Account, bool)
+	CreateAccount(ctx context.Context, input domain.AccountCreateInput, passwordHash string) (domain.Account, error)
 	ListAccounts(ctx context.Context) []domain.Account
 	UpdateAccountStatus(ctx context.Context, accountID string, status string) (domain.Account, bool)
+	UpdateAccountProfile(ctx context.Context, accountID string, nickname string) (domain.Account, bool)
+	UpdateAccountPassword(ctx context.Context, accountID string, passwordHash string) bool
 	CreateAuthToken(ctx context.Context, accountID string) (string, error)
 	ListUserSessions(ctx context.Context, accountID string) []domain.ChatSession
 	CreateSession(ctx context.Context, accountID string, title string) (domain.ChatSession, error)

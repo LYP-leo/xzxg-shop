@@ -179,6 +179,41 @@ func (s *MySQLStore) GetAccountByToken(ctx context.Context, token string) (domai
 	return account, err == nil
 }
 
+func (s *MySQLStore) CreateAccount(ctx context.Context, input domain.AccountCreateInput, passwordHash string) (domain.Account, error) {
+	accountID := nextID("acct")
+	merchantID := ""
+	if input.Role == domain.AccountRoleMerchant {
+		merchantID = nextID("m")
+		name := strings.TrimSpace(input.MerchantName)
+		if name == "" {
+			name = input.DisplayName
+		}
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO merchants (merchant_id, name, logo_url, description, service_phone, status, created_at, updated_at)
+			VALUES (?, ?, '', '', '', 'active', ?, ?)
+		`, merchantID, name, time.Now(), time.Now()); err != nil {
+			return domain.Account{}, fmt.Errorf("insert merchant: %w", err)
+		}
+	}
+	account := domain.Account{
+		AccountID:   accountID,
+		Username:    input.Username,
+		DisplayName: input.DisplayName,
+		Role:        input.Role,
+		MerchantID:  merchantID,
+		Status:      "active",
+		CreatedAt:   time.Now(),
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO accounts (account_id, username, password_hash, display_name, role, merchant_id, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
+	`, account.AccountID, account.Username, passwordHash, account.DisplayName, string(account.Role), account.MerchantID, account.CreatedAt, account.CreatedAt)
+	if err != nil {
+		return domain.Account{}, fmt.Errorf("insert account: %w", err)
+	}
+	return account, nil
+}
+
 func (s *MySQLStore) ListAccounts(ctx context.Context) []domain.Account {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT account_id, username, display_name, role, merchant_id, status, created_at
@@ -224,6 +259,38 @@ func (s *MySQLStore) UpdateAccountStatus(ctx context.Context, accountID string, 
 	}
 	account.Role = domain.AccountRole(role)
 	return account, true
+}
+
+func (s *MySQLStore) UpdateAccountProfile(ctx context.Context, accountID string, nickname string) (domain.Account, bool) {
+	result, err := s.db.ExecContext(ctx, `UPDATE accounts SET display_name = ?, updated_at = ? WHERE account_id = ?`, nickname, time.Now(), accountID)
+	if err != nil {
+		return domain.Account{}, false
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return domain.Account{}, false
+	}
+	var account domain.Account
+	var role string
+	err = s.db.QueryRowContext(ctx, `
+		SELECT account_id, username, display_name, role, merchant_id, status, created_at
+		FROM accounts
+		WHERE account_id = ?
+	`, accountID).Scan(&account.AccountID, &account.Username, &account.DisplayName, &role, &account.MerchantID, &account.Status, &account.CreatedAt)
+	if err != nil {
+		return domain.Account{}, false
+	}
+	account.Role = domain.AccountRole(role)
+	return account, true
+}
+
+func (s *MySQLStore) UpdateAccountPassword(ctx context.Context, accountID string, passwordHash string) bool {
+	result, err := s.db.ExecContext(ctx, `UPDATE accounts SET password_hash = ?, updated_at = ? WHERE account_id = ?`, passwordHash, time.Now(), accountID)
+	if err != nil {
+		return false
+	}
+	affected, err := result.RowsAffected()
+	return err == nil && affected > 0
 }
 
 func (s *MySQLStore) CreateAuthToken(ctx context.Context, accountID string) (string, error) {

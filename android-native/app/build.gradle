@@ -1,27 +1,32 @@
 plugins {
     id 'com.android.application'
-    id 'org.jetbrains.kotlin.android'
 }
 
 android {
-    namespace 'com.xzxg.shopnative'
-    compileSdk 36
+    namespace 'com.xzxg.shop'
+    compileSdk 35
 
     defaultConfig {
-        applicationId 'com.xzxg.shopnative'
+        applicationId 'com.xzxg.shop'
         minSdk 24
-        targetSdk 36
+        targetSdk 35
         versionCode 1
-        versionName '0.1.0'
+        versionName '0.3.0'
     }
-}
 
-dependencies {
-    implementation 'androidx.activity:activity-ktx:1.11.0'
-    implementation 'androidx.appcompat:appcompat:1.7.1'
-    implementation 'androidx.core:core-ktx:1.17.0'
-    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.10.0'
-    implementation 'androidx.recyclerview:recyclerview:1.4.0'
-    implementation 'com.squareup.okhttp3:okhttp:5.3.2'
-    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2'
+    buildFeatures {
+        buildConfig true
+    }
+
+    buildTypes {
+        debug {
+            buildConfigField 'boolean', 'SHOW_TEST_SERVER_SETTINGS', 'true'
+            buildConfigField 'String', 'DEFAULT_API_BASE', '"http://10.0.2.2:8080/api/v1"'
+        }
+        release {
+            buildConfigField 'boolean', 'SHOW_TEST_SERVER_SETTINGS', 'false'
+            buildConfigField 'String', 'DEFAULT_API_BASE', '"https://api.example.com/api/v1"'
+            minifyEnabled false
+        }
+    }
 }

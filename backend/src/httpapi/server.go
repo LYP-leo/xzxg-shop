@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/LYP-leo/xzxg-shop/backend/src/agent"
 	"github.com/LYP-leo/xzxg-shop/backend/src/configcenter"
@@ -32,7 +33,14 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
 	mux.HandleFunc("GET /api/v1/auth/me", s.handleMe)
+	mux.HandleFunc("POST /api/v1/auth/verification-codes", s.handleCreateVerificationCode)
+	mux.HandleFunc("POST /api/v1/auth/register", s.handleRegister)
+	mux.HandleFunc("POST /api/v1/auth/password:change", s.handleChangePassword)
+	mux.HandleFunc("POST /api/v1/auth/password:reset", s.handleResetPassword)
+	mux.HandleFunc("GET /api/v1/account/profile", s.handleGetAccountProfile)
+	mux.HandleFunc("PATCH /api/v1/account/profile", s.handleUpdateAccountProfile)
 	mux.Handle("GET /api/v1/assets/ecommerce_agent_dataset/", http.StripPrefix("/api/v1/assets/ecommerce_agent_dataset/", http.FileServer(http.Dir(datasetAssetRoot()))))
+	mux.HandleFunc("GET /api/v1/agent/home", s.handleAgentHome)
 	mux.HandleFunc("GET /api/v1/categories/tree", s.handleListCategories)
 	mux.HandleFunc("GET /api/v1/merchants", s.handleListMerchants)
 	mux.HandleFunc("GET /api/v1/products", s.handleListProducts)
@@ -107,6 +115,197 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, account)
 }
 
+func (s *Server) handleCreateVerificationCode(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Scene      string `json:"scene"`
+		TargetType string `json:"target_type"`
+		Target     string `json:"target"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	if strings.TrimSpace(request.Target) == "" {
+		writeError(w, http.StatusBadRequest, "empty_target", "验证码接收目标不能为空")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"code_id":     nextPublicID("vcode"),
+		"mock_code":   "123456",
+		"expires_in":  300,
+		"target_type": request.TargetType,
+		"target":      request.Target,
+	})
+}
+
+func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Role             string `json:"role"`
+		Username         string `json:"username"`
+		Password         string `json:"password"`
+		DisplayName      string `json:"display_name"`
+		MerchantName     string `json:"merchant_name"`
+		TargetType       string `json:"target_type"`
+		Target           string `json:"target"`
+		VerificationCode string `json:"verification_code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	username := strings.TrimSpace(request.Username)
+	if username == "" || request.Password == "" {
+		writeError(w, http.StatusBadRequest, "empty_credential", "账号和密码不能为空")
+		return
+	}
+	role := domain.AccountRole(request.Role)
+	if role == "" {
+		role = domain.AccountRoleUser
+	}
+	if role != domain.AccountRoleUser && role != domain.AccountRoleMerchant {
+		writeError(w, http.StatusBadRequest, "bad_role", "只允许顾客或商家自主注册")
+		return
+	}
+	if request.VerificationCode != "" && request.VerificationCode != "123456" {
+		writeError(w, http.StatusBadRequest, "bad_verification_code", "验证码不正确")
+		return
+	}
+	if _, _, ok := s.store.GetAccountByUsername(r.Context(), username); ok {
+		writeError(w, http.StatusConflict, "username_exists", "账号已存在")
+		return
+	}
+	displayName := strings.TrimSpace(request.DisplayName)
+	if displayName == "" {
+		displayName = username
+	}
+	account, err := s.store.CreateAccount(r.Context(), domain.AccountCreateInput{
+		Username:     username,
+		DisplayName:  displayName,
+		Role:         role,
+		MerchantName: request.MerchantName,
+	}, hashPassword(request.Password))
+	if err != nil {
+		s.logger.Error("register account failed", "error", err, "role", role)
+		writeError(w, http.StatusInternalServerError, "register_failed", "注册失败")
+		return
+	}
+	token, err := s.store.CreateAuthToken(r.Context(), account.AccountID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "create_token_failed", "注册成功但登录失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"token": token, "account": account})
+}
+
+func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	account, ok := accountFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "请先登录")
+		return
+	}
+	var request struct {
+		OldPassword string `json:"old_password"`
+		NewPassword string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	_, passwordHash, ok := s.store.GetAccountByUsername(r.Context(), account.Username)
+	if !ok || passwordHash != hashPassword(request.OldPassword) {
+		writeError(w, http.StatusUnauthorized, "invalid_old_password", "原密码不正确")
+		return
+	}
+	if strings.TrimSpace(request.NewPassword) == "" {
+		writeError(w, http.StatusBadRequest, "empty_password", "新密码不能为空")
+		return
+	}
+	if !s.store.UpdateAccountPassword(r.Context(), account.AccountID, hashPassword(request.NewPassword)) {
+		writeError(w, http.StatusInternalServerError, "change_password_failed", "修改密码失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Username         string `json:"username"`
+		TargetType       string `json:"target_type"`
+		Target           string `json:"target"`
+		VerificationCode string `json:"verification_code"`
+		NewPassword      string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	if request.VerificationCode != "123456" {
+		writeError(w, http.StatusBadRequest, "bad_verification_code", "验证码不正确")
+		return
+	}
+	account, _, ok := s.store.GetAccountByUsername(r.Context(), strings.TrimSpace(request.Username))
+	if !ok {
+		writeError(w, http.StatusNotFound, "account_not_found", "账号不存在")
+		return
+	}
+	if strings.TrimSpace(request.NewPassword) == "" {
+		writeError(w, http.StatusBadRequest, "empty_password", "新密码不能为空")
+		return
+	}
+	if !s.store.UpdateAccountPassword(r.Context(), account.AccountID, hashPassword(request.NewPassword)) {
+		writeError(w, http.StatusInternalServerError, "reset_password_failed", "重置密码失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleGetAccountProfile(w http.ResponseWriter, r *http.Request) {
+	account, ok := accountFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "请先登录")
+		return
+	}
+	writeJSON(w, http.StatusOK, profileFromAccount(account))
+}
+
+func (s *Server) handleUpdateAccountProfile(w http.ResponseWriter, r *http.Request) {
+	account, ok := accountFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "请先登录")
+		return
+	}
+	var request struct {
+		Nickname  string `json:"nickname"`
+		AvatarURL string `json:"avatar_url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	nickname := strings.TrimSpace(request.Nickname)
+	if nickname == "" {
+		writeError(w, http.StatusBadRequest, "empty_nickname", "昵称不能为空")
+		return
+	}
+	updated, ok := s.store.UpdateAccountProfile(r.Context(), account.AccountID, nickname)
+	if !ok {
+		writeError(w, http.StatusNotFound, "account_not_found", "账号不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, profileFromAccount(updated))
+}
+
+func (s *Server) handleAgentHome(w http.ResponseWriter, r *http.Request) {
+	home := domain.AgentHome{
+		WelcomeText: "",
+		Suggestions: []domain.AgentHomeSuggestion{},
+	}
+	if account, ok := accountFromContext(r.Context()); ok && account.Role == domain.AccountRoleUser {
+		home.Suggestions = []domain.AgentHomeSuggestion{}
+	}
+	writeJSON(w, http.StatusOK, home)
+}
+
 func (s *Server) handleCreateAgentSession(w http.ResponseWriter, r *http.Request) {
 	account, ok := s.requireUser(w, r)
 	if !ok {
@@ -128,6 +327,16 @@ func (s *Server) handleCreateAgentSession(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, session)
+}
+
+func profileFromAccount(account domain.Account) domain.AccountProfile {
+	return domain.AccountProfile{
+		AccountID: account.AccountID,
+		Username:  account.Username,
+		Role:      account.Role,
+		Nickname:  account.DisplayName,
+		AvatarURL: "",
+	}
 }
 
 func (s *Server) handleListCategories(w http.ResponseWriter, r *http.Request) {
@@ -732,6 +941,10 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (domain.Ac
 func hashPassword(password string) string {
 	sum := sha256.Sum256([]byte(password))
 	return hex.EncodeToString(sum[:])
+}
+
+func nextPublicID(prefix string) string {
+	return prefix + "_" + time.Now().Format("20060102150405.000000000")
 }
 
 func datasetAssetRoot() string {
