@@ -1,15 +1,20 @@
 import { useEffect, useState } from 'react';
 import {
   createMerchantProduct,
+  deleteMerchantProduct,
   KnowledgeDocument,
   listMerchantDocuments,
+  listMerchantOrders,
   MerchantProductInput,
+  updateMerchantOrderStatus,
   updateMerchantProduct,
   uploadMerchantDocument
 } from '../api/merchant';
 import { listProducts } from '../api/product';
 import type { Account } from '../types/auth';
+import type { Order } from '../types/order';
 import type { ProductCard } from '../types/product';
+import { orderStatusText } from './OrderPage';
 
 type MerchantPageProps = {
   account: Account;
@@ -35,6 +40,7 @@ const emptyProductForm: MerchantProductInput = {
 export function MerchantPage({ account, token }: MerchantPageProps) {
   const [products, setProducts] = useState<ProductCard[]>([]);
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
+  const [orders, setOrders] = useState<Order[]>([]);
   const [editingProductId, setEditingProductId] = useState<string>();
   const [productForm, setProductForm] = useState<MerchantProductInput>(emptyProductForm);
   const [documentForm, setDocumentForm] = useState({ title: '', doc_type: 'product_detail', content: '' });
@@ -45,9 +51,10 @@ export function MerchantPage({ account, token }: MerchantPageProps) {
   }, [token]);
 
   async function refreshMerchantData() {
-    const [nextProducts, nextDocuments] = await Promise.all([listProducts(), listMerchantDocuments(token)]);
+    const [nextProducts, nextDocuments, nextOrders] = await Promise.all([listProducts(), listMerchantDocuments(token), listMerchantOrders(token)]);
     setProducts(nextProducts.filter((product) => product.merchantId === account.merchant_id));
     setDocuments(nextDocuments);
+    setOrders(nextOrders);
   }
 
   function editProduct(product: ProductCard) {
@@ -100,6 +107,18 @@ export function MerchantPage({ account, token }: MerchantPageProps) {
     await refreshMerchantData();
   }
 
+  async function removeProduct(productId: string) {
+    await deleteMerchantProduct(token, productId);
+    setStatus('商品已删除');
+    await refreshMerchantData();
+  }
+
+  async function shipOrder(orderId: string) {
+    await updateMerchantOrderStatus(token, orderId, 'shipped');
+    setStatus('订单已标记发货');
+    await refreshMerchantData();
+  }
+
   return (
     <section>
       <header className="page-header">
@@ -118,8 +137,8 @@ export function MerchantPage({ account, token }: MerchantPageProps) {
           <strong>{documents.length}</strong>
         </section>
         <section className="metric-card">
-          <span>待优化回答</span>
-          <strong>3</strong>
+          <span>订单</span>
+          <strong>{orders.length}</strong>
         </section>
       </div>
       {status ? <p className="notice">{status}</p> : null}
@@ -248,6 +267,38 @@ export function MerchantPage({ account, token }: MerchantPageProps) {
                 <td>
                   <button className="button button--ghost" onClick={() => editProduct(product)}>
                     编辑
+                  </button>
+                  <button className="button button--ghost" onClick={() => removeProduct(product.productId)}>
+                    删除
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+      <section className="panel">
+        <h2>订单履约</h2>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>订单</th>
+              <th>状态</th>
+              <th>金额</th>
+              <th>商品</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {orders.map((order) => (
+              <tr key={order.order_id}>
+                <td>{order.order_id}</td>
+                <td>{orderStatusText(order.status)}</td>
+                <td>¥{order.total_amount}</td>
+                <td>{order.items.map((item) => `${item.name} x${item.quantity}`).join('，')}</td>
+                <td>
+                  <button className="button button--ghost" disabled={order.status !== 'pending_ship'} onClick={() => shipOrder(order.order_id)}>
+                    发货
                   </button>
                 </td>
               </tr>

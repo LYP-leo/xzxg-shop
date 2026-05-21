@@ -14,6 +14,21 @@ services:
     ports:
       - "6379:6379"
 
+  nacos:
+    image: nacos/nacos-server:v2.3.2
+    platform: linux/amd64
+    environment:
+      MODE: standalone
+      NACOS_AUTH_ENABLE: "false"
+      JVM_XMS: 256m
+      JVM_XMX: 512m
+      JVM_XMN: 128m
+    ports:
+      - "8848:8848"
+      - "9848:9848"
+    volumes:
+      - nacos_data:/home/nacos/data
+
   qdrant:
     image: qdrant/qdrant:v1.12.4
     ports:
@@ -24,4 +39,5 @@ services:
 
 volumes:
   mysql_data:
+  nacos_data:
   qdrant_data:

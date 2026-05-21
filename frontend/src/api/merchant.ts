@@ -1,4 +1,5 @@
 import type { ProductDetail } from '../types/product';
+import type { Order } from '../types/order';
 import { requestJSON } from './http';
 
 export type MerchantProductInput = {
@@ -40,6 +41,28 @@ export async function updateMerchantProduct(token: string, productId: string, in
     method: 'PATCH',
     headers: authHeaders(token),
     body: JSON.stringify(input)
+  });
+}
+
+export async function deleteMerchantProduct(token: string, productId: string): Promise<void> {
+  await requestJSON(`/merchant/products/${productId}`, {
+    method: 'DELETE',
+    headers: authHeaders(token)
+  });
+}
+
+export async function listMerchantOrders(token: string): Promise<Order[]> {
+  const data = await requestJSON<{ items: Order[] }>('/merchant/orders', {
+    headers: authHeaders(token)
+  });
+  return data.items;
+}
+
+export async function updateMerchantOrderStatus(token: string, orderId: string, status: Order['status']): Promise<Order> {
+  return requestJSON<Order>(`/merchant/orders/${orderId}`, {
+    method: 'PATCH',
+    headers: authHeaders(token),
+    body: JSON.stringify({ status })
   });
 }
 

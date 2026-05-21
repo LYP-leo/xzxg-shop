@@ -111,30 +111,36 @@ CREATE TABLE IF NOT EXISTS auth_tokens (
 
 CREATE TABLE IF NOT EXISTS cart_items (
   cart_item_id VARCHAR(64) PRIMARY KEY,
+  account_id VARCHAR(64) NOT NULL DEFAULT '',
   product_id VARCHAR(64) NOT NULL,
   sku_id VARCHAR(64) NOT NULL DEFAULT '',
   quantity INT NOT NULL,
   selected BOOLEAN NOT NULL DEFAULT TRUE,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY uk_cart_product_sku (product_id, sku_id),
+  UNIQUE KEY uk_cart_account_product_sku (account_id, product_id, sku_id),
+  INDEX idx_cart_items_account_id (account_id),
   INDEX idx_cart_items_product_id (product_id)
 );
 
 CREATE TABLE IF NOT EXISTS chat_sessions (
   session_id VARCHAR(64) PRIMARY KEY,
+  account_id VARCHAR(64) NOT NULL DEFAULT '',
   title VARCHAR(128) NOT NULL,
   created_at DATETIME NOT NULL,
+  INDEX idx_chat_sessions_account_id (account_id),
   INDEX idx_chat_sessions_created_at (created_at)
 );
 
 CREATE TABLE IF NOT EXISTS user_messages (
   message_id VARCHAR(64) PRIMARY KEY,
   session_id VARCHAR(64) NOT NULL,
+  account_id VARCHAR(64) NOT NULL DEFAULT '',
   client_message_id VARCHAR(128) NOT NULL DEFAULT '',
   content TEXT NOT NULL,
   attachments_json JSON NOT NULL,
   created_at DATETIME NOT NULL,
+  INDEX idx_user_messages_account_id (account_id),
   INDEX idx_user_messages_session_id (session_id),
   INDEX idx_user_messages_client_message_id (client_message_id)
 );
@@ -143,12 +149,62 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   run_id VARCHAR(64) PRIMARY KEY,
   session_id VARCHAR(64) NOT NULL,
   message_id VARCHAR(64) NOT NULL,
+  account_id VARCHAR(64) NOT NULL DEFAULT '',
   status VARCHAR(32) NOT NULL,
   trace_id VARCHAR(64) NOT NULL,
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL,
+  INDEX idx_agent_runs_account_id (account_id),
   INDEX idx_agent_runs_session_id (session_id),
   INDEX idx_agent_runs_message_id (message_id)
+);
+
+CREATE TABLE IF NOT EXISTS agent_trace_events (
+  trace_event_id VARCHAR(64) PRIMARY KEY,
+  run_id VARCHAR(64) NOT NULL,
+  trace_id VARCHAR(64) NOT NULL,
+  account_id VARCHAR(64) NOT NULL DEFAULT '',
+  stage VARCHAR(64) NOT NULL,
+  event_type VARCHAR(64) NOT NULL,
+  model VARCHAR(128) NOT NULL DEFAULT '',
+  status VARCHAR(32) NOT NULL,
+  duration_ms BIGINT NOT NULL DEFAULT 0,
+  error TEXT,
+  metadata_json JSON,
+  created_at DATETIME NOT NULL,
+  INDEX idx_agent_trace_run_id (run_id),
+  INDEX idx_agent_trace_trace_id (trace_id),
+  INDEX idx_agent_trace_account_id (account_id),
+  INDEX idx_agent_trace_created_at (created_at)
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+  order_id VARCHAR(64) PRIMARY KEY,
+  account_id VARCHAR(64) NOT NULL,
+  merchant_id VARCHAR(64) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  total_amount DECIMAL(10, 2) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_orders_account_id (account_id),
+  INDEX idx_orders_merchant_id (merchant_id),
+  INDEX idx_orders_status (status)
+);
+
+CREATE TABLE IF NOT EXISTS order_items (
+  order_item_id VARCHAR(64) PRIMARY KEY,
+  order_id VARCHAR(64) NOT NULL,
+  product_id VARCHAR(64) NOT NULL,
+  sku_id VARCHAR(64) NOT NULL DEFAULT '',
+  name VARCHAR(128) NOT NULL,
+  image_url VARCHAR(512) NOT NULL,
+  price DECIMAL(10, 2) NOT NULL,
+  quantity INT NOT NULL,
+  merchant_id VARCHAR(64) NOT NULL,
+  merchant_name VARCHAR(128) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_order_items_order_id (order_id),
+  INDEX idx_order_items_product_id (product_id)
 );
 
 INSERT IGNORE INTO merchants (merchant_id, name, logo_url, description, service_phone, status) VALUES
@@ -171,11 +227,11 @@ INSERT IGNORE INTO products (
   2999.00, 3299.00, 84, 'in_stock',
   JSON_ARRAY('拍照', '预算内', '抓拍'),
   JSON_ARRAY('高速对焦', '儿童抓拍模式', '256GB 存储'),
-  '预算控制在 3000 以内，抓拍和对焦能力适合拍娃。',
-  JSON_ARRAY('长时间游戏续航不是最强'),
+  '抓拍和对焦能力适合日常拍照，价格为 2999 元。',
+  JSON_ARRAY(),
   JSON_ARRAY(JSON_OBJECT('key', '存储', 'value', '256GB'), JSON_OBJECT('key', '重量', 'value', '189', 'unit', 'g'), JSON_OBJECT('key', '屏幕', 'value', '6.5 英寸 OLED')),
   JSON_ARRAY('拍娃', '日常拍照', '预算敏感'),
-  JSON_ARRAY('重度游戏'),
+  JSON_ARRAY(),
   '适合预算内拍照和日常使用的手机。',
   'active', 10
 ),
@@ -186,11 +242,11 @@ INSERT IGNORE INTO products (
   3499.00, 3899.00, 32, 'in_stock',
   JSON_ARRAY('影像旗舰', '长焦', '续航'),
   JSON_ARRAY('长焦表现好', '夜景稳定', '续航更强'),
-  '影像能力更强，但价格超过 3000。',
-  JSON_ARRAY('严格 3000 以内预算不适合'),
+  '影像和续航配置更高，价格为 3499 元。',
+  JSON_ARRAY(),
   JSON_ARRAY(JSON_OBJECT('key', '存储', 'value', '256GB'), JSON_OBJECT('key', '重量', 'value', '204', 'unit', 'g')),
   JSON_ARRAY('旅行拍照', '重视续航'),
-  JSON_ARRAY('严格 3000 以内预算'),
+  JSON_ARRAY(),
   '影像能力更强，但价格超过 3000。',
   'active', 20
 ),

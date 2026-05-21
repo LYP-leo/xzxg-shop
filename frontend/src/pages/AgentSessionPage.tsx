@@ -3,7 +3,7 @@ import { cancelAgentRun, createAgentSession, streamAgentMessage } from '../api/a
 import { addToCart } from '../api/cart';
 import { ChatInputBar } from '../components/chat/ChatInputBar';
 import { ChatMessageList } from '../components/chat/ChatMessageList';
-import type { AgentSession, AgentSseEvent, AgentTurn } from '../types/agent';
+import type { AgentSession, AgentSseEvent, AgentTurn, Attachment } from '../types/agent';
 import type { ProductCard } from '../types/product';
 
 type Props = {
@@ -15,9 +15,12 @@ type Props = {
 export function AgentSessionPage({ initialQuestion, onOpenProduct, onCartChange }: Props) {
   const [session, setSession] = useState<AgentSession | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const hasCreatedSession = useRef(false);
   const hasSentInitialQuestion = useRef(false);
 
   useEffect(() => {
+    if (hasCreatedSession.current) return;
+    hasCreatedSession.current = true;
     createAgentSession().then(setSession);
   }, []);
 
@@ -29,12 +32,12 @@ export function AgentSessionPage({ initialQuestion, onOpenProduct, onCartChange 
 
   const isStreaming = useMemo(() => Boolean(activeRunId), [activeRunId]);
 
-  async function sendMessage(content: string) {
+  async function sendMessage(content: string, attachments: Attachment[] = []) {
     if (!session || activeRunId) return;
     const optimisticTurn: AgentTurn = {
       userMessageId: `local_${Date.now()}`,
       userContent: content,
-      attachments: [],
+      attachments,
       status: 'streaming',
       text: '',
       blocks: [],
@@ -46,7 +49,7 @@ export function AgentSessionPage({ initialQuestion, onOpenProduct, onCartChange 
     await streamAgentMessage({
       sessionId: session.sessionId,
       content,
-      attachments: [],
+      attachments,
       onEvent: handleEvent
     });
   }
@@ -90,7 +93,12 @@ export function AgentSessionPage({ initialQuestion, onOpenProduct, onCartChange 
       return;
     }
     if (event.type === 'error') {
-      setSession((current) => updateTurnByRun(current, event.run_id ?? activeRunId ?? '', { status: 'failed', statusText: event.message }));
+      const runId = event.run_id ?? activeRunId;
+      setSession((current) =>
+        runId
+          ? updateTurnByRun(current, runId, { status: 'failed', statusText: event.message })
+          : replaceLastTurn(current, { status: 'failed', statusText: event.message })
+      );
       setActiveRunId(null);
     }
   }

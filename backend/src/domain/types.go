@@ -16,11 +16,13 @@ type Account struct {
 	DisplayName string      `json:"display_name"`
 	Role        AccountRole `json:"role"`
 	MerchantID  string      `json:"merchant_id,omitempty"`
+	Status      string      `json:"status,omitempty"`
 	CreatedAt   time.Time   `json:"created_at"`
 }
 
 type ChatSession struct {
 	SessionID string    `json:"session_id"`
+	AccountID string    `json:"account_id,omitempty"`
 	Title     string    `json:"title"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -28,20 +30,77 @@ type ChatSession struct {
 type UserMessage struct {
 	MessageID       string       `json:"message_id"`
 	SessionID       string       `json:"session_id"`
+	AccountID       string       `json:"account_id,omitempty"`
 	ClientMessageID string       `json:"client_message_id"`
 	Content         string       `json:"content"`
 	Attachments     []Attachment `json:"attachments"`
 	CreatedAt       time.Time    `json:"created_at"`
 }
 
+type ChatSessionDetail struct {
+	Session  ChatSession           `json:"session"`
+	Messages []UserMessageWithRuns `json:"messages"`
+}
+
+type UserMessageWithRuns struct {
+	UserMessage
+	Runs []AgentRun `json:"runs"`
+}
+
 type AgentRun struct {
 	RunID     string    `json:"run_id"`
 	SessionID string    `json:"session_id"`
 	MessageID string    `json:"message_id"`
+	AccountID string    `json:"account_id,omitempty"`
 	Status    RunStatus `json:"status"`
 	TraceID   string    `json:"trace_id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type AgentTraceEvent struct {
+	TraceEventID string    `json:"trace_event_id"`
+	RunID        string    `json:"run_id"`
+	TraceID      string    `json:"trace_id"`
+	AccountID    string    `json:"account_id,omitempty"`
+	Stage        string    `json:"stage"`
+	EventType    string    `json:"event_type"`
+	Model        string    `json:"model,omitempty"`
+	Status       string    `json:"status"`
+	DurationMS   int64     `json:"duration_ms,omitempty"`
+	Error        string    `json:"error,omitempty"`
+	MetadataJSON string    `json:"metadata_json,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type AgentTraceInput struct {
+	RunID        string
+	TraceID      string
+	AccountID    string
+	Stage        string
+	EventType    string
+	Model        string
+	Status       string
+	DurationMS   int64
+	Error        string
+	MetadataJSON string
+}
+
+type AppConfig struct {
+	ConfigKey   string    `json:"config_key"`
+	ConfigValue string    `json:"config_value"`
+	ValueType   string    `json:"value_type"`
+	Description string    `json:"description"`
+	IsSecret    bool      `json:"is_secret"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type AppConfigInput struct {
+	ConfigKey   string
+	ConfigValue string
+	ValueType   string
+	Description string
+	IsSecret    bool
 }
 
 type RunStatus string
@@ -164,6 +223,29 @@ type Cart struct {
 	Summary CartSummary `json:"summary"`
 }
 
+type OrderItem struct {
+	OrderItemID  string `json:"order_item_id"`
+	ProductID    string `json:"product_id"`
+	SkuID        string `json:"sku_id,omitempty"`
+	Name         string `json:"name"`
+	ImageURL     string `json:"image_url"`
+	Price        string `json:"price"`
+	Quantity     int    `json:"quantity"`
+	MerchantID   string `json:"merchant_id"`
+	MerchantName string `json:"merchant_name"`
+}
+
+type Order struct {
+	OrderID      string      `json:"order_id"`
+	AccountID    string      `json:"account_id"`
+	MerchantID   string      `json:"merchant_id"`
+	MerchantName string      `json:"merchant_name"`
+	Status       string      `json:"status"`
+	TotalAmount  string      `json:"total_amount"`
+	Items        []OrderItem `json:"items"`
+	CreatedAt    time.Time   `json:"created_at"`
+}
+
 type Citation struct {
 	ChunkID string `json:"chunkId"`
 	Title   string `json:"title"`
@@ -189,12 +271,22 @@ type KnowledgeDocumentInput struct {
 }
 
 type AgentBlock struct {
-	Type     string       `json:"type"`
-	Product  *ProductCard `json:"product,omitempty"`
-	Citation *Citation    `json:"citation,omitempty"`
-	Content  string       `json:"content,omitempty"`
-	Code     string       `json:"code,omitempty"`
-	Message  string       `json:"message,omitempty"`
+	Type     string                 `json:"type"`
+	Product  *ProductCard           `json:"product,omitempty"`
+	Citation *Citation              `json:"citation,omitempty"`
+	Content  string                 `json:"content,omitempty"`
+	Columns  []string               `json:"columns,omitempty"`
+	Rows     []ComparisonRow        `json:"rows,omitempty"`
+	Cart     *Cart                  `json:"cart,omitempty"`
+	Orders   []Order                `json:"orders,omitempty"`
+	Code     string                 `json:"code,omitempty"`
+	Message  string                 `json:"message,omitempty"`
+	Action   map[string]interface{} `json:"action,omitempty"`
+}
+
+type ComparisonRow struct {
+	ProductID string   `json:"productId"`
+	Values    []string `json:"values"`
 }
 
 type SSEEvent struct {

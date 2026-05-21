@@ -1,10 +1,11 @@
 import { addCartItem, getCart, removeCartItem, updateCartItem } from '../mock/data';
 import type { Cart } from '../types/cart';
+import { loadSession } from './auth';
 import { requestJSON } from './http';
 
 export async function fetchCart(): Promise<Cart> {
   try {
-    return await requestJSON<Cart>('/cart');
+    return await requestJSON<Cart>('/cart', { headers: authHeaders() });
   } catch {
     return getCart();
   }
@@ -14,6 +15,7 @@ export async function addToCart(input: { productId: string; skuId?: string; quan
   try {
     await requestJSON('/cart/items', {
       method: 'POST',
+      headers: authHeaders(),
       body: JSON.stringify({
         product_id: input.productId,
         sku_id: input.skuId,
@@ -32,6 +34,7 @@ export async function patchCartItem(cartItemId: string, patch: { quantity?: numb
   try {
     return await requestJSON<Cart>(`/cart/items/${cartItemId}`, {
       method: 'PATCH',
+      headers: authHeaders(),
       body: JSON.stringify(patch)
     });
   } catch {
@@ -41,9 +44,14 @@ export async function patchCartItem(cartItemId: string, patch: { quantity?: numb
 
 export async function deleteCartItem(cartItemId: string): Promise<Cart> {
   try {
-    await requestJSON(`/cart/items/${cartItemId}`, { method: 'DELETE' });
+    await requestJSON(`/cart/items/${cartItemId}`, { method: 'DELETE', headers: authHeaders() });
     return fetchCart();
   } catch {
     return removeCartItem(cartItemId);
   }
+}
+
+function authHeaders(): Record<string, string> {
+	const token = loadSession()?.token;
+	return token ? { Authorization: `Bearer ${token}` } : {};
 }

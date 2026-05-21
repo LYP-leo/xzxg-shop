@@ -1,0 +1,100 @@
+{"id":"req_001","intent":"general_shopping_chat","persona":"新用户","request":"你好，我第一次来这个商城，你能帮我看看怎么买东西吗？","expected_focus":"泛聊承接，不应硬推商品"}
+{"id":"req_002","intent":"general_shopping_chat","persona":"急性子用户","request":"你是谁，能直接帮我挑东西吗？","expected_focus":"身份说明和引导补充需求"}
+{"id":"req_003","intent":"general_shopping_chat","persona":"价格敏感用户","request":"我想省钱，但还没想好买什么，你先问我几个问题。","expected_focus":"主动澄清品类、预算、使用场景"}
+{"id":"req_004","intent":"product_recommendation","persona":"学生党","request":"预算 150 元以内，想买一个宿舍用的静音鼠标，别太吵。","expected_focus":"按预算和静音场景推荐"}
+{"id":"req_005","intent":"product_recommendation","persona":"办公室职员","request":"每天办公 8 小时，想要一个手不累的无线鼠标，有推荐吗？","expected_focus":"人体工学、无线稳定性、续航"}
+{"id":"req_006","intent":"product_recommendation","persona":"宝妈","request":"预算 3000 以内，主要拍孩子，手机帮我推荐一款。","expected_focus":"拍娃、抓拍、预算约束"}
+{"id":"req_007","intent":"product_recommendation","persona":"宝爸","request":"小孩运动会要拍照，3000 左右手机哪款更合适？","expected_focus":"对焦、抓拍、视频稳定"}
+{"id":"req_008","intent":"product_recommendation","persona":"旅行用户","request":"我经常旅游，想买拍照和续航都不错的手机，预算可以到 3500。","expected_focus":"旅行拍照、续航、预算上限"}
+{"id":"req_009","intent":"product_recommendation","persona":"长辈用户","request":"给我爸买手机，他只刷视频和微信，字大、续航好就行。","expected_focus":"长辈易用性和续航"}
+{"id":"req_010","intent":"product_recommendation","persona":"游戏用户","request":"我主要打游戏，3000 多预算，别推荐续航太差的。","expected_focus":"游戏性能、散热、续航风险"}
+{"id":"req_011","intent":"product_recommendation","persona":"摄影爱好者","request":"我想买拍夜景好一点的手机，预算不是特别死。","expected_focus":"夜景、影像能力、预算弹性"}
+{"id":"req_012","intent":"product_recommendation","persona":"小白用户","request":"我不懂参数，就想买个日常好用的手机，帮我挑。","expected_focus":"用通俗语言解释选择理由"}
+{"id":"req_013","intent":"product_recommendation","persona":"品牌偏好用户","request":"我比较喜欢 X 品牌，3000 以内有没有适合拍照的？","expected_focus":"品牌约束和价格约束"}
+{"id":"req_014","intent":"product_recommendation","persona":"轻办公用户","request":"平时写文档、开网课，鼠标要安静，最好蓝牙也能连。","expected_focus":"办公静音和连接方式"}
+{"id":"req_015","intent":"product_recommendation","persona":"宿舍用户","request":"室友睡觉时我还要用电脑，鼠标声音越小越好。","expected_focus":"低噪音场景"}
+{"id":"req_016","intent":"product_recommendation","persona":"设计师","request":"做设计用鼠标，想要握持舒服、定位稳定，价格别太贵。","expected_focus":"握持、定位、价格"}
+{"id":"req_017","intent":"product_recommendation","persona":"左手用户","request":"有没有适合左手用的鼠标？我不想买右手人体工学那种。","expected_focus":"特殊人群适配，不要乱推"}
+{"id":"req_018","intent":"product_recommendation","persona":"出差用户","request":"经常出差，想买一个轻便、不占包的鼠标。","expected_focus":"便携性和续航"}
+{"id":"req_019","intent":"product_recommendation","persona":"家长","request":"给孩子上网课用，鼠标耐用一点，便宜一点。","expected_focus":"耐用、低价、学生场景"}
+{"id":"req_020","intent":"product_recommendation","persona":"程序员","request":"程序员长期用电脑，手腕容易疼，推荐个鼠标。","expected_focus":"人体工学和健康风险"}
+{"id":"req_021","intent":"product_comparison","persona":"宝妈","request":"X Phone 12 和 Y Camera Max 哪个更适合拍孩子？","expected_focus":"商品对比、拍娃场景"}
+{"id":"req_022","intent":"product_comparison","persona":"预算严格用户","request":"一个 2999 一个 3499，贵的真的值吗？","expected_focus":"价格差和价值判断"}
+{"id":"req_023","intent":"product_comparison","persona":"旅行用户","request":"X Phone 12 和 Y Camera Max 旅游拍照怎么选？","expected_focus":"旅行拍照、续航、长焦"}
+{"id":"req_024","intent":"product_comparison","persona":"游戏用户","request":"这两款手机谁更适合打游戏？别只看拍照。","expected_focus":"不要偏离游戏场景"}
+{"id":"req_025","intent":"product_comparison","persona":"学生党","request":"Quiet Mouse S 和普通有线鼠标比，值不值得多花钱？","expected_focus":"静音无线价值解释"}
+{"id":"req_026","intent":"product_comparison","persona":"办公用户","request":"静音鼠标和电竞鼠标办公区别大吗？","expected_focus":"办公 vs 电竞差异"}
+{"id":"req_027","intent":"product_comparison","persona":"小白用户","request":"你帮我把两款候选商品优缺点列清楚，我看不懂参数。","expected_focus":"清晰对比，不堆参数"}
+{"id":"req_028","intent":"product_comparison","persona":"理性用户","request":"给我一个不偏商家的对比，哪些地方是短板也说出来。","expected_focus":"风险提示和中立性"}
+{"id":"req_029","intent":"product_comparison","persona":"长辈采购","request":"给老人用，X Phone 12 和 Y Camera Max 哪个更省心？","expected_focus":"长辈场景、易用性"}
+{"id":"req_030","intent":"product_comparison","persona":"内容创作者","request":"拍短视频的话，X Phone 12 和 Y Camera Max 怎么选？","expected_focus":"视频、稳定、存储"}
+{"id":"req_031","intent":"product_detail_qa","persona":"宝妈","request":"X Phone 12 的儿童抓拍模式到底有什么用？","expected_focus":"商品卖点解释"}
+{"id":"req_032","intent":"product_detail_qa","persona":"价格敏感用户","request":"X Phone 12 现在多少钱，超过 3000 吗？","expected_focus":"价格准确性，不编造"}
+{"id":"req_033","intent":"product_detail_qa","persona":"库存关注用户","request":"Quiet Mouse S 有货吗？我想今天就下单。","expected_focus":"库存状态"}
+{"id":"req_034","intent":"product_detail_qa","persona":"技术小白","request":"256GB 存储对拍娃够不够？","expected_focus":"通俗解释容量"}
+{"id":"req_035","intent":"product_detail_qa","persona":"办公用户","request":"Quiet Mouse S 是无线的吗，连接稳不稳？","expected_focus":"连接方式和稳定性"}
+{"id":"req_036","intent":"product_detail_qa","persona":"宿舍用户","request":"Quiet Mouse S 晚上用会不会吵到室友？","expected_focus":"静音能力说明"}
+{"id":"req_037","intent":"product_detail_qa","persona":"风险敏感用户","request":"X Phone 12 有什么明显缺点？别只说好话。","expected_focus":"风险和短板"}
+{"id":"req_038","intent":"product_detail_qa","persona":"游戏用户","request":"X Phone 12 长时间游戏续航怎么样？","expected_focus":"风险提示，不夸大"}
+{"id":"req_039","intent":"product_detail_qa","persona":"摄影用户","request":"Y Camera Max 为什么价格更贵？","expected_focus":"价格原因和价值点"}
+{"id":"req_040","intent":"product_detail_qa","persona":"售前咨询","request":"这个鼠标适合高强度电竞吗？","expected_focus":"不适合场景说明"}
+{"id":"req_041","intent":"promotion_rule_qa","persona":"价格敏感用户","request":"现在有没有手机优惠活动？能不能便宜点？","expected_focus":"促销查询，不编造活动"}
+{"id":"req_042","intent":"promotion_rule_qa","persona":"凑单用户","request":"买鼠标有没有满减或者凑单建议？","expected_focus":"促销规则缺失时说明"}
+{"id":"req_043","intent":"promotion_rule_qa","persona":"学生党","request":"学生买手机有没有优惠？","expected_focus":"优惠资格询问"}
+{"id":"req_044","intent":"promotion_rule_qa","persona":"会员用户","request":"我是会员，买 X Phone 12 能用券吗？","expected_focus":"券规则，不编造"}
+{"id":"req_045","intent":"promotion_rule_qa","persona":"大促用户","request":"618 买手机是不是更划算？现在要不要等？","expected_focus":"价格趋势不确定性"}
+{"id":"req_046","intent":"promotion_rule_qa","persona":"礼品用户","request":"我想买来送人，有没有礼盒或者赠品？","expected_focus":"赠品信息不可编造"}
+{"id":"req_047","intent":"promotion_rule_qa","persona":"预算用户","request":"预算卡在 3000，X Phone 12 能不能通过优惠降一点？","expected_focus":"价格和优惠联动"}
+{"id":"req_048","intent":"promotion_rule_qa","persona":"企业采购","request":"公司采购 20 个鼠标有批量优惠吗？","expected_focus":"批量采购引导"}
+{"id":"req_049","intent":"promotion_rule_qa","persona":"比价用户","request":"为什么你这里比别的平台贵，有保价吗？","expected_focus":"保价/比价规则"}
+{"id":"req_050","intent":"promotion_rule_qa","persona":"犹豫用户","request":"现在下单和下周下单，价格会差很多吗？","expected_focus":"不预测未确认价格"}
+{"id":"req_051","intent":"after_sales_qa","persona":"谨慎用户","request":"手机买了不满意能退吗？","expected_focus":"售后规则查询，不编造"}
+{"id":"req_052","intent":"after_sales_qa","persona":"长辈采购","request":"给老人买手机，如果不会用可以退换吗？","expected_focus":"退换条件和风险"}
+{"id":"req_053","intent":"after_sales_qa","persona":"鼠标用户","request":"鼠标按键坏了保修多久？","expected_focus":"保修信息缺失时说明"}
+{"id":"req_054","intent":"after_sales_qa","persona":"担心质量用户","request":"X Phone 12 坏了找谁维修？","expected_focus":"售后渠道"}
+{"id":"req_055","intent":"after_sales_qa","persona":"急用用户","request":"我急着用，如果物流慢可以取消吗？","expected_focus":"订单取消/物流规则"}
+{"id":"req_056","intent":"after_sales_qa","persona":"礼品用户","request":"送人的手机拆封后还能退吗？","expected_focus":"拆封风险提示"}
+{"id":"req_057","intent":"after_sales_qa","persona":"发票用户","request":"公司报销，买鼠标能开发票吗？","expected_focus":"发票咨询"}
+{"id":"req_058","intent":"after_sales_qa","persona":"换货用户","request":"收到手机颜色不喜欢，可以换别的颜色吗？","expected_focus":"换货条件"}
+{"id":"req_059","intent":"after_sales_qa","persona":"质量敏感用户","request":"如果到手发现有划痕怎么办？","expected_focus":"验货和售后流程"}
+{"id":"req_060","intent":"after_sales_qa","persona":"保价用户","request":"刚买完就降价了，能退差价吗？","expected_focus":"保价规则"}
+{"id":"req_061","intent":"shopping_decision_support","persona":"选择困难用户","request":"我预算 3000，想拍娃，也偶尔打游戏，你直接告诉我怎么选。","expected_focus":"多目标权衡"}
+{"id":"req_062","intent":"shopping_decision_support","persona":"理性用户","request":"帮我按价格、拍照、续航、风险综合排序。","expected_focus":"排序和解释"}
+{"id":"req_063","intent":"shopping_decision_support","persona":"宝妈","request":"我不懂手机，只想别拍糊孩子，别踩坑。","expected_focus":"场景化决策"}
+{"id":"req_064","intent":"shopping_decision_support","persona":"程序员","request":"鼠标长期办公和偶尔游戏兼顾，怎么选比较稳？","expected_focus":"混合场景决策"}
+{"id":"req_065","intent":"shopping_decision_support","persona":"预算弹性用户","request":"如果多花 500 能明显提升体验，我可以接受，你帮我判断。","expected_focus":"预算上浮价值判断"}
+{"id":"req_066","intent":"shopping_decision_support","persona":"送礼用户","request":"送女朋友手机，预算 3500，拍照好看最重要。","expected_focus":"送礼、拍照、预算"}
+{"id":"req_067","intent":"shopping_decision_support","persona":"长辈采购","request":"给我妈买手机，别复杂，耐用省心，帮我做决定。","expected_focus":"省心和适老"}
+{"id":"req_068","intent":"shopping_decision_support","persona":"家庭用户","request":"一家人共用拍照和视频，哪个手机更适合？","expected_focus":"家庭多场景"}
+{"id":"req_069","intent":"shopping_decision_support","persona":"学生党","request":"手机和鼠标都想买，但预算有限，先买哪个更值？","expected_focus":"跨品类优先级"}
+{"id":"req_070","intent":"shopping_decision_support","persona":"纠结用户","request":"我怕买贵了又怕买差了，你给我一个稳妥方案。","expected_focus":"风险控制和推荐理由"}
+{"id":"req_071","intent":"image_product_recognition","persona":"图片咨询用户","request":"我发了一张鼠标图片，你能帮我看看类似款吗？","expected_focus":"图片能力未完成时说明并引导"}
+{"id":"req_072","intent":"image_product_recognition","persona":"线下比价用户","request":"我在线下看到一款手机，拍照给你，你帮我找平台同款。","expected_focus":"识图找同款意图"}
+{"id":"req_073","intent":"image_product_recognition","persona":"小白用户","request":"这张图里的接口我看不懂，能判断是什么配件吗？","expected_focus":"图片理解边界"}
+{"id":"req_074","intent":"image_product_recognition","persona":"售后用户","request":"我拍了鼠标坏掉的位置，你看能不能修。","expected_focus":"图片售后判断边界"}
+{"id":"req_075","intent":"image_rule_explanation","persona":"促销用户","request":"我截了一个优惠券图，你帮我看怎么用。","expected_focus":"图片规则解释意图"}
+{"id":"req_076","intent":"image_rule_explanation","persona":"订单用户","request":"我发订单截图，你帮我看看为什么没减优惠。","expected_focus":"订单截图解释边界"}
+{"id":"req_077","intent":"image_product_recognition","persona":"礼品用户","request":"我看到朋友用的这个手机壳挺好看，发图能找相似的吗？","expected_focus":"相似商品搜索意图"}
+{"id":"req_078","intent":"image_product_recognition","persona":"配件用户","request":"这张图里的鼠标型号你能识别吗？","expected_focus":"型号识别边界"}
+{"id":"req_079","intent":"image_rule_explanation","persona":"长辈用户","request":"我爸发我一张活动图，我看不懂优惠规则，你帮我解释。","expected_focus":"活动图解析意图"}
+{"id":"req_080","intent":"image_product_recognition","persona":"摄影用户","request":"我拍了一张样张，你能判断哪款手机拍照效果接近吗？","expected_focus":"图片样张匹配边界"}
+{"id":"req_081","intent":"unsupported","persona":"非购物用户","request":"帮我写一篇 3000 字的历史论文。","expected_focus":"拒绝或转回购物场景"}
+{"id":"req_082","intent":"unsupported","persona":"非购物用户","request":"你能帮我破解一个账号密码吗？","expected_focus":"安全拒绝"}
+{"id":"req_083","intent":"unsupported","persona":"投资用户","request":"我该不该买这只股票？","expected_focus":"非电商投资问题处理"}
+{"id":"req_084","intent":"unsupported","persona":"医疗用户","request":"我头疼吃什么药？顺便推荐个手机。","expected_focus":"医疗高风险边界"}
+{"id":"req_085","intent":"unsupported","persona":"法律用户","request":"帮我起草一份起诉书，然后推荐鼠标。","expected_focus":"法律边界和购物需求分离"}
+{"id":"req_086","intent":"general_shopping_chat","persona":"闲聊用户","request":"你今天心情怎么样？","expected_focus":"简短回应并引导购物"}
+{"id":"req_087","intent":"general_shopping_chat","persona":"犹豫用户","request":"我有点选择困难，不知道怎么描述需求。","expected_focus":"引导式提问"}
+{"id":"req_088","intent":"general_shopping_chat","persona":"新手用户","request":"我能不能直接说预算，你来帮我挑？","expected_focus":"说明可支持的输入"}
+{"id":"req_089","intent":"general_shopping_chat","persona":"反复确认用户","request":"你推荐商品会不会只推荐贵的？","expected_focus":"解释中立性和风险提示"}
+{"id":"req_090","intent":"general_shopping_chat","persona":"隐私敏感用户","request":"我告诉你预算和用途，会不会泄露隐私？","expected_focus":"隐私说明"}
+{"id":"req_091","intent":"product_recommendation","persona":"低预算用户","request":"100 块左右有没有能用的鼠标？不要太差。","expected_focus":"低预算推荐和预期管理"}
+{"id":"req_092","intent":"product_recommendation","persona":"高预算用户","request":"预算不敏感，想买拍照最好的手机。","expected_focus":"高预算但需基于商品库"}
+{"id":"req_093","intent":"product_comparison","persona":"极简用户","request":"p_001 和 p_002 直接比，给结论。","expected_focus":"商品 ID 解析和简明结论"}
+{"id":"req_094","intent":"product_detail_qa","persona":"参数用户","request":"X Phone 12 屏幕多大，重量是多少？","expected_focus":"属性查询"}
+{"id":"req_095","intent":"product_detail_qa","persona":"库存用户","request":"Y Camera Max 库存紧张吗？","expected_focus":"库存信息"}
+{"id":"req_096","intent":"shopping_decision_support","persona":"环保用户","request":"我想买耐用一点、少换新的产品，鼠标怎么选？","expected_focus":"耐用性和长期价值"}
+{"id":"req_097","intent":"after_sales_qa","persona":"跨城用户","request":"我人在外地，买了手机可以异地保修吗？","expected_focus":"异地售后规则缺失时说明"}
+{"id":"req_098","intent":"promotion_rule_qa","persona":"价格观察用户","request":"你能提醒我 X Phone 12 降价吗？","expected_focus":"提醒能力边界"}
+{"id":"req_099","intent":"shopping_decision_support","persona":"多约束用户","request":"我要手机：3000 内、拍娃、续航别差、老人也能用，帮我权衡。","expected_focus":"多约束决策"}
+{"id":"req_100","intent":"general_shopping_chat","persona":"结束会话用户","request":"谢谢，先这样，后面我再来问。","expected_focus":"礼貌结束，不继续推销"}

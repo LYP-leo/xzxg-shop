@@ -1,21 +1,18 @@
-import { buildMockAgentEvents, createMockSession } from '../mock/data';
 import type { AgentSseEvent, AgentSession, Attachment } from '../types/agent';
+import { loadSession } from './auth';
 import { requestJSON } from './http';
 
 export async function createAgentSession(): Promise<AgentSession> {
-  try {
-    const data = await requestJSON<{ session_id: string; title: string }>('/agent/sessions', {
-      method: 'POST',
-      body: JSON.stringify({ title: 'AI 导购', entry_source: 'chat_home' })
-    });
-    return {
-      sessionId: data.session_id,
-      title: data.title,
-      turns: []
-    };
-  } catch {
-    return createMockSession();
-  }
+  const data = await requestJSON<{ session_id: string; title: string }>('/agent/sessions', {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ title: 'AI 导购', entry_source: 'chat_home' })
+  });
+  return {
+    sessionId: data.session_id,
+    title: data.title,
+    turns: []
+  };
 }
 
 export async function streamAgentMessage(input: {
@@ -27,9 +24,9 @@ export async function streamAgentMessage(input: {
   try {
     const response = await fetch(`/api/v1/agent/sessions/${input.sessionId}/messages:stream`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...authHeaders() },
       body: JSON.stringify({
-        client_message_id: crypto.randomUUID(),
+        client_message_id: createClientMessageId(),
         content: input.content,
         attachments: input.attachments.map((item) => ({
           attachment_id: item.attachmentId,
@@ -40,16 +37,21 @@ export async function streamAgentMessage(input: {
     });
 
     if (!response.ok || !response.body) {
-      throw new Error('stream unavailable');
+      input.onEvent({ type: 'error', code: 'stream_unavailable', message: 'Agent 服务暂时不可用，请稍后重试' });
+      return;
     }
 
     await readSseStream(response.body, input.onEvent);
   } catch {
-    for (const event of buildMockAgentEvents(input.sessionId, input.content)) {
-      input.onEvent(event);
-      await new Promise((resolve) => window.setTimeout(resolve, event.type === 'text_delta' ? 240 : 120));
-    }
+    input.onEvent({ type: 'error', code: 'network_error', message: 'Agent 连接失败，请确认后端服务已启动' });
   }
+}
+
+function createClientMessageId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `cli_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
 async function readSseStream(body: ReadableStream<Uint8Array>, onEvent: (event: AgentSseEvent) => void): Promise<void> {
@@ -77,8 +79,13 @@ async function readSseStream(body: ReadableStream<Uint8Array>, onEvent: (event: 
 
 export async function cancelAgentRun(runId: string): Promise<void> {
   try {
-    await requestJSON(`/agent/runs/${runId}:cancel`, { method: 'POST' });
+    await requestJSON(`/agent/runs/${runId}:cancel`, { method: 'POST', headers: authHeaders() });
   } catch {
     return;
   }
+}
+
+function authHeaders(): Record<string, string> {
+	const token = loadSession()?.token;
+	return token ? { Authorization: `Bearer ${token}` } : {};
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/LYP-leo/xzxg-shop/backend/src/agent"
+	"github.com/LYP-leo/xzxg-shop/backend/src/configcenter"
 	"github.com/LYP-leo/xzxg-shop/backend/src/httpapi"
 	"github.com/LYP-leo/xzxg-shop/backend/src/store"
 )
@@ -19,6 +20,10 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	addr := env("API_ADDR", ":8080")
 	dsn := env("MYSQL_DSN", "root:root@tcp(127.0.0.1:3306)/xzxg_shop?parseTime=true&loc=Local")
+	nacosAddr := env("NACOS_ADDR", "http://127.0.0.1:8848")
+	nacosNamespace := env("NACOS_NAMESPACE", "")
+	nacosGroup := env("NACOS_GROUP", "XZXG_SHOP")
+	nacosDataID := env("NACOS_DATA_ID", "xzxg-shop-app-config.json")
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -34,8 +39,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	runtime := agent.NewRuntime(mysqlStore, logger)
-	server := httpapi.NewServer(mysqlStore, runtime, logger)
+	runtimeConfig := agent.RuntimeConfigFromEnv()
+	configCenter := configcenter.NewNacosCenter(nacosAddr, nacosNamespace, nacosGroup, nacosDataID, configcenter.DefaultConfigs(runtimeConfig.Models.APIKey))
+	if err := configCenter.Seed(ctx); err != nil {
+		logger.Warn("nacos config center unavailable, using in-memory defaults", "error", err)
+	}
+	runtime := agent.NewRuntime(mysqlStore, configCenter, logger, runtimeConfig)
+	server := httpapi.NewServer(mysqlStore, configCenter, runtime, logger)
 
 	httpServer := &http.Server{
 		Addr:              addr,

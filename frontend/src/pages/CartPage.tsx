@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { deleteCartItem, fetchCart, patchCartItem } from '../api/cart';
+import { checkoutCart } from '../api/order';
 import type { Cart } from '../types/cart';
 
 type Props = {
@@ -8,6 +9,7 @@ type Props = {
 
 export function CartPage({ refreshToken }: Props) {
   const [cart, setCart] = useState<Cart>();
+  const [status, setStatus] = useState('');
 
   useEffect(() => {
     fetchCart().then(setCart);
@@ -29,6 +31,12 @@ export function CartPage({ refreshToken }: Props) {
     setCart(await deleteCartItem(cartItemId));
   }
 
+  async function checkout() {
+    await checkoutCart();
+    setStatus('订单已提交');
+    setCart(await fetchCart());
+  }
+
   return (
     <section>
       <header className="page-header">
@@ -38,6 +46,7 @@ export function CartPage({ refreshToken }: Props) {
         </div>
       </header>
       <div className="cart-list">
+        {status ? <p className="notice">{status}</p> : null}
         {cart.items.length ? (
           cart.items.map((item) => (
             <article className="cart-item" key={item.cartItemId}>
@@ -65,8 +74,8 @@ export function CartPage({ refreshToken }: Props) {
       <div className="cart-summary">
         <span>已选 {cart.summary.selectedCount} 件</span>
         <strong>应付 ¥{cart.summary.payAmount}</strong>
-        <button className="button" disabled={!cart.items.length}>
-          模拟下单
+        <button className="button" disabled={!cart.summary.selectedCount} onClick={checkout}>
+          提交订单
         </button>
       </div>
     </section>

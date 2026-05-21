@@ -23,6 +23,17 @@ Health check:
 curl http://localhost:8080/api/v1/health
 ```
 
+Agent model configuration:
+
+```bash
+export DASHSCOPE_API_KEY='your-new-key'
+export AI_SMALL_MODEL='qwen3.5-flash'
+export AI_LARGE_MODEL='qwen3.6-plus'
+export AI_BASE_URL='https://dashscope.aliyuncs.com/compatible-mode/v1'
+```
+
+The backend will call DashScope only when `DASHSCOPE_API_KEY` is present; otherwise it keeps a local fallback for development.
+
 ## Local Middleware
 
 ```bash
