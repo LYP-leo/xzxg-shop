@@ -10,3 +10,4 @@ build/
 android-native/.gradle/
 android-native/build/
 android-native/app/build/
+android-native/exports/

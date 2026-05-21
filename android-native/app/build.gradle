@@ -21,11 +21,11 @@ android {
     buildTypes {
         debug {
             buildConfigField 'boolean', 'SHOW_TEST_SERVER_SETTINGS', 'true'
-            buildConfigField 'String', 'DEFAULT_API_BASE', '"http://10.0.2.2:8080/api/v1"'
+            buildConfigField 'String', 'DEFAULT_API_BASE', '"http://82.156.207.98:8080/api/v1"'
         }
         release {
             buildConfigField 'boolean', 'SHOW_TEST_SERVER_SETTINGS', 'false'
-            buildConfigField 'String', 'DEFAULT_API_BASE', '"https://api.example.com/api/v1"'
+            buildConfigField 'String', 'DEFAULT_API_BASE', '"http://82.156.207.98:8080/api/v1"'
             minifyEnabled false
         }
     }
