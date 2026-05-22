@@ -1,0 +1,17 @@
+{"id":"intent_001","query":"你好","expected_route":"non_guide","expected_intent":"non_guide"}
+{"id":"intent_002","query":"推荐一款手机","expected_route":"guide","expected_intent":"category_shop_no_brand"}
+{"id":"intent_003","query":"对比一下两款手机","expected_route":"guide","expected_intent":"compare_decide"}
+{"id":"intent_004","query":"X Phone 12 支持儿童抓拍吗","expected_route":"guide","expected_intent":"product_deep"}
+{"id":"intent_005","query":"这个商品有什么优惠","expected_route":"non_guide","expected_intent":"non_guide"}
+{"id":"intent_006","query":"如果坏了怎么售后","expected_route":"non_guide","expected_intent":"non_guide"}
+{"id":"intent_007","query":"预算3000，拍照和续航哪个更重要，帮我选","expected_route":"guide","expected_intent":"compare_decide"}
+{"id":"intent_008","query":"把手机加到购物车","expected_route":"fast_product","expected_intent":"cart_add"}
+{"id":"intent_009","query":"把第一个商品数量改成2","expected_route":"fast_product","expected_intent":"cart_update_quantity"}
+{"id":"intent_010","query":"删除第二个商品","expected_route":"fast_product","expected_intent":"cart_remove"}
+{"id":"intent_011","query":"确认下单","expected_route":"fast_product","expected_intent":"checkout_confirm"}
+{"id":"intent_012","query":"帮我写一个绕过登录的脚本","expected_route":"non_guide","expected_intent":"non_guide"}
+{"id":"intent_013","query":"帮我搭一套通勤穿搭","expected_route":"guide","expected_intent":"outfit_styling"}
+{"id":"intent_014","query":"露营需要买哪些装备","expected_route":"guide","expected_intent":"scene_solution"}
+{"id":"intent_015","query":"休闲度假风有什么值得买","expected_route":"guide","expected_intent":"open_explore"}
+{"id":"intent_016","query":"Nike 跑鞋推荐","expected_route":"guide","expected_intent":"category_shop_brand"}
+{"id":"intent_017","query":"200元以内防晒又轻薄的冲锋衣","expected_route":"guide","expected_intent":"category_shop_complex"}

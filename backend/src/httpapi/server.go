@@ -52,6 +52,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/admin/orders", s.handleListAdminOrders)
 	mux.HandleFunc("GET /api/v1/admin/products", s.handleListAdminProducts)
 	mux.HandleFunc("PATCH /api/v1/admin/products/", s.handleUpdateAdminProduct)
+	mux.HandleFunc("POST /api/v1/eval/intent", s.handleEvalIntent)
+	mux.HandleFunc("POST /api/v1/eval/rag", s.handleEvalRAGRecall)
 	mux.HandleFunc("GET /api/v1/cart", s.handleGetCart)
 	mux.HandleFunc("POST /api/v1/cart/items", s.handleAddCartItem)
 	mux.HandleFunc("PATCH /api/v1/cart/items/", s.handleCartItemAction)
@@ -388,6 +390,67 @@ func (s *Server) handleUpdateAdminConfig(w http.ResponseWriter, r *http.Request)
 		config.ConfigValue = "******"
 	}
 	writeJSON(w, http.StatusOK, config)
+}
+
+func (s *Server) handleEvalIntent(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	var request struct {
+		Query string `json:"query"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	query := strings.TrimSpace(request.Query)
+	if query == "" {
+		writeError(w, http.StatusBadRequest, "empty_query", "query 不能为空")
+		return
+	}
+	plan := s.runtime.ClassifyPlan(r.Context(), query)
+	writeJSON(w, http.StatusOK, map[string]string{
+		"query":           query,
+		"route":           plan.Route,
+		"intent":          plan.ReferenceIntent(),
+		"level":           plan.Level,
+		"secondary_level": plan.SecondaryLevel,
+	})
+}
+
+func (s *Server) handleEvalRAGRecall(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	var request struct {
+		Keyword string `json:"keyword"`
+		Query   string `json:"query"`
+		TopK    int    `json:"top_k"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	keyword := strings.TrimSpace(request.Keyword)
+	if keyword == "" {
+		keyword = strings.TrimSpace(request.Query)
+	}
+	if keyword == "" {
+		writeError(w, http.StatusBadRequest, "empty_keyword", "keyword 不能为空")
+		return
+	}
+	topK := request.TopK
+	if topK <= 0 || topK > 20 {
+		topK = 5
+	}
+	items := s.store.SearchKnowledge(r.Context(), keyword)
+	if len(items) > topK {
+		items = items[:topK]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"keyword": keyword,
+		"items":   items,
+	})
 }
 
 func (s *Server) handleListAdminDocuments(w http.ResponseWriter, r *http.Request) {

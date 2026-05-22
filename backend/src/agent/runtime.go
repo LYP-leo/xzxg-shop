@@ -30,6 +30,14 @@ func NewRuntime(store store.Store, configs configcenter.Center, logger *slog.Log
 	return &Runtime{store: store, configs: configs, logger: logger, llm: NewLLMClient(config.Models), baseConfig: config}
 }
 
+func (r *Runtime) ClassifyIntent(ctx context.Context, query string) string {
+	return r.classifyIntent(ctx, domain.AgentRun{}, query, false).ReferenceIntent()
+}
+
+func (r *Runtime) ClassifyPlan(ctx context.Context, query string) runPlan {
+	return r.classifyIntent(ctx, domain.AgentRun{}, query, false)
+}
+
 func (r *Runtime) Stream(ctx context.Context, run domain.AgentRun, message domain.UserMessage, emit func(domain.SSEEvent) error) error {
 	r.refreshDynamicConfig(ctx)
 	r.logger.Info("agent run started", "run_id", run.RunID, "session_id", run.SessionID, "message_id", message.MessageID)
@@ -68,9 +76,12 @@ func (r *Runtime) Stream(ctx context.Context, run domain.AgentRun, message domai
 		return err
 	}
 	plan := r.plan(ctx, run, message.Content)
-	r.logger.Info("agent plan selected", "run_id", run.RunID, "intent", plan.Intent, "answer_model", plan.AnswerModel)
+	r.logger.Info("agent plan selected", "run_id", run.RunID, "route", plan.Route, "intent", plan.ReferenceIntent(), "answer_model", plan.AnswerModel)
 	r.trace(ctx, run, "planner", "selected", plan.AnswerModel, "ok", 0, "", map[string]any{
-		"intent": plan.Intent,
+		"route":           plan.Route,
+		"intent":          plan.ReferenceIntent(),
+		"level":           plan.Level,
+		"secondary_level": plan.SecondaryLevel,
 	})
 
 	var products []domain.ProductCard
@@ -164,20 +175,40 @@ func (r *Runtime) emitStatus(ctx context.Context, runID string, stage string, te
 }
 
 type runPlan struct {
-	Intent      string `json:"intent"`
-	AnswerModel string `json:"-"`
+	Intent         string `json:"intent"`
+	Route          string `json:"route,omitempty"`
+	Level          string `json:"level,omitempty"`
+	SecondaryLevel string `json:"secondary_level,omitempty"`
+	Reasoning      string `json:"reasoning,omitempty"`
+	AnswerModel    string `json:"-"`
+}
+
+func (p runPlan) ReferenceIntent() string {
+	if p.Intent != "" {
+		return p.Intent
+	}
+	if p.Route != "" {
+		return p.Route
+	}
+	return p.Intent
 }
 
 func (p runPlan) UsesCatalog() bool {
-	switch p.Intent {
-	case "product_recommendation", "product_comparison", "product_detail_qa", "promotion_rule_qa", "after_sales_qa", "shopping_decision_support", "cart_add":
+	switch p.Route {
+	case "guide":
 		return true
+	case "fast_product":
+		return p.Intent == "cart_add"
 	default:
 		return false
 	}
 }
 
 func (r *Runtime) plan(ctx context.Context, run domain.AgentRun, query string) runPlan {
+	return r.classifyIntent(ctx, run, query, true)
+}
+
+func (r *Runtime) classifyIntent(ctx context.Context, run domain.AgentRun, query string, recordTrace bool) runPlan {
 	fallback := heuristicPlan(query, r.llm.SmallModel(), r.llm.LargeModel())
 	if isGreeting(query) || isToolIntent(fallback.Intent) {
 		return fallback
@@ -187,36 +218,161 @@ func (r *Runtime) plan(ctx context.Context, run domain.AgentRun, query string) r
 	}
 
 	startedAt := time.Now()
-	content, err := r.llm.Complete(ctx, r.llm.SmallModel(), []ChatMessage{
+	routeContent, err := r.llm.Complete(ctx, r.llm.SmallModel(), []ChatMessage{
 		{
 			Role:    "system",
-			Content: r.stringConfig(ctx, "agent.prompt.planner", configcenter.DefaultPlannerPrompt),
+			Content: r.stringConfig(ctx, "agent.prompt.route", configcenter.DefaultRoutePrompt),
 		},
 		{
 			Role:    "user",
-			Content: "用户问题：" + query + "\n只输出字段：intent。",
+			Content: "用户问题：" + query + "\n只输出字段：reasoning、route。",
 		},
 	}, 0.1)
 	if err != nil {
-		r.logger.Warn("agent planner fallback", "error", err)
-		r.traceLLM(ctx, run, "planner", r.llm.SmallModel(), startedAt, err, nil)
+		r.logger.Warn("agent route fallback", "error", err)
+		if recordTrace {
+			r.traceLLM(ctx, run, "planner.route", r.llm.SmallModel(), startedAt, err, nil)
+		}
 		return fallback
 	}
-	r.traceLLM(ctx, run, "planner", r.llm.SmallModel(), startedAt, nil, map[string]any{"raw_length": len([]rune(content))})
+	if recordTrace {
+		r.traceLLM(ctx, run, "planner.route", r.llm.SmallModel(), startedAt, nil, map[string]any{"raw_length": len([]rune(routeContent))})
+	}
 
 	var plan runPlan
-	if err := json.Unmarshal([]byte(extractJSONObject(content)), &plan); err != nil {
-		r.logger.Warn("agent planner json fallback", "error", err, "content", content)
+	if err := json.Unmarshal([]byte(extractJSONObject(routeContent)), &plan); err != nil {
+		r.logger.Warn("agent route json fallback", "error", err, "content", routeContent)
 		return fallback
 	}
-	if plan.Intent == "" {
-		plan.Intent = fallback.Intent
+	plan.Route = normalizeRoute(plan.Route, fallback.Route)
+
+	if plan.Route == "guide" {
+		guidePlan := r.classifyGuideIntent(ctx, run, query, recordTrace, fallback)
+		guidePlan.Route = "guide"
+		guidePlan.AnswerModel = r.answerModelForPlan(guidePlan)
+		return guidePlan
 	}
+
+	plan.Intent = normalizeRouteIntent(plan.Route, query, fallback.Intent)
 	if isToolIntent(fallback.Intent) {
 		plan.Intent = fallback.Intent
+		plan.Route = "fast_product"
 	}
-	plan.AnswerModel = r.answerModelForIntent(plan.Intent)
+	plan.AnswerModel = r.answerModelForPlan(plan)
 	return plan
+}
+
+func (r *Runtime) classifyGuideIntent(ctx context.Context, run domain.AgentRun, query string, recordTrace bool, fallback runPlan) runPlan {
+	startedAt := time.Now()
+	content, err := r.llm.Complete(ctx, r.llm.SmallModel(), []ChatMessage{
+		{
+			Role:    "system",
+			Content: r.stringConfig(ctx, "agent.prompt.guide_intent", configcenter.DefaultGuideIntentPrompt),
+		},
+		{
+			Role:    "user",
+			Content: "用户问题：" + query + "\n只输出字段：reasoning、is_guide、intent、level、secondary_level。",
+		},
+	}, 0.1)
+	if err != nil {
+		r.logger.Warn("agent guide intent fallback", "error", err)
+		if recordTrace {
+			r.traceLLM(ctx, run, "planner.guide_intent", r.llm.SmallModel(), startedAt, err, nil)
+		}
+		return fallback
+	}
+	if recordTrace {
+		r.traceLLM(ctx, run, "planner.guide_intent", r.llm.SmallModel(), startedAt, nil, map[string]any{"raw_length": len([]rune(content))})
+	}
+
+	var guidePlan runPlan
+	if err := json.Unmarshal([]byte(extractJSONObject(content)), &guidePlan); err != nil {
+		r.logger.Warn("agent guide intent json fallback", "error", err, "content", content)
+		return fallback
+	}
+	guidePlan.Intent = normalizeGuideReferenceIntent(guidePlan)
+	if guidePlan.Intent == "" {
+		guidePlan.Intent = fallback.ReferenceIntent()
+	}
+	return guidePlan
+}
+
+func normalizeRoute(route string, fallback string) string {
+	switch strings.TrimSpace(route) {
+	case "guide", "non_guide", "fast_product":
+		return strings.TrimSpace(route)
+	default:
+		if fallback != "" {
+			return fallback
+		}
+		return "guide"
+	}
+}
+
+func normalizeGuideReferenceIntent(plan runPlan) string {
+	intent := strings.TrimSpace(plan.Intent)
+	level := strings.ToUpper(strings.TrimSpace(plan.Level))
+	secondary := strings.ToUpper(strings.TrimSpace(plan.SecondaryLevel))
+
+	switch intent {
+	case "product_deep", "compare_decide", "outfit_styling", "category_shop_brand", "category_shop_no_brand", "category_shop_complex", "scene_solution", "open_explore":
+		return intent
+	case "category_shop":
+		switch secondary {
+		case "P4A":
+			return "category_shop_brand"
+		case "P4C":
+			return "category_shop_complex"
+		default:
+			return "category_shop_no_brand"
+		}
+	}
+
+	switch level {
+	case "P1":
+		return "product_deep"
+	case "P2":
+		return "compare_decide"
+	case "P3":
+		return "outfit_styling"
+	case "P4":
+		switch secondary {
+		case "P4A":
+			return "category_shop_brand"
+		case "P4C":
+			return "category_shop_complex"
+		default:
+			return "category_shop_no_brand"
+		}
+	case "P5":
+		return "scene_solution"
+	case "P6":
+		return "open_explore"
+	}
+	return ""
+}
+
+func normalizeRouteIntent(route string, query string, fallback string) string {
+	switch route {
+	case "fast_product":
+		switch {
+		case looksCartAdd(query):
+			return "cart_add"
+		case looksCartRemove(query):
+			return "cart_remove"
+		case looksCartQuantityUpdate(query):
+			return "cart_update_quantity"
+		case looksCheckout(query):
+			return "checkout_confirm"
+		}
+		return fallback
+	case "non_guide":
+		return "non_guide"
+	case "guide":
+		return "open_explore"
+	default:
+		return fallback
+	}
 }
 
 func (r *Runtime) streamAnswer(ctx context.Context, run domain.AgentRun, plan runPlan, query string, products []domain.ProductCard, chunks []domain.Citation, emit func(domain.SSEEvent) error) error {
@@ -231,13 +387,16 @@ func (r *Runtime) streamAnswer(ctx context.Context, run domain.AgentRun, plan ru
 	err := r.llm.Stream(ctx, plan.AnswerModel, []ChatMessage{
 		{
 			Role:    "system",
-			Content: r.systemPromptForIntent(ctx, plan.Intent),
+			Content: r.systemPromptForPlan(ctx, plan),
 		},
 		{
 			Role: "user",
-			Content: fmt.Sprintf("用户问题：%s\n\n意图：%s\n\n候选商品：\n%s\n\n资料片段：\n%s",
+			Content: fmt.Sprintf("用户问题：%s\n\n一级路由：%s\n意图：%s\n层级：%s\n二级层级：%s\n\n候选商品：\n%s\n\n资料片段：\n%s",
 				query,
-				plan.Intent,
+				plan.Route,
+				plan.ReferenceIntent(),
+				plan.Level,
+				plan.SecondaryLevel,
 				productContext,
 				knowledgeContext,
 			),
@@ -251,13 +410,13 @@ func (r *Runtime) streamAnswer(ctx context.Context, run domain.AgentRun, plan ru
 	})
 	if err != nil {
 		r.logger.Warn("agent answer fallback", "error", err, "model", plan.AnswerModel)
-		r.traceLLM(ctx, run, "answer", plan.AnswerModel, startedAt, err, map[string]any{"intent": plan.Intent})
+		r.traceLLM(ctx, run, "answer", plan.AnswerModel, startedAt, err, map[string]any{"route": plan.Route, "intent": plan.ReferenceIntent()})
 		if content.Len() > 0 {
 			return nil
 		}
 		return r.emitFallbackAnswer(ctx, run, buildAnswer(query, plan, products), emit)
 	}
-	r.traceLLM(ctx, run, "answer", plan.AnswerModel, startedAt, nil, map[string]any{"intent": plan.Intent, "raw_length": len([]rune(content.String()))})
+	r.traceLLM(ctx, run, "answer", plan.AnswerModel, startedAt, nil, map[string]any{"route": plan.Route, "intent": plan.ReferenceIntent(), "raw_length": len([]rune(content.String()))})
 	return nil
 }
 
@@ -267,6 +426,15 @@ func (r *Runtime) executeDeterministicIntent(ctx context.Context, run domain.Age
 			return true, err
 		}
 		return true, nil
+	}
+	if plan.Route == "non_guide" {
+		if err := r.emitText(run, nonGuideResponse(query), emit); err != nil {
+			return true, err
+		}
+		return true, nil
+	}
+	if plan.Route != "fast_product" {
+		return false, nil
 	}
 	switch plan.Intent {
 	case "cart_add":
@@ -485,58 +653,85 @@ func parseBool(value string, fallback bool) bool {
 
 func heuristicPlan(query string, smallModel string, largeModel string) runPlan {
 	plan := runPlan{
-		Intent:      "general_shopping_chat",
+		Route:       "non_guide",
+		Intent:      "non_guide",
 		AnswerModel: smallModel,
 	}
 	if isGreeting(query) {
 		return plan
 	}
 	if looksUnsupported(query) {
-		plan.Intent = "unsupported"
+		plan.Intent = "non_guide"
 		return plan
 	}
 	if looksCartAdd(query) {
+		plan.Route = "fast_product"
 		plan.Intent = "cart_add"
 		return plan
 	}
 	if looksCartRemove(query) {
+		plan.Route = "fast_product"
 		plan.Intent = "cart_remove"
 		return plan
 	}
 	if looksCartQuantityUpdate(query) {
+		plan.Route = "fast_product"
 		plan.Intent = "cart_update_quantity"
 		return plan
 	}
 	if looksCheckout(query) {
+		plan.Route = "fast_product"
 		plan.Intent = "checkout_confirm"
 		return plan
 	}
-	if looksCatalogRelated(query) {
-		plan.Intent = "product_recommendation"
+	if strings.Contains(query, "对比") || strings.Contains(query, "比较") {
+		plan.Route = "guide"
+		plan.Intent = "compare_decide"
+		plan.Level = "P2"
+		plan.SecondaryLevel = "None"
+		plan.AnswerModel = largeModel
+		return plan
 	}
-	if strings.Contains(query, "对比") || strings.Contains(query, "比较") || strings.Contains(query, "哪个") || strings.Contains(query, "推荐") {
-		plan.Intent = "shopping_decision_support"
+	if containsAny(query, []string{"优惠", "促销", "满减", "券", "折扣", "活动"}) {
+		plan.Intent = "non_guide"
+		return plan
+	}
+	if looksCatalogRelated(query) {
+		plan.Route = "guide"
+		plan.Intent = "category_shop_no_brand"
+		plan.Level = "P4"
+		plan.SecondaryLevel = "P4B"
+	}
+	if strings.Contains(query, "哪个") {
+		plan.Route = "guide"
+		plan.Intent = "compare_decide"
+		plan.Level = "P2"
+		plan.SecondaryLevel = "None"
 		plan.AnswerModel = largeModel
 	}
 	if strings.Contains(query, "售后") || strings.Contains(query, "退货") || strings.Contains(query, "保修") {
-		plan.Intent = "after_sales_qa"
+		plan.Route = "non_guide"
+		plan.Intent = "non_guide"
+		plan.Level = ""
+		plan.SecondaryLevel = ""
 	}
 	return plan
 }
 
-func (r *Runtime) answerModelForIntent(intent string) string {
-	switch intent {
-	case "product_comparison", "shopping_decision_support":
+func (r *Runtime) answerModelForPlan(plan runPlan) string {
+	switch plan.Intent {
+	case "compare_decide", "category_shop_complex", "scene_solution":
 		return r.llm.LargeModel()
 	default:
 		return r.llm.SmallModel()
 	}
 }
 
-func (r *Runtime) systemPromptForIntent(ctx context.Context, intent string) string {
+func (r *Runtime) systemPromptForPlan(ctx context.Context, plan runPlan) string {
 	base := []string{
 		r.stringConfig(ctx, "agent.prompt.answer_base", configcenter.DefaultAnswerBasePrompt),
 	}
+	intent := plan.ReferenceIntent()
 	fallback := configcenter.DefaultIntentPrompt(intent)
 	if prompt := r.stringConfig(ctx, "agent.prompt.intent."+intent, fallback); prompt != "" {
 		base = append(base, prompt)
@@ -545,8 +740,8 @@ func (r *Runtime) systemPromptForIntent(ctx context.Context, intent string) stri
 }
 
 func buildAnswer(query string, plan runPlan, products []domain.ProductCard) string {
-	if plan.Intent == "unsupported" {
-		return "这个请求不属于购物导购范围，我不能帮你完成。你可以告诉我想买的商品、预算、使用场景或想对比的候选商品，我会继续帮你筛选。"
+	if plan.Route == "non_guide" {
+		return nonGuideResponse(query)
 	}
 	if !plan.UsesCatalog() {
 		return "你好，我是小猪小狗 AI 导购。你可以告诉我预算、品类、使用场景或想对比的商品，我会帮你缩小选择范围。"
@@ -559,6 +754,21 @@ func buildAnswer(query string, plan runPlan, products []domain.ProductCard) stri
 		return "如果主要用于办公，我会优先看静音、握持舒适度和无线稳定性。当前更推荐 " + first.Name + "，它更适合长时间办公使用。"
 	}
 	return "结合你的需求，我会优先推荐 " + first.Name + "。它的价格、核心卖点和风险提示都来自商品库与知识库，适合先作为第一候选。"
+}
+
+func nonGuideResponse(query string) string {
+	switch {
+	case containsAny(query, []string{"优惠", "优惠券", "券", "红包", "会员权益", "返利", "促销", "活动"}):
+		return "这类问题属于优惠权益或平台活动查询，不进入商品导购细分。你可以提供具体商品或活动名称，我会按当前资料说明能否确认；如果要选商品，也可以告诉我品类、预算和使用场景。"
+	case containsAny(query, []string{"订单", "物流", "快递", "催发货", "取件", "取件码", "驿站", "复购"}):
+		return "这类问题属于订单、物流或复购服务，不进入导购推荐链路。请到订单或物流页面查看；如果你想重新选购同类商品，可以告诉我之前买的商品或目标品类。"
+	case containsAny(query, []string{"售后", "退货", "退款", "保修", "换货", "投诉", "改地址", "发票"}):
+		return "这类问题属于售后或订单服务，不进入导购细分。具体规则需要以平台和商家政策为准；如果你是在下单前评估风险，可以告诉我商品名称，我会帮你看需要重点确认什么。"
+	case isGreeting(query):
+		return "你好，我是小猪小狗 AI 导购。你可以告诉我想买的品类、预算、用途，或直接说“帮我推荐一款手机”。"
+	default:
+		return "这个请求暂时不属于商品选购导购链路。你可以换成商品推荐、对比、搭配、场景清单或商品详情问题，我会继续帮你筛选。"
+	}
 }
 
 func isGreeting(query string) bool {
@@ -593,7 +803,7 @@ func looksCheckout(query string) bool {
 }
 
 func looksUnsupported(query string) bool {
-	keywords := []string{"论文", "破解", "股票", "吃什么药", "起诉书", "代写"}
+	keywords := []string{"论文", "破解", "绕过登录", "绕过鉴权", "脚本", "黑客", "攻击", "股票", "吃什么药", "起诉书", "代写"}
 	for _, keyword := range keywords {
 		if strings.Contains(query, keyword) {
 			return true
@@ -657,7 +867,7 @@ func comparisonBlock(products []domain.ProductCard, limit int) domain.AgentBlock
 }
 
 func isComparisonIntent(intent string, query string) bool {
-	return intent == "product_comparison" || strings.Contains(query, "对比") || strings.Contains(query, "比较")
+	return intent == "compare_decide" || strings.Contains(query, "对比") || strings.Contains(query, "比较")
 }
 
 func isToolIntent(intent string) bool {
