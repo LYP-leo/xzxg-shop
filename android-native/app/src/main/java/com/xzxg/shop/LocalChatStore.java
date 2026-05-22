@@ -58,6 +58,14 @@ public class LocalChatStore extends SQLiteOpenHelper {
         values.put("status", status);
         values.put("created_at", now);
         getWritableDatabase().insert("messages", null, values);
+
+        ContentValues sessionValues = new ContentValues();
+        sessionValues.put("updated_at", now);
+        if ("user".equals(role)) {
+            sessionValues.put("title", titleFromMessage(content));
+            sessionValues.put("summary", content);
+        }
+        getWritableDatabase().update("sessions", sessionValues, "local_session_id = ?", new String[]{localSessionId});
     }
 
     public List<SessionSummary> recentSessions() {
@@ -73,6 +81,59 @@ public class LocalChatStore extends SQLiteOpenHelper {
         return items;
     }
 
+    public List<SessionSummary> recentSessionsWithMessages() {
+        ArrayList<SessionSummary> items = new ArrayList<>();
+        String sql = "SELECT s.local_session_id, s.server_session_id, s.title, s.summary, s.sync_state " +
+                "FROM sessions s " +
+                "WHERE EXISTS (SELECT 1 FROM messages m WHERE m.local_session_id = s.local_session_id) " +
+                "ORDER BY s.updated_at DESC LIMIT 50";
+        Cursor cursor = getReadableDatabase().rawQuery(sql, null);
+        try {
+            while (cursor.moveToNext()) {
+                items.add(new SessionSummary(cursor.getString(0), cursor.getString(1), cursor.getString(2), cursor.getString(3), cursor.getString(4)));
+            }
+        } finally {
+            cursor.close();
+        }
+        return items;
+    }
+
+    public boolean hasMessages(String localSessionId) {
+        Cursor cursor = getReadableDatabase().rawQuery("SELECT 1 FROM messages WHERE local_session_id = ? LIMIT 1", new String[]{localSessionId});
+        try {
+            return cursor.moveToFirst();
+        } finally {
+            cursor.close();
+        }
+    }
+
+    public List<MessageItem> messages(String localSessionId) {
+        ArrayList<MessageItem> items = new ArrayList<>();
+        Cursor cursor = getReadableDatabase().query("messages", new String[]{"role", "content", "status"}, "local_session_id = ?", new String[]{localSessionId}, null, null, "created_at ASC");
+        try {
+            while (cursor.moveToNext()) {
+                items.add(new MessageItem(cursor.getString(0), cursor.getString(1), cursor.getString(2)));
+            }
+        } finally {
+            cursor.close();
+        }
+        return items;
+    }
+
+    public void touchSession(String localSessionId) {
+        ContentValues values = new ContentValues();
+        values.put("updated_at", System.currentTimeMillis());
+        getWritableDatabase().update("sessions", values, "local_session_id = ?", new String[]{localSessionId});
+    }
+
+    private String titleFromMessage(String content) {
+        if (content == null || content.trim().isEmpty()) {
+            return "导购会话";
+        }
+        String value = content.trim().replace('\n', ' ');
+        return value.length() > 18 ? value.substring(0, 18) + "..." : value;
+    }
+
     public static class SessionSummary {
         public final String localSessionId;
         public final String serverSessionId;
@@ -86,6 +147,18 @@ public class LocalChatStore extends SQLiteOpenHelper {
             this.title = title;
             this.summary = summary;
             this.syncState = syncState;
+        }
+    }
+
+    public static class MessageItem {
+        public final String role;
+        public final String content;
+        public final String status;
+
+        MessageItem(String role, String content, String status) {
+            this.role = role;
+            this.content = content;
+            this.status = status;
         }
     }
 }

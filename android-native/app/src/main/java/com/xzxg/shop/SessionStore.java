@@ -23,6 +23,10 @@ public class SessionStore {
         return prefs.getString("nickname", "");
     }
 
+    public String avatarUrl() {
+        return prefs.getString("avatar_url", "");
+    }
+
     public String apiBase() {
         if (!BuildConfig.SHOW_TEST_SERVER_SETTINGS) {
             return BuildConfig.DEFAULT_API_BASE;
@@ -31,10 +35,15 @@ public class SessionStore {
     }
 
     public void saveAuth(String token, String role, String nickname) {
+        saveAuth(token, role, nickname, avatarUrl());
+    }
+
+    public void saveAuth(String token, String role, String nickname, String avatarUrl) {
         prefs.edit()
                 .putString("token", token == null ? "" : token)
                 .putString("role", role == null || role.isEmpty() ? "user" : role)
                 .putString("nickname", nickname == null ? "" : nickname)
+                .putString("avatar_url", avatarUrl == null ? "" : avatarUrl)
                 .apply();
     }
 
@@ -43,6 +52,6 @@ public class SessionStore {
     }
 
     public void clearAuth() {
-        prefs.edit().remove("token").remove("role").remove("nickname").apply();
+        prefs.edit().remove("token").remove("role").remove("nickname").remove("avatar_url").apply();
     }
 }

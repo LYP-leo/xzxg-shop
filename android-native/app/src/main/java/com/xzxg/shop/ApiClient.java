@@ -9,6 +9,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 
 public class ApiClient {
@@ -62,23 +63,100 @@ public class ApiClient {
     }
 
     public JSONObject updateProfile(String nickname) throws Exception {
+        return updateProfile(nickname, "");
+    }
+
+    public JSONObject updateProfile(String nickname, String avatarUrl) throws Exception {
         JSONObject body = new JSONObject();
         body.put("nickname", nickname);
-        body.put("avatar_url", "");
+        body.put("avatar_url", avatarUrl == null ? "" : avatarUrl);
         return patch("/account/profile", body);
     }
 
-    public JSONArray products() throws Exception {
-        JSONObject response = get("/products");
+    public JSONArray categoriesTree() throws Exception {
+        JSONObject response = get("/categories/tree");
         return response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
+    }
+
+    public JSONArray products() throws Exception {
+        return products("", "");
+    }
+
+    public JSONArray products(String keyword, String categoryId) throws Exception {
+        StringBuilder path = new StringBuilder("/products");
+        String separator = "?";
+        if (keyword != null && !keyword.trim().isEmpty()) {
+            path.append(separator).append("keyword=").append(urlEncode(keyword.trim()));
+            separator = "&";
+        }
+        if (categoryId != null && !categoryId.trim().isEmpty()) {
+            path.append(separator).append("category_id=").append(urlEncode(categoryId.trim()));
+        }
+        JSONObject response = get(path.toString());
+        return response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
+    }
+
+    public JSONArray productSkus(String productId) throws Exception {
+        JSONObject response = get("/products/" + urlEncode(productId) + "/skus");
+        return response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
+    }
+
+    public JSONObject productDetail(String productId) throws Exception {
+        return get("/products/" + urlEncode(productId));
+    }
+
+    public String absoluteUrl(String url) {
+        if (url == null || url.trim().isEmpty()) {
+            return "";
+        }
+        String value = url.trim();
+        if (value.startsWith("http://") || value.startsWith("https://")) {
+            return value;
+        }
+        String base = trimSlash(sessionStore.apiBase());
+        int marker = base.indexOf("/api/");
+        String host = marker >= 0 ? base.substring(0, marker) : base;
+        if (!value.startsWith("/")) {
+            value = "/" + value;
+        }
+        return host + value;
     }
 
     public JSONObject cart() throws Exception {
         return get("/cart");
     }
 
+    public JSONObject addCartItem(String productId, String skuId, int quantity) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("product_id", productId);
+        body.put("sku_id", skuId == null ? "" : skuId);
+        body.put("quantity", Math.max(1, quantity));
+        return post("/cart/items", body);
+    }
+
+    public JSONObject updateCartItem(String cartItemId, Integer quantity, Boolean selected) throws Exception {
+        JSONObject body = new JSONObject();
+        if (quantity != null) {
+            body.put("quantity", quantity);
+        }
+        if (selected != null) {
+            body.put("selected", selected);
+        }
+        return patch("/cart/items/" + urlEncode(cartItemId), body);
+    }
+
+    public JSONObject deleteCartItem(String cartItemId) throws Exception {
+        HttpURLConnection conn = open("/cart/items/" + urlEncode(cartItemId), "DELETE");
+        return readJSON(conn);
+    }
+
     public JSONArray orders() throws Exception {
         JSONObject response = get("/orders");
+        return response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
+    }
+
+    public JSONArray checkout() throws Exception {
+        JSONObject response = post("/orders:checkout", new JSONObject());
         return response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
     }
 
@@ -201,6 +279,10 @@ public class ApiClient {
             value = value.substring(0, value.length() - 1);
         }
         return value;
+    }
+
+    private String urlEncode(String value) throws Exception {
+        return URLEncoder.encode(value == null ? "" : value, "UTF-8");
     }
 
     public interface SseCallback {
