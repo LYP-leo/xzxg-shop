@@ -15,6 +15,9 @@ import android.widget.LinearLayout;
 import android.widget.PopupWindow;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
+import android.text.Editable;
+import android.text.TextWatcher;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -29,6 +32,7 @@ public class MainActivity extends Activity {
     private ScrollView chatScroll;
     private EditText input;
     private Button actionButton;
+    private PopupWindow drawerPopup;
     private String localSessionId;
     private String serverSessionId = "";
     private TextView activeAssistant;
@@ -62,6 +66,7 @@ public class MainActivity extends Activity {
     }
 
     private void renderChatHome() {
+        closeDrawer();
         baseScreen();
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
@@ -126,6 +131,22 @@ public class MainActivity extends Activity {
         input.setImeOptions(EditorInfo.IME_ACTION_SEND);
         input.setBackground(rounded(Color.rgb(243, 244, 246), dp(24)));
         input.setPadding(dp(16), dp(8), dp(16), dp(8));
+        input.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+                if (!streaming) {
+                    actionButton.setText(s.toString().trim().isEmpty() ? "🎙" : "➤");
+                }
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+            }
+        });
         bar.addView(input, new LinearLayout.LayoutParams(0, -2, 1));
 
         actionButton = iconButton("🎙");
@@ -216,10 +237,11 @@ public class MainActivity extends Activity {
         chat.setOnClickListener(v -> renderChatHome());
         drawer.addView(chat, new LinearLayout.LayoutParams(-1, dp(56)));
 
-        PopupWindow popup = new PopupWindow(drawer, (int) (getResources().getDisplayMetrics().widthPixels * 0.82), -1, true);
-        popup.setOutsideTouchable(true);
-        popup.setBackgroundDrawable(rounded(Color.WHITE, 0));
-        popup.showAtLocation(root, Gravity.LEFT | Gravity.TOP, 0, 0);
+        drawerPopup = new PopupWindow(drawer, (int) (getResources().getDisplayMetrics().widthPixels * 0.82), -1, true);
+        drawerPopup.setOutsideTouchable(true);
+        drawerPopup.setBackgroundDrawable(rounded(Color.WHITE, 0));
+        drawerPopup.setOnDismissListener(() -> drawerPopup = null);
+        drawerPopup.showAtLocation(root, Gravity.LEFT | Gravity.TOP, 0, 0);
     }
 
     private void sendMessage(String text) {
@@ -317,6 +339,7 @@ public class MainActivity extends Activity {
     }
 
     private void renderProfile() {
+        closeDrawer();
         baseScreen();
         addPageHeader("我的", "账号、资料和测试设置");
         LinearLayout page = pageBody();
@@ -428,6 +451,7 @@ public class MainActivity extends Activity {
     }
 
     private void renderProducts() {
+        closeDrawer();
         renderListPage("商品", "来自后端商品接口的移动端列表", () -> {
             try {
                 return api.products();
@@ -438,6 +462,7 @@ public class MainActivity extends Activity {
     }
 
     private void renderCart() {
+        closeDrawer();
         baseScreen();
         addPageHeader("购物车", "顾客结算入口");
         LinearLayout page = pageBody();
@@ -456,6 +481,7 @@ public class MainActivity extends Activity {
     }
 
     private void renderOrders() {
+        closeDrawer();
         renderListPage("订单", "顾客订单列表", () -> {
             try {
                 return api.orders();
@@ -537,8 +563,16 @@ public class MainActivity extends Activity {
     }
 
     private void toastLine(String text) {
+        Toast.makeText(this, text, Toast.LENGTH_SHORT).show();
         if (chatList != null && content != null) {
             addSystemLine(text);
+        }
+    }
+
+    private void closeDrawer() {
+        if (drawerPopup != null) {
+            drawerPopup.dismiss();
+            drawerPopup = null;
         }
     }
 
