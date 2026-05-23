@@ -189,9 +189,14 @@ func (s *MemoryStore) ListMerchants(ctx context.Context) []domain.Merchant {
 }
 
 func (s *MemoryStore) ListProducts(ctx context.Context, keyword string, categoryID string) []domain.ProductCard {
+	items, _ := s.ListProductsPage(ctx, keyword, categoryID, 0, 0)
+	return items
+}
+
+func (s *MemoryStore) ListProductsPage(ctx context.Context, keyword string, categoryID string, limit int, offset int) ([]domain.ProductCard, bool) {
 	select {
 	case <-ctx.Done():
-		return nil
+		return nil, false
 	default:
 	}
 
@@ -208,7 +213,21 @@ func (s *MemoryStore) ListProducts(ctx context.Context, keyword string, category
 		}
 		result = append(result, product.ProductCard)
 	}
-	return result
+	if limit <= 0 {
+		return result, false
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(result) {
+		return []domain.ProductCard{}, false
+	}
+	end := offset + limit
+	hasMore := end < len(result)
+	if end > len(result) {
+		end = len(result)
+	}
+	return result[offset:end], hasMore
 }
 
 func (s *MemoryStore) GetProduct(ctx context.Context, productID string) (domain.ProductDetail, bool) {

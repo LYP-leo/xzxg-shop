@@ -11,20 +11,20 @@ import java.util.List;
 
 public class LocalChatStore extends SQLiteOpenHelper {
     public LocalChatStore(Context context) {
-        super(context, "xzxg_chat.db", null, 1);
+        super(context, "xzxg_chat.db", null, 2);
     }
 
     @Override
     public void onCreate(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE sessions (local_session_id TEXT PRIMARY KEY, server_session_id TEXT, title TEXT, summary TEXT, sync_state TEXT, created_at INTEGER, updated_at INTEGER)");
-        db.execSQL("CREATE TABLE messages (local_message_id TEXT PRIMARY KEY, local_session_id TEXT, role TEXT, content TEXT, blocks_json TEXT, status TEXT, created_at INTEGER)");
+        db.execSQL("CREATE TABLE messages (local_message_id TEXT PRIMARY KEY, local_session_id TEXT, role TEXT, content TEXT, blocks_json TEXT, followups_json TEXT NOT NULL DEFAULT '[]', status TEXT, created_at INTEGER)");
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        db.execSQL("DROP TABLE IF EXISTS messages");
-        db.execSQL("DROP TABLE IF EXISTS sessions");
-        onCreate(db);
+        if (oldVersion < 2) {
+            addColumnIfMissing(db, "messages", "followups_json", "TEXT NOT NULL DEFAULT '[]'");
+        }
     }
 
     public void ensureSession(String localSessionId, String title) {
@@ -48,13 +48,23 @@ public class LocalChatStore extends SQLiteOpenHelper {
     }
 
     public void saveMessage(String localSessionId, String role, String content, String status) {
+        saveMessage(localSessionId, role, content, "[]", "[]", status);
+    }
+
+    public void saveAssistantTurn(String localSessionId, String content, String blocksJson, String followupsJson, String status) {
+        saveMessage(localSessionId, "assistant", content, blocksJson, followupsJson, status);
+    }
+
+    public void saveMessage(String localSessionId, String role, String content, String blocksJson, String followupsJson, String status) {
         ContentValues values = new ContentValues();
         long now = System.currentTimeMillis();
-        values.put("local_message_id", "local_msg_" + now + "_" + Math.abs(content.hashCode()));
+        String safeContent = content == null ? "" : content;
+        values.put("local_message_id", "local_msg_" + now + "_" + Math.abs(safeContent.hashCode()));
         values.put("local_session_id", localSessionId);
         values.put("role", role);
-        values.put("content", content);
-        values.put("blocks_json", "[]");
+        values.put("content", safeContent);
+        values.put("blocks_json", blocksJson == null || blocksJson.isEmpty() ? "[]" : blocksJson);
+        values.put("followups_json", followupsJson == null || followupsJson.isEmpty() ? "[]" : followupsJson);
         values.put("status", status);
         values.put("created_at", now);
         getWritableDatabase().insert("messages", null, values);
@@ -62,8 +72,8 @@ public class LocalChatStore extends SQLiteOpenHelper {
         ContentValues sessionValues = new ContentValues();
         sessionValues.put("updated_at", now);
         if ("user".equals(role)) {
-            sessionValues.put("title", titleFromMessage(content));
-            sessionValues.put("summary", content);
+            sessionValues.put("title", titleFromMessage(safeContent));
+            sessionValues.put("summary", safeContent);
         }
         getWritableDatabase().update("sessions", sessionValues, "local_session_id = ?", new String[]{localSessionId});
     }
@@ -109,15 +119,29 @@ public class LocalChatStore extends SQLiteOpenHelper {
 
     public List<MessageItem> messages(String localSessionId) {
         ArrayList<MessageItem> items = new ArrayList<>();
-        Cursor cursor = getReadableDatabase().query("messages", new String[]{"role", "content", "status"}, "local_session_id = ?", new String[]{localSessionId}, null, null, "created_at ASC");
+        Cursor cursor = getReadableDatabase().query("messages", new String[]{"role", "content", "status", "blocks_json", "followups_json"}, "local_session_id = ?", new String[]{localSessionId}, null, null, "created_at ASC");
         try {
             while (cursor.moveToNext()) {
-                items.add(new MessageItem(cursor.getString(0), cursor.getString(1), cursor.getString(2)));
+                items.add(new MessageItem(cursor.getString(0), cursor.getString(1), cursor.getString(2), cursor.getString(3), cursor.getString(4)));
             }
         } finally {
             cursor.close();
         }
         return items;
+    }
+
+    private void addColumnIfMissing(SQLiteDatabase db, String table, String column, String definition) {
+        Cursor cursor = db.rawQuery("PRAGMA table_info(" + table + ")", null);
+        try {
+            while (cursor.moveToNext()) {
+                if (column.equals(cursor.getString(1))) {
+                    return;
+                }
+            }
+        } finally {
+            cursor.close();
+        }
+        db.execSQL("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
     }
 
     public void touchSession(String localSessionId) {
@@ -154,11 +178,15 @@ public class LocalChatStore extends SQLiteOpenHelper {
         public final String role;
         public final String content;
         public final String status;
+        public final String blocksJson;
+        public final String followupsJson;
 
-        MessageItem(String role, String content, String status) {
+        MessageItem(String role, String content, String status, String blocksJson, String followupsJson) {
             this.role = role;
             this.content = content;
             this.status = status;
+            this.blocksJson = blocksJson == null ? "[]" : blocksJson;
+            this.followupsJson = followupsJson == null ? "[]" : followupsJson;
         }
     }
 }

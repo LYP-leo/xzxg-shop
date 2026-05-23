@@ -83,6 +83,10 @@ public class ApiClient {
     }
 
     public JSONArray products(String keyword, String categoryId) throws Exception {
+        return productsPage(keyword, categoryId, 0, "").items;
+    }
+
+    public ProductPage productsPage(String keyword, String categoryId, int limit, String cursor) throws Exception {
         StringBuilder path = new StringBuilder("/products");
         String separator = "?";
         if (keyword != null && !keyword.trim().isEmpty()) {
@@ -91,9 +95,21 @@ public class ApiClient {
         }
         if (categoryId != null && !categoryId.trim().isEmpty()) {
             path.append(separator).append("category_id=").append(urlEncode(categoryId.trim()));
+            separator = "&";
+        }
+        if (limit > 0) {
+            path.append(separator).append("limit=").append(limit);
+            separator = "&";
+            if (cursor != null && !cursor.trim().isEmpty()) {
+                path.append(separator).append("cursor=").append(urlEncode(cursor.trim()));
+            }
         }
         JSONObject response = get(path.toString());
-        return response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
+        return new ProductPage(
+                response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items"),
+                response.optString("next_cursor", ""),
+                response.optBoolean("has_more", false)
+        );
     }
 
     public JSONArray productSkus(String productId) throws Exception {
@@ -171,14 +187,44 @@ public class ApiClient {
         return post("/agent/sessions", body);
     }
 
+    public JSONObject uploadAttachment(String name, String mimeType, String type, byte[] data) throws Exception {
+        String boundary = "----xzxgAndroid" + System.currentTimeMillis();
+        HttpURLConnection conn = openRaw("/attachments", "POST");
+        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+        try (OutputStream out = conn.getOutputStream()) {
+            writeFormField(out, boundary, "type", type == null ? "file" : type);
+            out.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
+            out.write(("Content-Disposition: form-data; name=\"file\"; filename=\"" + safeFileName(name) + "\"\r\n").getBytes(StandardCharsets.UTF_8));
+            out.write(("Content-Type: " + (mimeType == null || mimeType.isEmpty() ? "application/octet-stream" : mimeType) + "\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+            out.write(data);
+            out.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+        }
+        return readJSON(conn);
+    }
+
+    private void writeFormField(OutputStream out, String boundary, String name, String value) throws Exception {
+        out.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
+        out.write(("Content-Disposition: form-data; name=\"" + name + "\"\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+        out.write((value + "\r\n").getBytes(StandardCharsets.UTF_8));
+    }
+
+    private String safeFileName(String name) {
+        String value = name == null || name.trim().isEmpty() ? "attachment" : name.trim();
+        return value.replace("\"", "").replace("\r", "").replace("\n", "");
+    }
+
     public void streamMessage(String sessionId, String content, SseCallback callback) {
+        streamMessage(sessionId, content, new JSONArray(), callback);
+    }
+
+    public void streamMessage(String sessionId, String content, JSONArray attachments, SseCallback callback) {
         new Thread(() -> {
             HttpURLConnection conn = null;
             try {
                 JSONObject body = new JSONObject();
                 body.put("client_message_id", "android_" + System.currentTimeMillis());
                 body.put("content", content);
-                body.put("attachments", new JSONArray());
+                body.put("attachments", attachments == null ? new JSONArray() : attachments);
                 conn = open("/agent/sessions/" + sessionId + "/messages:stream", "POST");
                 conn.setRequestProperty("Accept", "text/event-stream");
                 writeBody(conn, body);
@@ -228,12 +274,17 @@ public class ApiClient {
     }
 
     private HttpURLConnection open(String path, String method) throws Exception {
+        HttpURLConnection conn = openRaw(path, method);
+        conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+        return conn;
+    }
+
+    private HttpURLConnection openRaw(String path, String method) throws Exception {
         URL url = new URL(trimSlash(sessionStore.apiBase()) + path);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod(method);
         conn.setConnectTimeout(10000);
         conn.setReadTimeout(60000);
-        conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
         String token = sessionStore.token();
         if (!token.isEmpty()) {
             conn.setRequestProperty("Authorization", "Bearer " + token);
@@ -288,5 +339,17 @@ public class ApiClient {
     public interface SseCallback {
         void onEvent(JSONObject event);
         void onError(Throwable error);
+    }
+
+    public static class ProductPage {
+        public final JSONArray items;
+        public final String nextCursor;
+        public final boolean hasMore;
+
+        ProductPage(JSONArray items, String nextCursor, boolean hasMore) {
+            this.items = items;
+            this.nextCursor = nextCursor;
+            this.hasMore = hasMore;
+        }
     }
 }

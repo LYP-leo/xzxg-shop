@@ -2,13 +2,23 @@ package com.xzxg.shop;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.Manifest;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Bundle;
+import android.provider.OpenableColumns;
+import android.speech.RecognitionListener;
+import android.speech.RecognizerIntent;
+import android.speech.SpeechRecognizer;
 import android.view.ViewGroup;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
@@ -34,11 +44,19 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 public class MainActivity extends Activity {
     private static final int BG_COLOR = 0xFFF8F9FB;
+    private static final int REQUEST_PICK_IMAGE = 3101;
+    private static final int REQUEST_PICK_FILE = 3102;
+    private static final int REQUEST_RECORD_AUDIO = 3103;
+    private static final int PRODUCT_PAGE_SIZE = 20;
     private SessionStore sessionStore;
     private LocalChatStore chatStore;
     private ApiClient api;
@@ -49,6 +67,12 @@ public class MainActivity extends Activity {
     private ScrollView chatScroll;
     private EditText input;
     private TextView actionButton;
+    private Button addButton;
+    private LinearLayout composerOuter;
+    private LinearLayout attachmentBufferView;
+    private LinearLayout attachmentPanelView;
+    private boolean voiceMode;
+    private SpeechRecognizer speechRecognizer;
     private FrameLayout drawerLayer;
     private LinearLayout drawerPanel;
     private String localSessionId;
@@ -56,12 +80,49 @@ public class MainActivity extends Activity {
     private TextView activeAssistant;
     private TextView loadingAssistant;
     private StringBuilder activeAssistantMarkdown;
+    private JSONArray activeAssistantBlocks = new JSONArray();
+    private JSONArray activeFollowups = new JSONArray();
+    private View activeFollowupsView;
     private boolean streaming;
     private String activePage = "chat";
     private String lastProductKeyword = "";
     private String lastCategoryId = "";
+    private String lastCategoryName = "全部";
+    private JSONArray cachedCategoryTree = new JSONArray();
+    private ScrollView productsScroll;
+    private LinearLayout productsList;
+    private int productsScrollY;
+    private boolean restoreProductsScroll;
+    private boolean loadingProducts;
+    private ProductListState currentProductState;
+    private final Map<String, ProductListState> productListCache = new HashMap<>();
+    private final List<PendingAttachment> pendingAttachments = new ArrayList<>();
     private final Deque<Runnable> backStack = new ArrayDeque<>();
     private Toast activeToast;
+
+    private static class PendingAttachment {
+        Uri uri;
+        String name;
+        String mimeType;
+        String type;
+        long size;
+
+        PendingAttachment(Uri uri, String name, String mimeType, String type, long size) {
+            this.uri = uri;
+            this.name = name;
+            this.mimeType = mimeType;
+            this.type = type;
+            this.size = size;
+        }
+    }
+
+    private static class ProductListState {
+        JSONArray items = new JSONArray();
+        String nextCursor = "0";
+        boolean hasMore = true;
+        boolean loaded;
+        int scrollY;
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -126,7 +187,7 @@ public class MainActivity extends Activity {
 
         content.addView(createTopBar("AI导购", null), new LinearLayout.LayoutParams(-1, dp(56)));
         content.addView(createChatMessageLayer(), new LinearLayout.LayoutParams(-1, 0, 1));
-        content.addView(createComposerBar(), new LinearLayout.LayoutParams(-1, dp(72)));
+        content.addView(createComposerBar(), new LinearLayout.LayoutParams(-1, -2));
         bindImeInsets();
     }
 
@@ -258,13 +319,24 @@ public class MainActivity extends Activity {
     }
 
     private View createComposerBar() {
-        LinearLayout outer = new LinearLayout(this);
-        outer.setGravity(Gravity.CENTER_VERTICAL);
-        outer.setPadding(dp(14), dp(8), dp(14), dp(8));
-        outer.setBackgroundColor(BG_COLOR);
-        outer.setClickable(true);
-        outer.setClipChildren(false);
-        outer.setClipToPadding(false);
+        composerOuter = new LinearLayout(this);
+        composerOuter.setOrientation(LinearLayout.VERTICAL);
+        composerOuter.setPadding(dp(14), dp(6), dp(14), dp(8));
+        composerOuter.setBackgroundColor(BG_COLOR);
+        composerOuter.setClickable(true);
+        composerOuter.setClipChildren(false);
+        composerOuter.setClipToPadding(false);
+
+        attachmentBufferView = new LinearLayout(this);
+        attachmentBufferView.setOrientation(LinearLayout.HORIZONTAL);
+        attachmentBufferView.setVisibility(View.GONE);
+        composerOuter.addView(attachmentBufferView, new LinearLayout.LayoutParams(-1, dp(92)));
+
+        attachmentPanelView = new LinearLayout(this);
+        attachmentPanelView.setOrientation(LinearLayout.HORIZONTAL);
+        attachmentPanelView.setPadding(dp(2), dp(4), dp(2), dp(8));
+        attachmentPanelView.setVisibility(View.GONE);
+        composerOuter.addView(attachmentPanelView, new LinearLayout.LayoutParams(-1, dp(82)));
 
         LinearLayout bar = new LinearLayout(this);
         bar.setGravity(Gravity.CENTER_VERTICAL);
@@ -274,13 +346,14 @@ public class MainActivity extends Activity {
         bar.setClipChildren(false);
         bar.setClipToPadding(false);
 
-        Button add = transparentIconButton("+");
-        add.setTextSize(24);
-        add.setOnClickListener(v -> toastLine("图片输入入口已预留，后续接入相册/拍照。"));
-        bar.addView(add, new LinearLayout.LayoutParams(dp(40), dp(52)));
+        addButton = transparentIconButton("+");
+        addButton.setTextSize(24);
+        addButton.setOnClickListener(v -> toggleAttachmentPanel());
+        bar.addView(addButton, new LinearLayout.LayoutParams(dp(40), dp(52)));
 
         input = new EditText(this);
-        input.setHint("");
+        input.setHint("输入问题或直接发送...");
+        input.setHintTextColor(Color.rgb(156, 163, 175));
         input.setSingleLine(false);
         input.setMaxLines(4);
         input.setImeOptions(EditorInfo.IME_ACTION_SEND);
@@ -294,8 +367,8 @@ public class MainActivity extends Activity {
 
             @Override
             public void onTextChanged(CharSequence s, int start, int before, int count) {
-                if (!streaming) {
-                    actionButton.setText(s.toString().trim().isEmpty() ? "≋" : "➤");
+                if (!streaming && !voiceMode) {
+                    actionButton.setText(s.toString().trim().isEmpty() ? "🎙" : "➤");
                 }
             }
 
@@ -305,23 +378,29 @@ public class MainActivity extends Activity {
         });
         bar.addView(input, new LinearLayout.LayoutParams(0, dp(52), 1));
 
-        actionButton = roundActionButton("≋");
+        actionButton = roundActionButton("🎙");
         actionButton.setOnClickListener(v -> {
             if (streaming) {
                 toastLine("停止生成能力已预留，后续接入 run cancel。");
                 return;
             }
-            String text = input.getText().toString().trim();
-            if (text.isEmpty()) {
-                toastLine("语音输入能力待接入");
+            if (voiceMode) {
+                exitVoiceMode();
                 return;
             }
-            sendMessage(text);
+            String text = input.getText().toString().trim();
+            if (text.isEmpty()) {
+                enterVoiceMode();
+                return;
+            }
+            sendCurrentInput();
         });
         LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(dp(42), dp(42));
         bar.addView(actionButton, actionParams);
-        outer.addView(bar, new LinearLayout.LayoutParams(-1, dp(52)));
-        return outer;
+        composerOuter.addView(bar, new LinearLayout.LayoutParams(-1, dp(52)));
+        renderAttachmentPanel();
+        renderAttachmentBuffer();
+        return composerOuter;
     }
 
     private TextView roundActionButton(String text) {
@@ -334,6 +413,328 @@ public class MainActivity extends Activity {
         button.setBackground(rounded(Color.BLACK, dp(24)));
         button.setClickable(true);
         return button;
+    }
+
+    private void sendCurrentInput() {
+        String text = input == null ? "" : input.getText().toString().trim();
+        if (text.isEmpty() && pendingAttachments.isEmpty()) {
+            enterVoiceMode();
+            return;
+        }
+        JSONArray attachments = new JSONArray();
+        if (pendingAttachments.isEmpty()) {
+            sendMessage(text, attachments);
+            return;
+        }
+        if (sessionStore.token().isEmpty()) {
+            sendMessage(text, attachments);
+            return;
+        }
+        actionButton.setText("…");
+        actionButton.setEnabled(false);
+        new Thread(() -> {
+            try {
+                JSONArray uploaded = new JSONArray();
+                for (PendingAttachment attachment : new ArrayList<>(pendingAttachments)) {
+                    byte[] data = readAttachmentBytes(attachment.uri);
+                    JSONObject item = api.uploadAttachment(attachment.name, attachment.mimeType, attachment.type, data);
+                    uploaded.put(item);
+                }
+                runOnUiThread(() -> {
+                    pendingAttachments.clear();
+                    renderAttachmentBuffer();
+                    if (actionButton != null) {
+                        actionButton.setEnabled(true);
+                    }
+                    sendMessage(text, uploaded);
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    if (actionButton != null) {
+                        actionButton.setEnabled(true);
+                        actionButton.setText(input.getText().toString().trim().isEmpty() ? "🎙" : "➤");
+                    }
+                    toastLine("附件上传失败：" + error.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    private void toggleAttachmentPanel() {
+        if (attachmentPanelView == null) {
+            return;
+        }
+        boolean show = attachmentPanelView.getVisibility() != View.VISIBLE;
+        attachmentPanelView.setVisibility(show ? View.VISIBLE : View.GONE);
+    }
+
+    private void renderAttachmentPanel() {
+        if (attachmentPanelView == null) {
+            return;
+        }
+        attachmentPanelView.removeAllViews();
+        attachmentPanelView.addView(attachmentEntry("相册", "图片", v -> pickImage()), new LinearLayout.LayoutParams(dp(86), dp(70)));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(86), dp(70));
+        params.leftMargin = dp(10);
+        attachmentPanelView.addView(attachmentEntry("文件", "文档", v -> pickFile()), params);
+    }
+
+    private View attachmentEntry(String title, String subtitle, View.OnClickListener listener) {
+        LinearLayout entry = new LinearLayout(this);
+        entry.setOrientation(LinearLayout.VERTICAL);
+        entry.setGravity(Gravity.CENTER);
+        entry.setBackground(rounded(Color.WHITE, dp(14)));
+        entry.setOnClickListener(listener);
+        TextView name = strong(title);
+        name.setGravity(Gravity.CENTER);
+        entry.addView(name);
+        TextView sub = muted(subtitle);
+        sub.setGravity(Gravity.CENTER);
+        entry.addView(sub);
+        return entry;
+    }
+
+    private void renderAttachmentBuffer() {
+        if (attachmentBufferView == null) {
+            return;
+        }
+        attachmentBufferView.removeAllViews();
+        if (pendingAttachments.isEmpty()) {
+            attachmentBufferView.setVisibility(View.GONE);
+            return;
+        }
+        attachmentBufferView.setVisibility(View.VISIBLE);
+        for (PendingAttachment attachment : pendingAttachments) {
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(76), dp(76));
+            params.rightMargin = dp(10);
+            attachmentBufferView.addView(attachmentPreview(attachment), params);
+        }
+        LinearLayout.LayoutParams addParams = new LinearLayout.LayoutParams(dp(76), dp(76));
+        attachmentBufferView.addView(addMoreAttachmentView(), addParams);
+    }
+
+    private View attachmentPreview(PendingAttachment attachment) {
+        FrameLayout frame = new FrameLayout(this);
+        frame.setBackground(rounded(Color.WHITE, dp(12)));
+        if ("image".equals(attachment.type)) {
+            ImageView image = new ImageView(this);
+            image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            image.setImageURI(attachment.uri);
+            frame.addView(image, new FrameLayout.LayoutParams(-1, -1));
+        } else {
+            TextView file = muted(shortFileName(attachment.name));
+            file.setGravity(Gravity.CENTER);
+            file.setPadding(dp(6), 0, dp(6), 0);
+            frame.addView(file, new FrameLayout.LayoutParams(-1, -1));
+        }
+        TextView close = new TextView(this);
+        close.setText("×");
+        close.setTextSize(18);
+        close.setGravity(Gravity.CENTER);
+        close.setTextColor(Color.WHITE);
+        close.setBackground(rounded(Color.rgb(80, 80, 80), dp(14)));
+        close.setOnClickListener(v -> {
+            pendingAttachments.remove(attachment);
+            renderAttachmentBuffer();
+        });
+        FrameLayout.LayoutParams closeParams = new FrameLayout.LayoutParams(dp(28), dp(28), Gravity.RIGHT | Gravity.TOP);
+        frame.addView(close, closeParams);
+        return frame;
+    }
+
+    private View addMoreAttachmentView() {
+        TextView add = new TextView(this);
+        add.setText("+");
+        add.setTextSize(28);
+        add.setGravity(Gravity.CENTER);
+        add.setTextColor(Color.rgb(75, 85, 99));
+        add.setBackground(rounded(Color.WHITE, dp(12)));
+        add.setOnClickListener(v -> {
+            if (attachmentPanelView != null) {
+                attachmentPanelView.setVisibility(View.VISIBLE);
+            }
+        });
+        return add;
+    }
+
+    private void pickImage() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        intent.setType("image/*");
+        startActivityForResult(intent, REQUEST_PICK_IMAGE);
+    }
+
+    private void pickFile() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        intent.setType("*/*");
+        startActivityForResult(intent, REQUEST_PICK_FILE);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+            return;
+        }
+        Uri uri = data.getData();
+        try {
+            getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (Exception ignored) {
+        }
+        PendingAttachment attachment = attachmentFromUri(uri, requestCode == REQUEST_PICK_IMAGE);
+        pendingAttachments.add(attachment);
+        renderAttachmentBuffer();
+        if (attachmentPanelView != null) {
+            attachmentPanelView.setVisibility(View.GONE);
+        }
+    }
+
+    private PendingAttachment attachmentFromUri(Uri uri, boolean forceImage) {
+        String name = "attachment";
+        long size = 0;
+        String mime = getContentResolver().getType(uri);
+        try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                int sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE);
+                if (nameIndex >= 0) {
+                    name = cursor.getString(nameIndex);
+                }
+                if (sizeIndex >= 0) {
+                    size = cursor.getLong(sizeIndex);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        String type = forceImage || (mime != null && mime.startsWith("image/")) ? "image" : "file";
+        return new PendingAttachment(uri, name, mime == null ? "application/octet-stream" : mime, type, size);
+    }
+
+    private byte[] readAttachmentBytes(Uri uri) throws Exception {
+        try (java.io.InputStream in = getContentResolver().openInputStream(uri);
+             java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
+            if (in == null) {
+                throw new RuntimeException("无法读取附件");
+            }
+            byte[] buffer = new byte[8192];
+            int read;
+            int total = 0;
+            while ((read = in.read(buffer)) != -1) {
+                total += read;
+                if (total > 10 * 1024 * 1024) {
+                    throw new RuntimeException("单个附件不能超过 10MB");
+                }
+                out.write(buffer, 0, read);
+            }
+            return out.toByteArray();
+        }
+    }
+
+    private String shortFileName(String name) {
+        if (name == null || name.isEmpty()) {
+            return "文件";
+        }
+        return name.length() <= 8 ? name : name.substring(0, 6) + "…";
+    }
+
+    private void enterVoiceMode() {
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            toastLine("当前设备不支持语音输入");
+            return;
+        }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQUEST_RECORD_AUDIO);
+            return;
+        }
+        voiceMode = true;
+        input.setText("");
+        input.setHint("按住说话");
+        input.setFocusable(false);
+        input.setGravity(Gravity.CENTER);
+        input.setOnTouchListener((v, event) -> {
+            if (!voiceMode) {
+                return false;
+            }
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                startSpeechRecognition();
+                input.setHint("正在聆听...");
+                return true;
+            }
+            if (event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL) {
+                stopSpeechRecognition();
+                input.setHint("按住说话");
+                return true;
+            }
+            return true;
+        });
+        actionButton.setText("⌨");
+    }
+
+    private void exitVoiceMode() {
+        stopSpeechRecognition();
+        voiceMode = false;
+        input.setOnTouchListener(null);
+        input.setFocusableInTouchMode(true);
+        input.setFocusable(true);
+        input.setGravity(Gravity.CENTER_VERTICAL);
+        input.setHint("输入问题或直接发送...");
+        actionButton.setText(input.getText().toString().trim().isEmpty() ? "🎙" : "➤");
+    }
+
+    private void startSpeechRecognition() {
+        if (speechRecognizer != null) {
+            speechRecognizer.destroy();
+        }
+        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
+        speechRecognizer.setRecognitionListener(new RecognitionListener() {
+            @Override public void onReadyForSpeech(Bundle params) {}
+            @Override public void onBeginningOfSpeech() {}
+            @Override public void onRmsChanged(float rmsdB) {}
+            @Override public void onBufferReceived(byte[] buffer) {}
+            @Override public void onEndOfSpeech() {}
+            @Override public void onPartialResults(Bundle partialResults) {}
+            @Override public void onEvent(int eventType, Bundle params) {}
+
+            @Override
+            public void onError(int error) {
+                runOnUiThread(() -> toastLine("没有识别到内容，请重试"));
+            }
+
+            @Override
+            public void onResults(Bundle results) {
+                ArrayList<String> texts = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                if (texts == null || texts.isEmpty() || texts.get(0).trim().isEmpty()) {
+                    toastLine("没有识别到内容，请重试");
+                    return;
+                }
+                sendMessage(texts.get(0).trim());
+            }
+        });
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.CHINA.toString());
+        speechRecognizer.startListening(intent);
+    }
+
+    private void stopSpeechRecognition() {
+        if (speechRecognizer != null) {
+            speechRecognizer.stopListening();
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_RECORD_AUDIO) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                enterVoiceMode();
+            } else {
+                toastLine("需要麦克风权限才能使用语音输入");
+            }
+        }
     }
 
     private void loadHomeCopy() {
@@ -476,10 +877,17 @@ public class MainActivity extends Activity {
     }
 
     private void sendMessage(String text) {
+        sendMessage(text, new JSONArray());
+    }
+
+    private void sendMessage(String text, JSONArray attachments) {
         clearWelcomeIfNeeded();
-        input.setText("");
-        addBubble(text, true);
-        chatStore.saveMessage(localSessionId, "user", text, "pending");
+        if (input != null && !voiceMode) {
+            input.setText("");
+        }
+        String visibleText = text == null || text.trim().isEmpty() ? attachmentSummary(attachments) : text;
+        addBubble(visibleText, true);
+        chatStore.saveMessage(localSessionId, "user", visibleText, "pending");
         if (sessionStore.token().isEmpty()) {
             TextView assistant = addBubble("请先在右上角“未登录”入口完成登录。当前消息已经保存在本地，登录后可以继续使用 AI 导购。", false);
             chatStore.saveMessage(localSessionId, "assistant", assistant.getText().toString(), "local_only");
@@ -489,12 +897,17 @@ public class MainActivity extends Activity {
         streaming = true;
         actionButton.setText("■");
         loadingAssistant = addLoadingBubble();
-        ensureServerSessionThenStream(text);
+        ensureServerSessionThenStream(visibleText, attachments == null ? new JSONArray() : attachments);
     }
 
-    private void ensureServerSessionThenStream(String text) {
+    private String attachmentSummary(JSONArray attachments) {
+        int count = attachments == null ? 0 : attachments.length();
+        return count == 0 ? "" : "[已选择 " + count + " 个附件]";
+    }
+
+    private void ensureServerSessionThenStream(String text, JSONArray attachments) {
         if (!serverSessionId.isEmpty()) {
-            stream(text);
+            stream(text, attachments);
             return;
         }
         new Thread(() -> {
@@ -502,16 +915,19 @@ public class MainActivity extends Activity {
                 JSONObject session = api.createSession("Android 新聊天");
                 serverSessionId = session.optString("session_id", "");
                 chatStore.bindServerSession(localSessionId, serverSessionId);
-                runOnUiThread(() -> stream(text));
+                runOnUiThread(() -> stream(text, attachments));
             } catch (Exception error) {
                 runOnUiThread(() -> failStream("创建会话失败：" + error.getMessage()));
             }
         }).start();
     }
 
-    private void stream(String text) {
+    private void stream(String text, JSONArray attachments) {
         activeAssistantMarkdown = new StringBuilder();
-        api.streamMessage(serverSessionId, text, new ApiClient.SseCallback() {
+        activeAssistantBlocks = new JSONArray();
+        activeFollowups = new JSONArray();
+        activeFollowupsView = null;
+        api.streamMessage(serverSessionId, text, attachments, new ApiClient.SseCallback() {
             @Override
             public void onEvent(JSONObject event) {
                 runOnUiThread(() -> handleSse(event));
@@ -532,12 +948,15 @@ public class MainActivity extends Activity {
         }
         if ("block_delta".equals(type)) {
             JSONObject block = event.optJSONObject("block");
-            renderAgentBlock(block == null ? event : block);
+            JSONObject value = block == null ? event : block;
+            activeAssistantBlocks.put(value);
+            renderAgentBlock(value, chatList);
             return;
         }
         if ("followups".equals(type)) {
             JSONArray questions = event.optJSONArray("questions");
-            addChatSystemLine("你还可以继续追问：" + (questions == null ? "" : questions.toString()));
+            activeFollowups = questions == null ? new JSONArray() : questions;
+            renderFollowups(activeFollowups, chatList);
             return;
         }
         if ("message_end".equals(type)) {
@@ -559,22 +978,28 @@ public class MainActivity extends Activity {
             activeAssistantMarkdown = new StringBuilder(activeAssistant.getText().toString());
         }
         activeAssistantMarkdown.append(delta);
-        MarkdownRenderer.setMarkdown(activeAssistant, activeAssistantMarkdown.toString());
+        MarkdownRenderer.setMarkdown(activeAssistant, sanitizeAgentMarkdown(activeAssistantMarkdown.toString()).visibleMarkdown);
         scrollBottom();
     }
 
     private void finishStream() {
+        String markdown = activeAssistantMarkdown == null ? "" : activeAssistantMarkdown.toString();
+        String visibleMarkdown = sanitizeAgentMarkdown(markdown).visibleMarkdown;
         if (activeAssistant != null) {
-            String markdown = activeAssistantMarkdown == null ? activeAssistant.getText().toString() : activeAssistantMarkdown.toString();
-            MarkdownRenderer.setMarkdown(activeAssistant, markdown);
-            chatStore.saveMessage(localSessionId, "assistant", markdown, "completed");
+            MarkdownRenderer.setMarkdown(activeAssistant, visibleMarkdown);
+        }
+        if (!visibleMarkdown.trim().isEmpty() || activeAssistantBlocks.length() > 0 || activeFollowups.length() > 0) {
+            chatStore.saveAssistantTurn(localSessionId, visibleMarkdown, activeAssistantBlocks.toString(), activeFollowups.toString(), "completed");
         }
         activeAssistantMarkdown = null;
         activeAssistant = null;
+        activeAssistantBlocks = new JSONArray();
+        activeFollowups = new JSONArray();
+        activeFollowupsView = null;
         removeLoadingBubbleIfNeeded();
         streaming = false;
         if (actionButton != null && input != null) {
-            actionButton.setText(input.getText().toString().trim().isEmpty() ? "≋" : "➤");
+            actionButton.setText(voiceMode ? "⌨" : (input.getText().toString().trim().isEmpty() ? "🎙" : "➤"));
         }
     }
 
@@ -587,7 +1012,7 @@ public class MainActivity extends Activity {
         }
         streaming = false;
         if (actionButton != null && input != null) {
-            actionButton.setText(input.getText().toString().trim().isEmpty() ? "≋" : "➤");
+            actionButton.setText(voiceMode ? "⌨" : (input.getText().toString().trim().isEmpty() ? "🎙" : "➤"));
         }
     }
 
@@ -606,43 +1031,65 @@ public class MainActivity extends Activity {
         loadingAssistant = null;
     }
 
-    private void renderAgentBlock(JSONObject block) {
+    private void renderAgentBlock(JSONObject block, LinearLayout parent) {
         removeLoadingBubbleIfNeeded();
-        if (block == null) {
+        if (block == null || parent == null) {
             return;
         }
         String type = block.optString("type");
+        if ("markdown".equals(type)) {
+            TextView bubble = addBubbleTo(block.optString("content", ""), false, parent);
+            MarkdownRenderer.setMarkdown(bubble, sanitizeAgentMarkdown(block.optString("content", "")).visibleMarkdown);
+            return;
+        }
         if ("product_card".equals(type)) {
             JSONObject product = block.optJSONObject("product");
             if (product != null) {
-                chatList.addView(chatProductCard(product));
+                parent.addView(chatProductCard(product));
                 scrollBottom();
             }
             return;
         }
         if ("comparison_table".equals(type)) {
-            chatList.addView(comparisonCard(block));
+            parent.addView(comparisonCard(block));
             scrollBottom();
             return;
         }
-        if ("warning".equals(type) || "citation".equals(type)) {
-            String message = block.optString("message", block.optString("content", ""));
-            if (!message.isEmpty()) {
-                addChatSystemLine(message);
-            }
+        if ("citation".equals(type)) {
+            parent.addView(citationCard(block.optJSONObject("citation")));
+            scrollBottom();
+            return;
+        }
+        if ("warning".equals(type)) {
+            parent.addView(warningCard(block.optString("message", block.optString("content", ""))));
+            scrollBottom();
             return;
         }
         if ("cart_state".equals(type)) {
-            addChatSystemLine("购物车已更新，可以到购物车页面查看。");
+            parent.addView(cartStateCard(block.optJSONObject("cart")));
+            scrollBottom();
             return;
         }
         if ("order_summary".equals(type)) {
-            addChatSystemLine("订单信息已更新，可以到订单页面查看。");
+            parent.addView(orderSummaryCard(block.optJSONArray("orders")));
+            scrollBottom();
             return;
         }
         String content = block.optString("content", "");
         if (!content.isEmpty()) {
-            addBubble(content, false);
+            addBubbleTo(content, false, parent);
+        }
+    }
+
+    private void renderAgentBlocks(JSONArray blocks, LinearLayout parent) {
+        if (blocks == null) {
+            return;
+        }
+        for (int i = 0; i < blocks.length(); i++) {
+            JSONObject block = blocks.optJSONObject(i);
+            if (block != null) {
+                renderAgentBlock(block, parent);
+            }
         }
     }
 
@@ -711,6 +1158,143 @@ public class MainActivity extends Activity {
             card.addView(muted(joinArray(columns, columns.length())));
         }
         return card;
+    }
+
+    private View citationCard(JSONObject citation) {
+        LinearLayout card = panel();
+        card.setBackground(rounded(Color.rgb(248, 250, 252), dp(10)));
+        card.addView(strong(citation == null ? "引用来源" : citation.optString("title", "引用来源")));
+        if (citation != null) {
+            card.addView(muted(citation.optString("snippet", "")));
+            String source = citation.optString("source", "");
+            if (!source.isEmpty()) {
+                card.addView(muted("来源：" + source));
+            }
+        }
+        return card;
+    }
+
+    private View warningCard(String message) {
+        TextView view = card("提示", message == null || message.isEmpty() ? "当前信息需要进一步确认。" : message);
+        view.setBackground(rounded(Color.rgb(255, 250, 235), dp(12)));
+        return view;
+    }
+
+    private View cartStateCard(JSONObject cart) {
+        LinearLayout card = panel();
+        card.addView(strong("购物车"));
+        JSONArray items = cart == null ? null : cart.optJSONArray("items");
+        if (items == null || items.length() == 0) {
+            card.addView(muted("购物车为空。"));
+        } else {
+            for (int i = 0; i < items.length(); i++) {
+                JSONObject item = items.optJSONObject(i);
+                if (item != null) {
+                    card.addView(muted((i + 1) + ". " + item.optString("name", "商品") + " x" + item.optInt("quantity", 1) + " · ¥" + item.optString("price", "0")));
+                }
+            }
+        }
+        JSONObject summary = cart == null ? null : cart.optJSONObject("summary");
+        if (summary != null) {
+            card.addView(strong("已选 " + summary.optInt("selectedCount", 0) + " 件，应付 ¥" + summary.optString("payAmount", "0")));
+        }
+        return card;
+    }
+
+    private View orderSummaryCard(JSONArray orders) {
+        LinearLayout card = panel();
+        card.addView(strong("订单已创建"));
+        if (orders == null || orders.length() == 0) {
+            card.addView(muted("暂无订单信息。"));
+            return card;
+        }
+        for (int i = 0; i < orders.length(); i++) {
+            JSONObject order = orders.optJSONObject(i);
+            if (order != null) {
+                card.addView(muted(order.optString("merchant_name", "商家") + " · ¥" + order.optString("total_amount", "0") + " · " + statusText(order.optString("status", ""))));
+            }
+        }
+        return card;
+    }
+
+    private void renderFollowups(JSONArray questions, LinearLayout parent) {
+        if (questions == null || questions.length() == 0 || parent == null) {
+            return;
+        }
+        if (streaming && activeFollowupsView != null && activeFollowupsView.getParent() == parent) {
+            parent.removeView(activeFollowupsView);
+        }
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        wrap.setPadding(0, dp(8), 0, dp(6));
+        TextView title = muted("您还可以继续追问：");
+        title.setGravity(Gravity.CENTER);
+        wrap.addView(title, new LinearLayout.LayoutParams(-1, -2));
+        HorizontalScrollView scroll = new HorizontalScrollView(this);
+        scroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout chips = new LinearLayout(this);
+        chips.setOrientation(LinearLayout.HORIZONTAL);
+        for (int i = 0; i < questions.length(); i++) {
+            String question = questions.optString(i, "");
+            if (question.isEmpty()) {
+                continue;
+            }
+            TextView chip = new TextView(this);
+            chip.setText(question);
+            chip.setTextSize(13);
+            chip.setTextColor(Color.rgb(55, 65, 81));
+            chip.setGravity(Gravity.CENTER);
+            chip.setPadding(dp(12), 0, dp(12), 0);
+            chip.setBackground(rounded(Color.rgb(238, 239, 241), dp(19)));
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, dp(38));
+            params.setMargins(0, 0, dp(8), 0);
+            chips.addView(chip, params);
+        }
+        scroll.addView(chips);
+        wrap.addView(scroll, new LinearLayout.LayoutParams(-1, dp(42)));
+        parent.addView(wrap, new LinearLayout.LayoutParams(-1, -2));
+        if (streaming) {
+            activeFollowupsView = wrap;
+        }
+        scrollBottom();
+    }
+
+    private RenderedMarkdown sanitizeAgentMarkdown(String raw) {
+        String value = raw == null ? "" : raw;
+        JSONArray toolCalls = new JSONArray();
+        value = stripTaggedBlock(value, "tool_call", toolCalls);
+        value = stripTaggedBlock(value, "tool_response", toolCalls);
+        value = stripTaggedBlock(value, "think", null);
+        return new RenderedMarkdown(value.trim(), toolCalls);
+    }
+
+    private String stripTaggedBlock(String value, String tag, JSONArray captures) {
+        String open = "<" + tag + ">";
+        String close = "</" + tag + ">";
+        String result = value == null ? "" : value;
+        while (true) {
+            int start = result.indexOf(open);
+            if (start < 0) {
+                return result;
+            }
+            int end = result.indexOf(close, start + open.length());
+            if (end < 0) {
+                return result.substring(0, start);
+            }
+            String body = result.substring(start + open.length(), end).trim();
+            if (captures != null && !body.isEmpty()) {
+                captures.put(body);
+            }
+            result = result.substring(0, start) + result.substring(end + close.length());
+        }
+    }
+
+    private JSONArray jsonArray(String value) {
+        try {
+            return value == null || value.isEmpty() ? new JSONArray() : new JSONArray(value);
+        } catch (Exception ignored) {
+            return new JSONArray();
+        }
     }
 
     private void renderProfile() {
@@ -890,16 +1474,26 @@ public class MainActivity extends Activity {
     }
 
     private void renderProducts() {
+        renderProducts(false);
+    }
+
+    private void renderProducts(boolean restoreScroll) {
         closeDrawer();
         activePage = "products";
         backStack.clear();
         baseScreen();
         addPageHeader("商品", "搜索商品、查看详情、加入购物车");
-        LinearLayout page = pageBody();
+        productsScroll = new ScrollView(this);
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setPadding(dp(16), dp(10), dp(16), dp(16));
+        productsScroll.addView(page);
+        content.addView(productsScroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        restoreProductsScroll = restoreScroll;
 
         LinearLayout searchRow = new LinearLayout(this);
         searchRow.setGravity(Gravity.CENTER_VERTICAL);
-        EditText keyword = inputField("搜索商品", "");
+        EditText keyword = inputField("搜索商品", lastProductKeyword);
         searchRow.addView(keyword, new LinearLayout.LayoutParams(0, dp(52), 1));
         Button search = secondaryButton("搜索");
         LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(dp(88), dp(52));
@@ -907,26 +1501,158 @@ public class MainActivity extends Activity {
         searchRow.addView(search, searchParams);
         page.addView(searchRow);
 
-        HorizontalScrollView filterScroll = new HorizontalScrollView(this);
-        filterScroll.setHorizontalScrollBarEnabled(false);
-        LinearLayout filters = new LinearLayout(this);
-        filters.setOrientation(LinearLayout.HORIZONTAL);
-        filterScroll.addView(filters);
+        Button categoryButton = secondaryButton("商品类别：" + lastCategoryName + "  >");
+        categoryButton.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
+        categoryButton.setPadding(dp(16), 0, dp(16), 0);
+        categoryButton.setOnClickListener(v -> openCategoryDialog(() -> {
+            lastProductKeyword = keyword.getText().toString();
+            renderProducts();
+        }));
         LinearLayout.LayoutParams filterParams = new LinearLayout.LayoutParams(-1, dp(46));
         filterParams.setMargins(0, 0, 0, dp(10));
-        page.addView(filterScroll, filterParams);
+        page.addView(categoryButton, filterParams);
 
-        LinearLayout list = new LinearLayout(this);
-        list.setOrientation(LinearLayout.VERTICAL);
+        productsList = new LinearLayout(this);
+        productsList.setOrientation(LinearLayout.VERTICAL);
         LinearLayout.LayoutParams listParams = new LinearLayout.LayoutParams(-1, -2);
         listParams.topMargin = dp(2);
-        page.addView(list, listParams);
+        page.addView(productsList, listParams);
         search.setOnClickListener(v -> {
             lastProductKeyword = keyword.getText().toString();
-            loadProducts(list, lastProductKeyword, lastCategoryId);
+            productsScrollY = 0;
+            resetProductState(lastProductKeyword, lastCategoryId);
+            loadProducts(productsList, lastProductKeyword, lastCategoryId);
         });
-        loadCategories(filters, list, keyword);
-        loadProducts(list, lastProductKeyword, lastCategoryId);
+        productsScroll.setOnScrollChangeListener((v, scrollX, scrollY, oldScrollX, oldScrollY) -> {
+            productsScrollY = scrollY;
+            if (productsScroll == null || productsList == null || currentProductState == null) {
+                return;
+            }
+            int bottomDistance = productsList.getBottom() - (productsScroll.getHeight() + scrollY);
+            if (bottomDistance < dp(560) && currentProductState.hasMore && !loadingProducts) {
+                loadMoreProducts(productsList, lastProductKeyword, lastCategoryId);
+            }
+        });
+        ensureCategoriesLoaded();
+        loadProducts(productsList, lastProductKeyword, lastCategoryId);
+    }
+
+    private void ensureCategoriesLoaded() {
+        if (cachedCategoryTree.length() > 0) {
+            return;
+        }
+        new Thread(() -> {
+            try {
+                JSONArray categories = api.categoriesTree();
+                runOnUiThread(() -> cachedCategoryTree = categories);
+            } catch (Exception ignored) {
+            }
+        }).start();
+    }
+
+    private void openCategoryDialog(Runnable onChanged) {
+        if (cachedCategoryTree.length() == 0) {
+            new Thread(() -> {
+                try {
+                    JSONArray categories = api.categoriesTree();
+                    runOnUiThread(() -> {
+                        cachedCategoryTree = categories;
+                        openCategoryDialog(onChanged);
+                    });
+                } catch (Exception error) {
+                    runOnUiThread(() -> toastLine("分类加载失败：" + error.getMessage()));
+                }
+            }).start();
+            return;
+        }
+        final String[] pendingId = {lastCategoryId};
+        final String[] pendingName = {lastCategoryName};
+        LinearLayout rootLayout = new LinearLayout(this);
+        rootLayout.setOrientation(LinearLayout.HORIZONTAL);
+        rootLayout.setPadding(dp(8), dp(8), dp(8), dp(8));
+        LinearLayout primary = new LinearLayout(this);
+        primary.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout secondary = new LinearLayout(this);
+        secondary.setOrientation(LinearLayout.VERTICAL);
+        rootLayout.addView(primary, new LinearLayout.LayoutParams(0, -2, 1));
+        rootLayout.addView(secondary, new LinearLayout.LayoutParams(0, -2, 1));
+
+        Runnable[] renderSecondary = new Runnable[1];
+        renderSecondary[0] = () -> {
+        };
+        addPrimaryCategoryButton(primary, secondary, "全部", null, pendingId, pendingName);
+        for (int i = 0; i < cachedCategoryTree.length(); i++) {
+            JSONObject category = cachedCategoryTree.optJSONObject(i);
+            if (category != null) {
+                addPrimaryCategoryButton(primary, secondary, category.optString("name", "分类"), category, pendingId, pendingName);
+            }
+        }
+        fillSecondaryCategories(secondary, null, pendingId, pendingName);
+
+        new AlertDialog.Builder(this)
+                .setTitle("选择商品类别")
+                .setView(rootLayout)
+                .setNegativeButton("取消", null)
+                .setNeutralButton("重置", (dialog, which) -> {
+                    lastCategoryId = "";
+                    lastCategoryName = "全部";
+                    productsScrollY = 0;
+                    onChanged.run();
+                })
+                .setPositiveButton("确定", (dialog, which) -> {
+                    lastCategoryId = pendingId[0];
+                    lastCategoryName = pendingName[0];
+                    productsScrollY = 0;
+                    onChanged.run();
+                })
+                .show();
+    }
+
+    private void addPrimaryCategoryButton(LinearLayout primary, LinearLayout secondary, String name, JSONObject category, String[] pendingId, String[] pendingName) {
+        Button button = secondaryButton(name);
+        button.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
+        button.setOnClickListener(v -> fillSecondaryCategories(secondary, category, pendingId, pendingName));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(44));
+        params.setMargins(0, 0, dp(8), dp(8));
+        primary.addView(button, params);
+    }
+
+    private void fillSecondaryCategories(LinearLayout secondary, JSONObject category, String[] pendingId, String[] pendingName) {
+        secondary.removeAllViews();
+        String allName = category == null ? "全部" : category.optString("name", "全部");
+        String allId = category == null ? "" : category.optString("categoryId", "");
+        addSecondaryCategoryButton(secondary, "全部".equals(allName) ? "全部" : allName + "全部", allId, allName, pendingId, pendingName);
+        JSONArray children = category == null ? null : category.optJSONArray("children");
+        if (children == null) {
+            return;
+        }
+        for (int i = 0; i < children.length(); i++) {
+            JSONObject child = children.optJSONObject(i);
+            if (child != null) {
+                addSecondaryCategoryButton(secondary, child.optString("name", "分类"), child.optString("categoryId", ""), child.optString("name", "分类"), pendingId, pendingName);
+            }
+        }
+    }
+
+    private void addSecondaryCategoryButton(LinearLayout secondary, String label, String categoryId, String categoryName, String[] pendingId, String[] pendingName) {
+        Button button = categoryId.equals(pendingId[0]) ? primaryButton(label) : secondaryButton(label);
+        button.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
+        button.setOnClickListener(v -> {
+            pendingId[0] = categoryId;
+            pendingName[0] = categoryName == null || categoryName.isEmpty() ? "全部" : categoryName;
+            for (int i = 0; i < secondary.getChildCount(); i++) {
+                View child = secondary.getChildAt(i);
+                if (child instanceof Button) {
+                    child.setBackground(rounded(Color.rgb(238, 239, 241), dp(22)));
+                    ((Button) child).setTextColor(Color.BLACK);
+                }
+            }
+            button.setTextColor(Color.WHITE);
+            button.setBackground(rounded(Color.BLACK, dp(24)));
+        });
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(44));
+        params.setMargins(0, 0, 0, dp(8));
+        secondary.addView(button, params);
     }
 
     private void loadCategories(LinearLayout filters, LinearLayout list, EditText keyword) {
@@ -978,20 +1704,60 @@ public class MainActivity extends Activity {
     }
 
     private void loadProducts(LinearLayout list, String keyword, String categoryId) {
+        String key = productCacheKey(keyword, categoryId);
+        currentProductState = productListCache.get(key);
+        if (currentProductState != null && currentProductState.loaded) {
+            renderProductItems(list, currentProductState);
+            if (restoreProductsScroll && productsScroll != null) {
+                productsScroll.post(() -> productsScroll.scrollTo(0, currentProductState.scrollY));
+                restoreProductsScroll = false;
+            }
+            return;
+        }
+        currentProductState = new ProductListState();
+        productListCache.put(key, currentProductState);
         list.removeAllViews();
         list.addView(muted("正在加载商品..."));
+        loadMoreProducts(list, keyword, categoryId);
+    }
+
+    private void loadMoreProducts(LinearLayout list, String keyword, String categoryId) {
+        if (loadingProducts) {
+            return;
+        }
+        if (currentProductState == null) {
+            currentProductState = new ProductListState();
+            productListCache.put(productCacheKey(keyword, categoryId), currentProductState);
+        }
+        loadingProducts = true;
         new Thread(() -> {
             try {
-                JSONArray items = api.products(keyword, categoryId);
-                runOnUiThread(() -> renderProductItems(list, items));
+                ApiClient.ProductPage page = api.productsPage(keyword, categoryId, PRODUCT_PAGE_SIZE, currentProductState.nextCursor);
+                runOnUiThread(() -> {
+                    appendProducts(currentProductState.items, page.items);
+                    currentProductState.nextCursor = page.nextCursor;
+                    currentProductState.hasMore = page.hasMore;
+                    currentProductState.loaded = true;
+                    loadingProducts = false;
+                    renderProductItems(list, currentProductState);
+                });
             } catch (Exception error) {
-                runOnUiThread(() -> renderError(list, "商品加载失败", error.getMessage(), () -> loadProducts(list, keyword, categoryId)));
+                runOnUiThread(() -> {
+                    loadingProducts = false;
+                    if (currentProductState != null && currentProductState.loaded) {
+                        toastLine("加载更多失败：" + error.getMessage());
+                        renderProductItems(list, currentProductState);
+                    } else {
+                        renderError(list, "商品加载失败", error.getMessage(), () -> loadProducts(list, keyword, categoryId));
+                    }
+                });
             }
         }).start();
     }
 
-    private void renderProductItems(LinearLayout list, JSONArray items) {
+    private void renderProductItems(LinearLayout list, ProductListState state) {
         list.removeAllViews();
+        JSONArray items = state.items;
         if (items.length() == 0) {
             list.addView(card("暂无商品", "换个关键词试试。"));
             return;
@@ -1002,6 +1768,34 @@ public class MainActivity extends Activity {
                 list.addView(productCard(item));
             }
         }
+        if (state.hasMore) {
+            TextView more = muted(loadingProducts ? "正在加载更多..." : "继续下滑加载更多");
+            more.setGravity(Gravity.CENTER);
+            list.addView(more, new LinearLayout.LayoutParams(-1, dp(44)));
+        } else {
+            TextView end = muted("已经到底了");
+            end.setGravity(Gravity.CENTER);
+            list.addView(end, new LinearLayout.LayoutParams(-1, dp(44)));
+        }
+        if (restoreProductsScroll && productsScroll != null) {
+            productsScroll.post(() -> productsScroll.scrollTo(0, state.scrollY));
+            restoreProductsScroll = false;
+        }
+    }
+
+    private void appendProducts(JSONArray target, JSONArray source) {
+        for (int i = 0; i < source.length(); i++) {
+            target.put(source.opt(i));
+        }
+    }
+
+    private String productCacheKey(String keyword, String categoryId) {
+        return (keyword == null ? "" : keyword.trim()) + "::" + (categoryId == null ? "" : categoryId.trim());
+    }
+
+    private void resetProductState(String keyword, String categoryId) {
+        productListCache.remove(productCacheKey(keyword, categoryId));
+        currentProductState = null;
     }
 
     private View productCard(JSONObject item) {
@@ -1037,7 +1831,13 @@ public class MainActivity extends Activity {
         LinearLayout actions = new LinearLayout(this);
         actions.setGravity(Gravity.CENTER_VERTICAL);
         Button detail = secondaryButton("详情");
-        detail.setOnClickListener(v -> renderProductDetail(item.optString("productId"), () -> renderProducts()));
+        detail.setOnClickListener(v -> {
+            productsScrollY = productsScroll == null ? 0 : productsScroll.getScrollY();
+            if (currentProductState != null) {
+                currentProductState.scrollY = productsScrollY;
+            }
+            renderProductDetail(item.optString("productId"), () -> renderProducts(true));
+        });
         LinearLayout.LayoutParams detailParams = new LinearLayout.LayoutParams(0, dp(44), 1);
         detailParams.rightMargin = dp(8);
         actions.addView(detail, detailParams);
@@ -1076,7 +1876,7 @@ public class MainActivity extends Activity {
         page.removeAllViews();
         JSONArray images = item.optJSONArray("imageUrls");
         String imageUrl = images != null && images.length() > 0 ? images.optString(0) : item.optString("imageUrl", "");
-        page.addView(productImage(imageUrl, 220), new LinearLayout.LayoutParams(-1, dp(220)));
+        page.addView(productDetailImage(imageUrl), new LinearLayout.LayoutParams(-1, dp(240)));
 
         LinearLayout main = panel();
         main.addView(strong(item.optString("name", "未命名商品")));
@@ -1091,12 +1891,12 @@ public class MainActivity extends Activity {
         main.addView(muted("库存：" + statusText(item.optString("stockStatus", ""))));
         page.addView(main);
 
-        addArrayPanel(page, "商品卖点", item.optJSONArray("sellingPoints"));
-        addTextPanel(page, "推荐理由", item.optString("recommendReason", ""));
-        addArrayPanel(page, "适合人群", item.optJSONArray("suitableFor"));
-        addArrayPanel(page, "不适合人群", item.optJSONArray("notSuitableFor"));
-        addArrayPanel(page, "风险提示", item.optJSONArray("riskNotes"));
-        addAttributesPanel(page, item.optJSONArray("attributes"));
+        addExpandableArrayPanel(page, "商品卖点", item.optJSONArray("sellingPoints"), 3);
+        addExpandableTextPanel(page, "推荐理由", item.optString("recommendReason", ""), 3);
+        addExpandableArrayPanel(page, "适合人群", item.optJSONArray("suitableFor"), 3);
+        addExpandableArrayPanel(page, "不适合人群", item.optJSONArray("notSuitableFor"), 3);
+        addExpandableArrayPanel(page, "风险提示", item.optJSONArray("riskNotes"), 3);
+        addExpandableAttributesPanel(page, item.optJSONArray("attributes"), 6);
         addSkusPanel(page, skus);
 
         Button add = primaryButton("加入购物车");
@@ -1368,11 +2168,15 @@ public class MainActivity extends Activity {
     }
 
     private TextView addBubble(String text, boolean right) {
+        return addBubbleTo(text, right, chatList);
+    }
+
+    private TextView addBubbleTo(String text, boolean right, LinearLayout parent) {
         TextView bubble = new TextView(this);
         if (right) {
             bubble.setText(text);
         } else {
-            MarkdownRenderer.setMarkdown(bubble, text);
+            MarkdownRenderer.setMarkdown(bubble, sanitizeAgentMarkdown(text).visibleMarkdown);
         }
         bubble.setTextSize(15);
         bubble.setLineSpacing(4, 1);
@@ -1384,7 +2188,7 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         params.gravity = right ? Gravity.RIGHT : Gravity.LEFT;
         params.setMargins(0, dp(6), 0, dp(6));
-        chatList.addView(bubble, params);
+        parent.addView(bubble, params);
         scrollBottom();
         return bubble;
     }
@@ -1462,6 +2266,10 @@ public class MainActivity extends Activity {
         for (LocalChatStore.MessageItem message : messages) {
             if ("system".equals(message.role)) {
                 addChatSystemLine(message.content);
+            } else if ("assistant".equals(message.role)) {
+                addBubble(message.content, false);
+                renderAgentBlocks(jsonArray(message.blocksJson), chatList);
+                renderFollowups(jsonArray(message.followupsJson), chatList);
             } else {
                 addBubble(message.content, "user".equals(message.role));
             }
@@ -1599,19 +2407,59 @@ public class MainActivity extends Activity {
     }
 
     private View productImage(String imageUrl, int sizeDp) {
+        return productImage(imageUrl, sizeDp, ImageView.ScaleType.CENTER_CROP, false);
+    }
+
+    private View productDetailImage(String imageUrl) {
+        return productImage(imageUrl, 240, ImageView.ScaleType.FIT_CENTER, true);
+    }
+
+    private View productImage(String imageUrl, int sizeDp, ImageView.ScaleType scaleType, boolean previewable) {
         FrameLayout frame = new FrameLayout(this);
         frame.setBackground(rounded(Color.rgb(243, 244, 246), dp(12)));
         TextView placeholder = imagePlaceholder();
         frame.addView(placeholder, new FrameLayout.LayoutParams(-1, -1));
         ImageView image = new ImageView(this);
-        image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        image.setScaleType(scaleType);
         String url = api.absoluteUrl(imageUrl);
         if (!url.isEmpty()) {
             frame.addView(image, new FrameLayout.LayoutParams(-1, -1));
             imageLoader.load(image, url);
+            if (previewable) {
+                frame.setOnClickListener(v -> showImagePreview(url));
+            }
         }
         frame.setLayoutParams(new LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp)));
         return frame;
+    }
+
+    private void showImagePreview(String url) {
+        FrameLayout preview = new FrameLayout(this);
+        preview.setBackgroundColor(Color.BLACK);
+        ImageView image = new ImageView(this);
+        image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        imageLoader.load(image, url);
+        preview.addView(image, new FrameLayout.LayoutParams(-1, -1));
+        TextView close = new TextView(this);
+        close.setText("×");
+        close.setTextSize(28);
+        close.setGravity(Gravity.CENTER);
+        close.setTextColor(Color.WHITE);
+        close.setOnClickListener(v -> {
+            if (preview.getParent() == root) {
+                root.removeView(preview);
+            }
+        });
+        FrameLayout.LayoutParams closeParams = new FrameLayout.LayoutParams(dp(56), dp(56), Gravity.RIGHT | Gravity.TOP);
+        closeParams.topMargin = dp(24);
+        closeParams.rightMargin = dp(12);
+        preview.addView(close, closeParams);
+        preview.setOnClickListener(v -> {
+            if (preview.getParent() == root) {
+                root.removeView(preview);
+            }
+        });
+        root.addView(preview, new FrameLayout.LayoutParams(-1, -1));
     }
 
     private View accountAvatarView(int sizePx, int textSp) {
@@ -1682,6 +2530,103 @@ public class MainActivity extends Activity {
                 panel.addView(muted(item.optString("skuName", "默认款") + " · ¥" + item.optString("price", "0") + " · 库存 " + item.optInt("stockQuantity", 0)));
             }
         }
+        page.addView(panel);
+    }
+
+    private void addExpandableTextPanel(LinearLayout page, String title, String text, int collapsedLines) {
+        if (text == null || text.trim().isEmpty()) {
+            return;
+        }
+        LinearLayout panel = panel();
+        final boolean[] expanded = {false};
+        Runnable render = new Runnable() {
+            @Override
+            public void run() {
+                panel.removeAllViews();
+                panel.addView(strong(title));
+                TextView body = muted(text);
+                if (!expanded[0]) {
+                    body.setMaxLines(collapsedLines);
+                }
+                panel.addView(body);
+                if (text.length() > 80) {
+                    Button more = textOnlyButton(expanded[0] ? "收起" : "显示更多");
+                    more.setTextColor(Color.rgb(37, 99, 235));
+                    more.setTextSize(14);
+                    more.setOnClickListener(v -> {
+                        expanded[0] = !expanded[0];
+                        run();
+                    });
+                    panel.addView(more, new LinearLayout.LayoutParams(-2, dp(36)));
+                }
+            }
+        };
+        render.run();
+        page.addView(panel);
+    }
+
+    private void addExpandableArrayPanel(LinearLayout page, String title, JSONArray items, int collapsedCount) {
+        if (items == null || items.length() == 0) {
+            return;
+        }
+        LinearLayout panel = panel();
+        final boolean[] expanded = {false};
+        Runnable render = new Runnable() {
+            @Override
+            public void run() {
+                panel.removeAllViews();
+                panel.addView(strong(title));
+                int count = expanded[0] ? items.length() : Math.min(items.length(), collapsedCount);
+                for (int i = 0; i < count; i++) {
+                    panel.addView(muted("• " + items.optString(i)));
+                }
+                if (items.length() > collapsedCount) {
+                    Button more = textOnlyButton(expanded[0] ? "收起" : "显示更多");
+                    more.setTextColor(Color.rgb(37, 99, 235));
+                    more.setTextSize(14);
+                    more.setOnClickListener(v -> {
+                        expanded[0] = !expanded[0];
+                        run();
+                    });
+                    panel.addView(more, new LinearLayout.LayoutParams(-2, dp(36)));
+                }
+            }
+        };
+        render.run();
+        page.addView(panel);
+    }
+
+    private void addExpandableAttributesPanel(LinearLayout page, JSONArray items, int collapsedCount) {
+        if (items == null || items.length() == 0) {
+            return;
+        }
+        LinearLayout panel = panel();
+        final boolean[] expanded = {false};
+        Runnable render = new Runnable() {
+            @Override
+            public void run() {
+                panel.removeAllViews();
+                panel.addView(strong("商品参数"));
+                int count = expanded[0] ? items.length() : Math.min(items.length(), collapsedCount);
+                for (int i = 0; i < count; i++) {
+                    JSONObject item = items.optJSONObject(i);
+                    if (item != null) {
+                        panel.addView(muted(item.optString("key", "") + "：" + item.optString("value", "") + item.optString("unit", "")));
+                    }
+                }
+                if (items.length() > collapsedCount) {
+                    Button more = textOnlyButton(expanded[0] ? "收起" : "显示更多");
+                    more.setTextColor(Color.rgb(37, 99, 235));
+                    more.setTextSize(14);
+                    more.setOnClickListener(v -> {
+                        expanded[0] = !expanded[0];
+                        run();
+                    });
+                    panel.addView(more, new LinearLayout.LayoutParams(-2, dp(36)));
+                }
+            }
+        };
+        render.run();
         page.addView(panel);
     }
 
@@ -1930,6 +2875,16 @@ public class MainActivity extends Activity {
     private static class SpaceView extends View {
         SpaceView(Activity activity) {
             super(activity);
+        }
+    }
+
+    private static class RenderedMarkdown {
+        final String visibleMarkdown;
+        final JSONArray toolCalls;
+
+        RenderedMarkdown(String visibleMarkdown, JSONArray toolCalls) {
+            this.visibleMarkdown = visibleMarkdown == null ? "" : visibleMarkdown;
+            this.toolCalls = toolCalls == null ? new JSONArray() : toolCalls;
         }
     }
 }

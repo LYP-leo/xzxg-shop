@@ -108,7 +108,7 @@ func (s *Server) withRateLimit(next http.Handler) http.Handler {
 func (s *Server) withBodyLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
-			r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
+			r.Body = http.MaxBytesReader(w, r.Body, 12<<20)
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -180,6 +180,9 @@ func routePolicy(method string, path string) (bool, []domain.AccountRole) {
 		return false, nil
 	}
 	if strings.HasPrefix(path, "/api/v1/cart") || strings.HasPrefix(path, "/api/v1/agent") || strings.HasPrefix(path, "/api/v1/orders") {
+		return true, []domain.AccountRole{domain.AccountRoleUser}
+	}
+	if strings.HasPrefix(path, "/api/v1/attachments") {
 		return true, []domain.AccountRole{domain.AccountRoleUser}
 	}
 	if strings.HasPrefix(path, "/api/v1/merchant") {

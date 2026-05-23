@@ -30,6 +30,7 @@ type Store interface {
 	ListCategories(ctx context.Context) []domain.Category
 	ListMerchants(ctx context.Context) []domain.Merchant
 	ListProducts(ctx context.Context, keyword string, categoryID string) []domain.ProductCard
+	ListProductsPage(ctx context.Context, keyword string, categoryID string, limit int, offset int) ([]domain.ProductCard, bool)
 	ListAllProducts(ctx context.Context) []domain.ProductCard
 	GetProduct(ctx context.Context, productID string) (domain.ProductDetail, bool)
 	CreateProduct(ctx context.Context, input domain.ProductUpsertInput) (domain.ProductDetail, error)

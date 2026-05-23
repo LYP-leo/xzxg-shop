@@ -4,10 +4,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,6 +47,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/merchants", s.handleListMerchants)
 	mux.HandleFunc("GET /api/v1/products", s.handleListProducts)
 	mux.HandleFunc("GET /api/v1/products/", s.handleProductAction)
+	mux.HandleFunc("POST /api/v1/attachments", s.handleCreateAttachment)
+	mux.HandleFunc("GET /api/v1/attachments/", s.handleAttachmentContent)
 	mux.HandleFunc("GET /api/v1/merchant/documents", s.handleListMerchantDocuments)
 	mux.HandleFunc("POST /api/v1/merchant/documents", s.handleCreateMerchantDocument)
 	mux.HandleFunc("GET /api/v1/merchant/orders", s.handleListMerchantOrders)
@@ -350,7 +354,106 @@ func (s *Server) handleListMerchants(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListProducts(w http.ResponseWriter, r *http.Request) {
 	keyword := r.URL.Query().Get("keyword")
 	categoryID := r.URL.Query().Get("category_id")
-	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListProducts(r.Context(), keyword, categoryID)})
+	limit := queryInt(r, "limit", 0)
+	offset := queryInt(r, "cursor", 0)
+	if limit <= 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListProducts(r.Context(), keyword, categoryID)})
+		return
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	items, hasMore := s.store.ListProductsPage(r.Context(), keyword, categoryID, limit, offset)
+	nextCursor := ""
+	if hasMore {
+		nextCursor = strconv.Itoa(offset + len(items))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":       items,
+		"next_cursor": nextCursor,
+		"has_more":    hasMore,
+	})
+}
+
+func (s *Server) handleCreateAttachment(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_multipart", "上传表单不合法")
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "file_required", "缺少上传文件")
+		return
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, 10<<20+1))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "read_file_failed", "读取上传文件失败")
+		return
+	}
+	if len(data) == 0 {
+		writeError(w, http.StatusBadRequest, "empty_file", "上传文件不能为空")
+		return
+	}
+	if len(data) > 10<<20 {
+		writeError(w, http.StatusBadRequest, "file_too_large", "单个文件不能超过 10MB")
+		return
+	}
+	mimeType := strings.TrimSpace(header.Header.Get("Content-Type"))
+	if mimeType == "" {
+		mimeType = http.DetectContentType(data)
+	}
+	attachmentType, allowed := attachmentTypeForMime(mimeType)
+	if !allowed {
+		writeError(w, http.StatusBadRequest, "unsupported_file_type", "暂不支持该文件类型")
+		return
+	}
+	if requestedType := strings.TrimSpace(r.FormValue("type")); requestedType != "" {
+		attachmentType = requestedType
+	}
+	attachmentID := nextPublicID("att")
+	ext := safeAttachmentExt(header.Filename, mimeType)
+	dir := filepath.Join(uploadRoot(), account.AccountID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		writeError(w, http.StatusInternalServerError, "prepare_upload_failed", "创建上传目录失败")
+		return
+	}
+	path := filepath.Join(dir, attachmentID+ext)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		writeError(w, http.StatusInternalServerError, "save_upload_failed", "保存上传文件失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"attachment_id": attachmentID,
+		"type":          attachmentType,
+		"url":           "/api/v1/attachments/" + attachmentID + "/content",
+		"name":          filepath.Base(header.Filename),
+		"mime_type":     mimeType,
+		"size":          len(data),
+	})
+}
+
+func (s *Server) handleAttachmentContent(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/attachments/")
+	attachmentID := strings.TrimSuffix(rest, "/content")
+	if attachmentID == rest || attachmentID == "" || strings.Contains(attachmentID, "/") || strings.Contains(attachmentID, "..") {
+		writeError(w, http.StatusNotFound, "not_found", "附件不存在")
+		return
+	}
+	matches, err := filepath.Glob(filepath.Join(uploadRoot(), account.AccountID, attachmentID+".*"))
+	if err != nil || len(matches) == 0 {
+		writeError(w, http.StatusNotFound, "not_found", "附件不存在")
+		return
+	}
+	http.ServeFile(w, r, matches[0])
 }
 
 func (s *Server) handleProductAction(w http.ResponseWriter, r *http.Request) {
@@ -952,6 +1055,58 @@ func datasetAssetRoot() string {
 		return root
 	}
 	return filepath.Clean(filepath.Join("..", "quality", "data", "ecommerce_agent_dataset"))
+}
+
+func uploadRoot() string {
+	if root := os.Getenv("XZXG_UPLOAD_ROOT"); root != "" {
+		return root
+	}
+	return filepath.Clean(filepath.Join("..", "uploads"))
+}
+
+func queryInt(r *http.Request, name string, fallback int) int {
+	value := strings.TrimSpace(r.URL.Query().Get(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func attachmentTypeForMime(mimeType string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(strings.Split(mimeType, ";")[0])) {
+	case "image/jpeg", "image/png", "image/webp":
+		return "image", true
+	case "application/pdf", "text/plain":
+		return "file", true
+	default:
+		return "", false
+	}
+}
+
+func safeAttachmentExt(filename string, mimeType string) string {
+	ext := strings.ToLower(filepath.Ext(filepath.Base(filename)))
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".webp", ".pdf", ".txt":
+		return ext
+	}
+	switch strings.ToLower(strings.TrimSpace(strings.Split(mimeType, ";")[0])) {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/webp":
+		return ".webp"
+	case "application/pdf":
+		return ".pdf"
+	case "text/plain":
+		return ".txt"
+	default:
+		return ".bin"
+	}
 }
 
 func allowedOrderStatus(status string) bool {

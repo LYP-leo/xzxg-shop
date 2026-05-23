@@ -600,6 +600,11 @@ func (s *MySQLStore) ListMerchants(ctx context.Context) []domain.Merchant {
 }
 
 func (s *MySQLStore) ListProducts(ctx context.Context, keyword string, categoryID string) []domain.ProductCard {
+	items, _ := s.ListProductsPage(ctx, keyword, categoryID, 0, 0)
+	return items
+}
+
+func (s *MySQLStore) ListProductsPage(ctx context.Context, keyword string, categoryID string, limit int, offset int) ([]domain.ProductCard, bool) {
 	args := make([]any, 0, 3)
 	query := productCardSelect() + ` WHERE p.status = 'active'`
 	if categoryID != "" {
@@ -619,7 +624,20 @@ func (s *MySQLStore) ListProducts(ctx context.Context, keyword string, categoryI
 		}
 	}
 	query += " ORDER BY p.sort_order, p.product_id"
-	return s.queryProductCards(ctx, query, args...)
+	if limit > 0 {
+		query += " LIMIT ? OFFSET ?"
+		if offset < 0 {
+			offset = 0
+		}
+		args = append(args, limit+1, offset)
+		items := s.queryProductCards(ctx, query, args...)
+		hasMore := len(items) > limit
+		if hasMore {
+			items = items[:limit]
+		}
+		return items, hasMore
+	}
+	return s.queryProductCards(ctx, query, args...), false
 }
 
 func (s *MySQLStore) ListAllProducts(ctx context.Context) []domain.ProductCard {
