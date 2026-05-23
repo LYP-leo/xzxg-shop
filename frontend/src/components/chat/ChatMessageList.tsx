@@ -26,7 +26,9 @@ export function ChatMessageList({ turns, onFollowup, onOpenProduct, onAddToCart 
           <div className="message message--user">{turn.userContent}</div>
           <div className="message message--agent">
             {turn.statusText ? <div className="agent-status">{turn.statusText}</div> : null}
-            <p className="streaming-text">{turn.text}</p>
+            <div className="streaming-text">
+              <MarkdownText content={turn.text} />
+            </div>
             <div className="block-list">
               {turn.blocks.map((block, index) => (
                 <AgentBlockView
@@ -64,7 +66,7 @@ function AgentBlockView({
   onAddToCart: (product: ProductCardType) => void;
 }) {
   if (block.type === 'markdown') {
-    return <p>{block.content}</p>;
+    return <MarkdownText content={block.content} />;
   }
   if (block.type === 'product_card') {
     return <ProductCard product={block.product} onOpen={onOpenProduct} onAddToCart={onAddToCart} />;
@@ -137,4 +139,43 @@ function AgentBlockView({
     );
   }
   return <div className="warning">{block.message}</div>;
+}
+
+function MarkdownText({ content }: { content: string }) {
+  if (!content.trim()) {
+    return null;
+  }
+  return (
+    <>
+      {content.split('\n').map((line, index) => {
+        const normalized = line.trim();
+        if (!normalized) {
+          return <br key={index} />;
+        }
+        if (normalized.startsWith('### ')) {
+          return <h4 key={index}>{renderInlineMarkdown(normalized.slice(4))}</h4>;
+        }
+        if (normalized.startsWith('## ')) {
+          return <h3 key={index}>{renderInlineMarkdown(normalized.slice(3))}</h3>;
+        }
+        if (normalized.startsWith('# ')) {
+          return <h3 key={index}>{renderInlineMarkdown(normalized.slice(2))}</h3>;
+        }
+        if (normalized.startsWith('- ') || normalized.startsWith('* ')) {
+          return <p key={index} className="markdown-list-line">• {renderInlineMarkdown(normalized.slice(2))}</p>;
+        }
+        return <p key={index}>{renderInlineMarkdown(normalized)}</p>;
+      })}
+    </>
+  );
+}
+
+function renderInlineMarkdown(text: string) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, index) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>;
+    }
+    return <span key={index}>{part}</span>;
+  });
 }

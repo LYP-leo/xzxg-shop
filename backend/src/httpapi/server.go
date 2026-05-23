@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/LYP-leo/xzxg-shop/backend/src/agent"
@@ -23,10 +24,12 @@ type Server struct {
 	logger  *slog.Logger
 }
 
+// NewServer 只装配依赖，不做网络监听，方便测试和命令行入口复用。
 func NewServer(store store.Store, configs configcenter.Center, runtime *agent.Runtime, logger *slog.Logger) *Server {
 	return &Server{store: store, configs: configs, runtime: runtime, logger: logger}
 }
 
+// Routes 集中声明所有 API 路由，并在最后套上跨域、鉴权、限流、日志和请求体限制中间件。
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
@@ -57,6 +60,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/admin/accounts/", s.handleUpdateAdminAccount)
 	mux.HandleFunc("GET /api/v1/admin/configs", s.handleListAdminConfigs)
 	mux.HandleFunc("PATCH /api/v1/admin/configs/", s.handleUpdateAdminConfig)
+	mux.HandleFunc("GET /api/v1/admin/agent/runs", s.handleListAdminAgentRuns)
+	mux.HandleFunc("GET /api/v1/admin/agent/runs/", s.handleAdminAgentRunTrace)
 	mux.HandleFunc("GET /api/v1/admin/documents", s.handleListAdminDocuments)
 	mux.HandleFunc("GET /api/v1/admin/orders", s.handleListAdminOrders)
 	mux.HandleFunc("GET /api/v1/admin/promotions", s.handleListAdminPromotions)
@@ -171,10 +176,12 @@ func (s *Server) handleProductAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if action == "skus" {
+		// SKU 与商品详情分开查询，前端可在详情页懒加载规格信息。
 		writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListProductSKUs(r.Context(), productID)})
 		return
 	}
 	if action == "reviews" {
+		// 商品评价是公开信息，只返回 visible 状态的评价。
 		writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListProductReviews(r.Context(), productID)})
 		return
 	}
@@ -452,7 +459,9 @@ func (s *Server) handleListAdminAccounts(w http.ResponseWriter, r *http.Request)
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListAccounts(r.Context())})
+	page, pageSize := readPagination(r)
+	items, total := s.store.ListAccountsPage(r.Context(), page, pageSize)
+	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
 func (s *Server) handleUpdateAdminAccount(w http.ResponseWriter, r *http.Request) {
@@ -483,7 +492,9 @@ func (s *Server) handleListAdminConfigs(w http.ResponseWriter, r *http.Request) 
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": s.configs.List(r.Context(), false)})
+	page, pageSize := readPagination(r)
+	items, total := paginateList(s.configs.List(r.Context(), false), page, pageSize)
+	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
 func (s *Server) handleUpdateAdminConfig(w http.ResponseWriter, r *http.Request) {
@@ -533,6 +544,28 @@ func (s *Server) handleUpdateAdminConfig(w http.ResponseWriter, r *http.Request)
 		config.ConfigValue = "******"
 	}
 	writeJSON(w, http.StatusOK, config)
+}
+
+func (s *Server) handleListAdminAgentRuns(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	page, pageSize := readPagination(r)
+	items, total := s.store.ListAgentRunsPage(r.Context(), page, pageSize)
+	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
+}
+
+func (s *Server) handleAdminAgentRunTrace(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	runID, ok := splitAdminRunTracePath(r.URL.Path)
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "接口不存在")
+		return
+	}
+	events := s.store.ListAgentTraceByRun(r.Context(), runID)
+	writeJSON(w, http.StatusOK, map[string]any{"items": events})
 }
 
 func (s *Server) handleEvalIntent(w http.ResponseWriter, r *http.Request) {
@@ -600,21 +633,27 @@ func (s *Server) handleListAdminDocuments(w http.ResponseWriter, r *http.Request
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListAllDocuments(r.Context())})
+	page, pageSize := readPagination(r)
+	items, total := s.store.ListAllDocumentsPage(r.Context(), page, pageSize)
+	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
 func (s *Server) handleListAdminOrders(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListAllOrders(r.Context())})
+	page, pageSize := readPagination(r)
+	items, total := s.store.ListAllOrdersPage(r.Context(), page, pageSize)
+	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
 func (s *Server) handleListAdminPromotions(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListPromotions(r.Context(), "")})
+	page, pageSize := readPagination(r)
+	items, total := paginateList(s.store.ListPromotions(r.Context(), ""), page, pageSize)
+	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
 func (s *Server) handleCreateAdminPromotion(w http.ResponseWriter, r *http.Request) {
@@ -662,7 +701,9 @@ func (s *Server) handleListAdminReviews(w http.ResponseWriter, r *http.Request) 
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListAllReviews(r.Context())})
+	page, pageSize := readPagination(r)
+	items, total := paginateList(s.store.ListAllReviews(r.Context()), page, pageSize)
+	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
 func (s *Server) handleUpdateAdminReview(w http.ResponseWriter, r *http.Request) {
@@ -693,7 +734,10 @@ func (s *Server) handleListAdminProducts(w http.ResponseWriter, r *http.Request)
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListAllProducts(r.Context())})
+	page := readPositiveIntQuery(r, "page", 1, 1, 100000)
+	pageSize := readPositiveIntQuery(r, "page_size", 10, 1, 100)
+	items, total := s.store.ListAllProductsPage(r.Context(), page, pageSize)
+	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
 func (s *Server) handleUpdateAdminProduct(w http.ResponseWriter, r *http.Request) {
@@ -817,6 +861,7 @@ func (s *Server) handleCheckout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "empty_cart", "请选择购物车商品后再下单")
 		return
 	}
+	// checkout 只创建待支付订单，不直接进入待发货；支付动作由 /orders/{id}:pay 完成。
 	writeJSON(w, http.StatusOK, map[string]any{"items": orders})
 }
 
@@ -827,6 +872,7 @@ func (s *Server) handleUserOrderAction(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPost {
 		if orderID, orderItemID, ok := splitOrderItemReviewPath(r.URL.Path); ok {
+			// 评价强绑定已完成订单项，防止用户绕过订单直接刷评价。
 			var request domain.ProductReviewInput
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 				writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
@@ -861,6 +907,7 @@ func (s *Server) handleUserOrderAction(w http.ResponseWriter, r *http.Request) {
 	}
 	switch action {
 	case "pay":
+		// 虚拟支付只推进本地订单状态，不接第三方支付网关。
 		var request struct {
 			Method string `json:"method"`
 		}
@@ -875,6 +922,7 @@ func (s *Server) handleUserOrderAction(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"order": order, "payment": payment})
 	case "cancel":
+		// MVP 只允许取消待支付订单；已支付订单后续走售后/退款流程。
 		var request struct {
 			Reason string `json:"reason"`
 		}
@@ -889,6 +937,7 @@ func (s *Server) handleUserOrderAction(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, order)
 	case "confirm-receipt":
+		// 用户确认收货后订单进入 completed，随后才允许评价。
 		order, ok := s.store.ConfirmReceipt(r.Context(), account.AccountID, orderID)
 		if !ok {
 			writeError(w, http.StatusConflict, "confirm_failed", "订单不可确认收货，只有已发货订单可以确认")
@@ -1149,6 +1198,52 @@ func allowedEnabledStatus(status string) bool {
 	return status == "active" || status == "inactive"
 }
 
+func readPositiveIntQuery(r *http.Request, key string, fallback int, min int, max int) int {
+	value := strings.TrimSpace(r.URL.Query().Get(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	if parsed < min {
+		return min
+	}
+	if parsed > max {
+		return max
+	}
+	return parsed
+}
+
+func readPagination(r *http.Request) (int, int) {
+	page := readPositiveIntQuery(r, "page", 1, 1, 100000)
+	pageSize := readPositiveIntQuery(r, "page_size", 10, 1, 100)
+	return page, pageSize
+}
+
+func pagedPayload[T any](items []T, page int, pageSize int, total int) map[string]any {
+	return map[string]any{
+		"items":     items,
+		"page":      page,
+		"page_size": pageSize,
+		"total":     total,
+	}
+}
+
+func paginateList[T any](items []T, page int, pageSize int) ([]T, int) {
+	total := len(items)
+	start := (page - 1) * pageSize
+	if start >= total {
+		return []T{}, total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	return items[start:end], total
+}
+
 func splitOrderAction(path string) (string, string, bool) {
 	rest := strings.TrimPrefix(path, "/api/v1/orders/")
 	if rest == "" {
@@ -1215,6 +1310,15 @@ func splitRunAction(path string) (string, string, bool) {
 
 func splitRunTracePath(path string) (string, bool) {
 	rest := strings.TrimPrefix(path, "/api/v1/agent/runs/")
+	parts := strings.Split(rest, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] != "trace" {
+		return "", false
+	}
+	return parts[0], true
+}
+
+func splitAdminRunTracePath(path string) (string, bool) {
+	rest := strings.TrimPrefix(path, "/api/v1/admin/agent/runs/")
 	parts := strings.Split(rest, "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] != "trace" {
 		return "", false

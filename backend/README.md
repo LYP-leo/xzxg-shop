@@ -75,8 +75,10 @@ ai.large_model
 ai.enable_thinking
 agent.followups_enabled
 agent.config_refresh_seconds
-agent.prompt.planner
+agent.prompt.route
+agent.prompt.guide_intent
 agent.prompt.answer_base
+agent.prompt.tool_protocol
 agent.prompt.followups
 agent.prompt.intent.*
 ```

@@ -401,17 +401,19 @@ type KnowledgeDocumentInput struct {
 }
 
 type AgentBlock struct {
-	Type     string                 `json:"type"`
-	Product  *ProductCard           `json:"product,omitempty"`
-	Citation *Citation              `json:"citation,omitempty"`
-	Content  string                 `json:"content,omitempty"`
-	Columns  []string               `json:"columns,omitempty"`
-	Rows     []ComparisonRow        `json:"rows,omitempty"`
-	Cart     *Cart                  `json:"cart,omitempty"`
-	Orders   []Order                `json:"orders,omitempty"`
-	Code     string                 `json:"code,omitempty"`
-	Message  string                 `json:"message,omitempty"`
-	Action   map[string]interface{} `json:"action,omitempty"`
+	Type       string                 `json:"type"`
+	Product    *ProductCard           `json:"product,omitempty"`
+	ProductIDs []string               `json:"product_ids,omitempty"`
+	Citation   *Citation              `json:"citation,omitempty"`
+	ChunkIDs   []string               `json:"chunk_ids,omitempty"`
+	Content    string                 `json:"content,omitempty"`
+	Columns    []string               `json:"columns,omitempty"`
+	Rows       []ComparisonRow        `json:"rows,omitempty"`
+	Cart       *Cart                  `json:"cart,omitempty"`
+	Orders     []Order                `json:"orders,omitempty"`
+	Code       string                 `json:"code,omitempty"`
+	Message    string                 `json:"message,omitempty"`
+	Action     map[string]interface{} `json:"action,omitempty"`
 }
 
 type ComparisonRow struct {

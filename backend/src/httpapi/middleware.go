@@ -46,6 +46,7 @@ func (l *rateLimiter) allow(key string, now time.Time) bool {
 	defer l.mu.Unlock()
 
 	state := l.clients[key]
+	// 固定窗口限流：窗口过期后重置计数；当前先用内存实现，生产多实例可换 Redis。
 	if state.windowStart.IsZero() || now.Sub(state.windowStart) > l.window {
 		l.clients[key] = rateLimitState{count: 1, windowStart: now}
 		return true
@@ -64,6 +65,7 @@ func (s *Server) withRequestContext(next http.Handler) http.Handler {
 		if requestID == "" {
 			requestID = newRequestID()
 		}
+		// 所有请求统一带 request_id，日志、错误响应和前端排障都可以用它串联。
 		w.Header().Set("X-Request-ID", requestID)
 		ctx := context.WithValue(r.Context(), requestIDKey, requestID)
 		next.ServeHTTP(w, r.WithContext(ctx))
@@ -75,6 +77,7 @@ func (s *Server) withAccessLog(next http.Handler) http.Handler {
 		startedAt := time.Now()
 		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(recorder, r)
+		// 访问日志记录最小可追踪字段，便于之后接入 ELK/OTel 时保持字段稳定。
 		s.logger.Info("http request completed",
 			"request_id", requestIDFromContext(r.Context()),
 			"method", r.Method,
@@ -95,6 +98,7 @@ func (s *Server) withRateLimit(next http.Handler) http.Handler {
 		}
 		key := clientIP(r)
 		if account, ok := accountFromContext(r.Context()); ok {
+			// 登录后按角色+账号限流，未登录流量按客户端 IP 限流。
 			key = string(account.Role) + ":" + account.AccountID
 		}
 		if !limiter.allow(key, time.Now()) {
@@ -108,6 +112,7 @@ func (s *Server) withRateLimit(next http.Handler) http.Handler {
 func (s *Server) withBodyLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
+			// 限制请求体大小，避免异常上传或恶意请求拖垮 API 进程内存。
 			r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 		}
 		next.ServeHTTP(w, r)
@@ -126,6 +131,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			r = r.WithContext(context.WithValue(r.Context(), accountKey, account))
 		}
 
+		// 鉴权策略集中在 routePolicy，业务 handler 只关心已授权后的账号上下文。
 		required, allowedRoles := routePolicy(r.Method, r.URL.Path)
 		if !required {
 			next.ServeHTTP(w, r)
@@ -160,6 +166,7 @@ func (r *statusRecorder) Flush() {
 }
 
 func routePolicy(method string, path string) (bool, []domain.AccountRole) {
+	// 公开接口只保留健康检查、登录、商品浏览等无需身份的入口。
 	if path == "/api/v1/health" || path == "/api/v1/auth/login" {
 		return false, nil
 	}
@@ -169,6 +176,7 @@ func routePolicy(method string, path string) (bool, []domain.AccountRole) {
 	if path == "/api/v1/auth/me" {
 		return true, []domain.AccountRole{domain.AccountRoleUser, domain.AccountRoleMerchant, domain.AccountRoleAdmin}
 	}
+	// 三端路由按前缀划分：用户端、商家端、管理员端分别校验对应角色。
 	if strings.HasPrefix(path, "/api/v1/cart") || strings.HasPrefix(path, "/api/v1/agent") || strings.HasPrefix(path, "/api/v1/orders") || strings.HasPrefix(path, "/api/v1/coupons") {
 		return true, []domain.AccountRole{domain.AccountRoleUser}
 	}
@@ -209,6 +217,7 @@ func newRequestID() string {
 }
 
 func clientIP(r *http.Request) string {
+	// 部署在反向代理后时优先使用 X-Forwarded-For 的第一个 IP。
 	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
 		parts := strings.Split(forwarded, ",")
 		return strings.TrimSpace(parts[0])

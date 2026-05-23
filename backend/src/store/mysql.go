@@ -43,6 +43,8 @@ func (s *MySQLStore) Close() error {
 	return s.db.Close()
 }
 
+// Migrate 先执行基础 SQL，再执行兼容迁移。
+// 兼容迁移用于老库平滑升级，避免每次加字段都要求手动清库。
 func (s *MySQLStore) Migrate(ctx context.Context) error {
 	content, err := readMigrationFile()
 	if err != nil {
@@ -62,6 +64,8 @@ func (s *MySQLStore) Migrate(ctx context.Context) error {
 	return nil
 }
 
+// ensureAccessSchema 补齐历史版本缺少的字段、索引和种子数据。
+// 这里保留幂等写法，保证本地 Docker 重启或线上滚动发布时重复执行也安全。
 func (s *MySQLStore) ensureAccessSchema(ctx context.Context) error {
 	columns := []struct {
 		table string
@@ -97,6 +101,7 @@ func (s *MySQLStore) ensureAccessSchema(ctx context.Context) error {
 		}
 	}
 
+	// 早期版本没有 account_id 和订单支付字段，这里统一回填到可用状态。
 	updates := []string{
 		"UPDATE cart_items SET account_id = 'acct_user_001' WHERE account_id = ''",
 		"UPDATE chat_sessions SET account_id = 'acct_user_001' WHERE account_id = ''",
@@ -115,6 +120,7 @@ func (s *MySQLStore) ensureAccessSchema(ctx context.Context) error {
 		}
 	}
 
+	// 旧购物车唯一索引没有 account_id，会导致多用户加同一商品冲突，必须移除。
 	if exists, err := s.indexExists(ctx, "cart_items", "uk_cart_product_sku"); err != nil {
 		return err
 	} else if exists {
@@ -154,6 +160,7 @@ func (s *MySQLStore) ensureAccessSchema(ctx context.Context) error {
 	return nil
 }
 
+// ensureCommerceV3Tables 创建优惠、券、评价等 v3 业务表，并插入演示数据。
 func (s *MySQLStore) ensureCommerceV3Tables(ctx context.Context) error {
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS promotion_rules (
@@ -319,6 +326,33 @@ func (s *MySQLStore) ListAccounts(ctx context.Context) []domain.Account {
 		items = append(items, item)
 	}
 	return items
+}
+
+func (s *MySQLStore) ListAccountsPage(ctx context.Context, page int, pageSize int) ([]domain.Account, int) {
+	page, pageSize = normalizePage(page, pageSize)
+	total := s.countRows(ctx, "accounts")
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT account_id, username, display_name, role, merchant_id, status, created_at
+		FROM accounts
+		ORDER BY created_at, account_id
+		LIMIT ? OFFSET ?
+	`, pageSize, pageOffset(page, pageSize))
+	if err != nil {
+		return nil, 0
+	}
+	defer rows.Close()
+
+	items := make([]domain.Account, 0)
+	for rows.Next() {
+		var item domain.Account
+		var role string
+		if err := rows.Scan(&item.AccountID, &item.Username, &item.DisplayName, &role, &item.MerchantID, &item.Status, &item.CreatedAt); err != nil {
+			return nil, 0
+		}
+		item.Role = domain.AccountRole(role)
+		items = append(items, item)
+	}
+	return items, total
 }
 
 func (s *MySQLStore) UpdateAccountStatus(ctx context.Context, accountID string, status string) (domain.Account, bool) {
@@ -556,6 +590,57 @@ func (s *MySQLStore) listRunsByMessage(ctx context.Context, accountID string, me
 	return items
 }
 
+func (s *MySQLStore) ListRecentAgentRuns(ctx context.Context, limit int) []domain.AgentRun {
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT run_id, session_id, message_id, account_id, status, trace_id, created_at, updated_at
+		FROM agent_runs
+		ORDER BY created_at DESC, run_id DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	items := make([]domain.AgentRun, 0)
+	for rows.Next() {
+		item, err := scanAgentRun(rows)
+		if err != nil {
+			return nil
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func (s *MySQLStore) ListAgentRunsPage(ctx context.Context, page int, pageSize int) ([]domain.AgentRun, int) {
+	page, pageSize = normalizePage(page, pageSize)
+	total := s.countRows(ctx, "agent_runs")
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT run_id, session_id, message_id, account_id, status, trace_id, created_at, updated_at
+		FROM agent_runs
+		ORDER BY created_at DESC, run_id DESC
+		LIMIT ? OFFSET ?
+	`, pageSize, pageOffset(page, pageSize))
+	if err != nil {
+		return nil, 0
+	}
+	defer rows.Close()
+
+	items := make([]domain.AgentRun, 0)
+	for rows.Next() {
+		item, err := scanAgentRun(rows)
+		if err != nil {
+			return nil, 0
+		}
+		items = append(items, item)
+	}
+	return items, total
+}
+
 func (s *MySQLStore) CreateRun(ctx context.Context, accountID string, sessionID string, messageID string) (domain.AgentRun, error) {
 	now := time.Now()
 	run := domain.AgentRun{
@@ -630,29 +715,22 @@ func (s *MySQLStore) ListAgentTrace(ctx context.Context, accountID string, runID
 		return nil
 	}
 	defer rows.Close()
+	return scanAgentTraceEvents(rows)
+}
 
-	items := make([]domain.AgentTraceEvent, 0)
-	for rows.Next() {
-		var item domain.AgentTraceEvent
-		if err := rows.Scan(
-			&item.TraceEventID,
-			&item.RunID,
-			&item.TraceID,
-			&item.AccountID,
-			&item.Stage,
-			&item.EventType,
-			&item.Model,
-			&item.Status,
-			&item.DurationMS,
-			&item.Error,
-			&item.MetadataJSON,
-			&item.CreatedAt,
-		); err != nil {
-			return nil
-		}
-		items = append(items, item)
+func (s *MySQLStore) ListAgentTraceByRun(ctx context.Context, runID string) []domain.AgentTraceEvent {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT trace_event_id, run_id, trace_id, account_id, stage, event_type, model, status,
+			duration_ms, COALESCE(error, ''), COALESCE(CAST(metadata_json AS CHAR), ''), created_at
+		FROM agent_trace_events
+		WHERE run_id = ?
+		ORDER BY created_at, trace_event_id
+	`, runID)
+	if err != nil {
+		return nil
 	}
-	return items
+	defer rows.Close()
+	return scanAgentTraceEvents(rows)
 }
 
 func (s *MySQLStore) SearchProducts(ctx context.Context, query string) []domain.ProductCard {
@@ -730,6 +808,21 @@ func (s *MySQLStore) ListProducts(ctx context.Context, keyword string, categoryI
 
 func (s *MySQLStore) ListAllProducts(ctx context.Context) []domain.ProductCard {
 	return s.queryProductCards(ctx, productCardSelect()+" ORDER BY p.sort_order, p.product_id")
+}
+
+func (s *MySQLStore) ListAllProductsPage(ctx context.Context, page int, pageSize int) ([]domain.ProductCard, int) {
+	page, pageSize = normalizePage(page, pageSize)
+	total := 0
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM products p
+		JOIN merchants m ON m.merchant_id = p.merchant_id
+		LEFT JOIN categories c ON c.category_id = p.category_id
+	`).Scan(&total); err != nil {
+		return nil, 0
+	}
+	items := s.queryProductCards(ctx, productCardSelect()+" ORDER BY p.sort_order, p.product_id LIMIT ? OFFSET ?", pageSize, pageOffset(page, pageSize))
+	return items, total
 }
 
 func (s *MySQLStore) GetProduct(ctx context.Context, productID string) (domain.ProductDetail, bool) {
@@ -917,6 +1010,7 @@ func (s *MySQLStore) AddCartItem(ctx context.Context, accountID string, productI
 	if _, ok := s.GetProduct(ctx, productID); !ok {
 		return domain.Cart{}, false
 	}
+	// 前端可以只传商品 ID；未指定 SKU 时默认选择该商品的第一个 SKU。
 	if skuID == "" {
 		skuID = s.firstSKU(ctx, productID)
 	}
@@ -985,6 +1079,7 @@ func (s *MySQLStore) DeleteCartItem(ctx context.Context, accountID string, cartI
 
 func (s *MySQLStore) CreateOrderFromCart(ctx context.Context, accountID string) ([]domain.Order, bool) {
 	cart := s.loadCart(ctx, accountID)
+	// 只结算购物车中被选中的商品，未选中项继续留在购物车。
 	selected := make([]domain.CartItem, 0)
 	for _, item := range cart.Items {
 		if item.Selected {
@@ -1001,6 +1096,7 @@ func (s *MySQLStore) CreateOrderFromCart(ctx context.Context, accountID string) 
 	}
 	defer tx.Rollback()
 
+	// 一个购物车可能包含多个商家的商品，按商家拆单，便于后续商家侧发货和售后。
 	byMerchant := make(map[string][]domain.CartItem)
 	for _, item := range selected {
 		byMerchant[item.MerchantID] = append(byMerchant[item.MerchantID], item)
@@ -1020,6 +1116,7 @@ func (s *MySQLStore) CreateOrderFromCart(ctx context.Context, accountID string) 
 		createdAt := time.Now()
 		orderNo := nextOrderNo(createdAt)
 		deadline := createdAt.Add(30 * time.Minute)
+		// 订单初始状态固定为待支付，同时写入支付截止时间，超时任务会自动关单。
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO orders (
 				order_id, order_no, account_id, merchant_id, status, total_amount, discount_amount, pay_amount,
@@ -1029,6 +1126,7 @@ func (s *MySQLStore) CreateOrderFromCart(ctx context.Context, accountID string) 
 		`, orderID, orderNo, accountID, merchantID, "pending_payment", amount, "0.00", amount, deadline, createdAt, createdAt); err != nil {
 			return nil, false
 		}
+		// 当前支付仍是内部模拟支付；保留 payments 表是为了让真实支付网关后续能无缝接入。
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO payments (payment_id, order_id, account_id, amount, status, method, expires_at, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1072,6 +1170,7 @@ func (s *MySQLStore) CreateOrderFromCart(ctx context.Context, accountID string) 
 			UpdatedAt:         createdAt,
 		})
 	}
+	// 订单创建成功后清空已结算项，避免用户重复提交同一批购物车商品。
 	if _, err := tx.ExecContext(ctx, `DELETE FROM cart_items WHERE account_id = ? AND selected = TRUE`, accountID); err != nil {
 		return nil, false
 	}
@@ -1082,6 +1181,7 @@ func (s *MySQLStore) CreateOrderFromCart(ctx context.Context, accountID string) 
 }
 
 func (s *MySQLStore) ListUserOrders(ctx context.Context, accountID string) []domain.Order {
+	// 查询订单前先收敛超时待支付订单，保证列表看到的是最新业务状态。
 	s.ExpirePendingOrders(ctx)
 	return s.listOrders(ctx, "WHERE o.account_id = ?", accountID)
 }
@@ -1094,6 +1194,14 @@ func (s *MySQLStore) ListMerchantOrders(ctx context.Context, merchantID string) 
 func (s *MySQLStore) ListAllOrders(ctx context.Context) []domain.Order {
 	s.ExpirePendingOrders(ctx)
 	return s.listOrders(ctx, "")
+}
+
+func (s *MySQLStore) ListAllOrdersPage(ctx context.Context, page int, pageSize int) ([]domain.Order, int) {
+	s.ExpirePendingOrders(ctx)
+	page, pageSize = normalizePage(page, pageSize)
+	total := s.countRows(ctx, "orders")
+	items := s.listOrders(ctx, "")
+	return paginateSlice(items, page, pageSize), total
 }
 
 func (s *MySQLStore) GetOrder(ctx context.Context, accountID string, orderID string) (domain.Order, bool) {
@@ -1120,6 +1228,7 @@ func (s *MySQLStore) PayOrder(ctx context.Context, accountID string, orderID str
 
 	var amount string
 	var deadline sql.NullTime
+	// 使用 FOR UPDATE 锁定订单行，避免同一订单被并发支付两次。
 	err = tx.QueryRowContext(ctx, `
 		SELECT pay_amount, payment_deadline_at
 		FROM orders
@@ -1129,6 +1238,7 @@ func (s *MySQLStore) PayOrder(ctx context.Context, accountID string, orderID str
 	if err != nil {
 		return domain.Order{}, domain.Payment{}, false
 	}
+	// 锁内再次校验支付截止时间，处理查询和支付提交之间刚好过期的边界情况。
 	if deadline.Valid && now.After(deadline.Time) {
 		_, _ = tx.ExecContext(ctx, `
 			UPDATE orders SET status = 'closed_timeout', closed_at = ?, cancel_reason = '支付超时自动关闭', updated_at = ?
@@ -1141,6 +1251,7 @@ func (s *MySQLStore) PayOrder(ctx context.Context, accountID string, orderID str
 		_ = tx.Commit()
 		return domain.Order{}, domain.Payment{}, false
 	}
+	// 支付成功后订单进入待发货，真实接入支付渠道时这里应由支付回调驱动。
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE orders
 		SET status = 'pending_ship', paid_at = ?, updated_at = ?
@@ -1174,6 +1285,7 @@ func (s *MySQLStore) CancelOrder(ctx context.Context, accountID string, orderID 
 		reason = "用户取消"
 	}
 	now := time.Now()
+	// 当前只允许用户取消待支付订单；已支付订单后续应走售后/退款流程。
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE orders
 		SET status = 'canceled', closed_at = ?, cancel_reason = ?, updated_at = ?
@@ -1196,6 +1308,7 @@ func (s *MySQLStore) CancelOrder(ctx context.Context, accountID string, orderID 
 func (s *MySQLStore) ConfirmReceipt(ctx context.Context, accountID string, orderID string) (domain.Order, bool) {
 	s.ExpirePendingOrders(ctx)
 	now := time.Now()
+	// 用户只能确认已发货订单，确认后进入 completed，之后才允许发布商品评价。
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE orders
 		SET status = 'completed', completed_at = ?, updated_at = ?
@@ -1213,6 +1326,7 @@ func (s *MySQLStore) ConfirmReceipt(ctx context.Context, accountID string, order
 
 func (s *MySQLStore) ExpirePendingOrders(ctx context.Context) int {
 	now := time.Now()
+	// 这是轻量的惰性过期机制：每次订单相关查询/操作都会顺手关闭超时待支付订单。
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE orders
 		SET status = 'closed_timeout', closed_at = ?, cancel_reason = '支付超时自动关闭', updated_at = ?
@@ -1225,6 +1339,7 @@ func (s *MySQLStore) ExpirePendingOrders(ctx context.Context) int {
 	if err != nil || affected == 0 {
 		return 0
 	}
+	// 订单超时后同步把仍处于 pending 的支付单标记为 expired，保持两张表状态一致。
 	_, _ = s.db.ExecContext(ctx, `
 		UPDATE payments p
 		JOIN orders o ON o.order_id = p.order_id
@@ -1237,6 +1352,7 @@ func (s *MySQLStore) ExpirePendingOrders(ctx context.Context) int {
 func (s *MySQLStore) UpdateOrderStatus(ctx context.Context, merchantID string, orderID string, status string) (domain.Order, bool) {
 	s.ExpirePendingOrders(ctx)
 	now := time.Now()
+	// 商家侧目前支持待发货/已发货之间的流转；管理员可传空 merchantID 跨商家操作。
 	sets := `status = ?, updated_at = ?`
 	args := []any{status, now}
 	if status == "completed" {
@@ -1269,6 +1385,7 @@ func (s *MySQLStore) PreviewCartDiscount(ctx context.Context, accountID string) 
 	cart := s.loadCart(ctx, accountID)
 	total := 0.0
 	merchantTotals := make(map[string]float64)
+	// 优惠试算只基于购物车选中项，并同时维护整单金额和商家维度金额。
 	for _, item := range cart.Items {
 		if !item.Selected {
 			continue
@@ -1282,6 +1399,7 @@ func (s *MySQLStore) PreviewCartDiscount(ctx context.Context, accountID string) 
 	discount := 0.0
 	now := time.Now()
 	for _, promotion := range s.ListPromotions(ctx, "") {
+		// 平台券按整单金额计算，商家券只按该商家的商品金额计算。
 		if promotion.Status != "active" || now.Before(promotion.StartAt) || now.After(promotion.EndAt) {
 			continue
 		}
@@ -1297,6 +1415,7 @@ func (s *MySQLStore) PreviewCartDiscount(ctx context.Context, accountID string) 
 		lines = append(lines, domain.DiscountLine{Type: "promotion", ID: promotion.PromotionID, Name: promotion.Name, Amount: fmt.Sprintf("%.2f", lineAmount)})
 	}
 	for _, userCoupon := range s.ListUserCoupons(ctx, accountID) {
+		// 这里只做试算，不会把优惠券置为 used；真正核销应放在支付/下单链路里。
 		if userCoupon.Status != "unused" || userCoupon.Coupon.Status != "active" || now.Before(userCoupon.Coupon.StartAt) || now.After(userCoupon.Coupon.EndAt) {
 			continue
 		}
@@ -1502,6 +1621,7 @@ func (s *MySQLStore) ClaimCoupon(ctx context.Context, accountID string, couponID
 	}
 	defer tx.Rollback()
 	var coupon domain.Coupon
+	// 锁定优惠券行后再判断库存和每人限领，避免高并发下超发。
 	err = tx.QueryRowContext(ctx, `
 		SELECT coupon_id, name, scope, merchant_id, type, threshold_amount, discount_amount, total_count,
 			claimed_count, per_user_limit, start_at, end_at, status, created_at, updated_at
@@ -1518,6 +1638,7 @@ func (s *MySQLStore) ClaimCoupon(ctx context.Context, accountID string, couponID
 		return domain.UserCoupon{}, false
 	}
 	var owned int
+	// 同一个用户对同一张券最多领取 per_user_limit 次。
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_coupons WHERE account_id = ? AND coupon_id = ?`, accountID, couponID).Scan(&owned); err != nil {
 		return domain.UserCoupon{}, false
 	}
@@ -1553,6 +1674,7 @@ func (s *MySQLStore) CreateProductReview(ctx context.Context, accountID string, 
 	var productID string
 	var skuID string
 	var status string
+	// 评价必须绑定到当前用户的已完成订单项，避免未购买商品被随意刷评价。
 	err := s.db.QueryRowContext(ctx, `
 		SELECT oi.product_id, oi.sku_id, o.status
 		FROM order_items oi
@@ -1562,6 +1684,7 @@ func (s *MySQLStore) CreateProductReview(ctx context.Context, accountID string, 
 	if err != nil || status != "completed" {
 		return domain.ProductReview{}, false
 	}
+	// tags 以 JSON 存储，便于前端做标签化展示，也方便后续扩展为结构化评价维度。
 	tagsJSON, err := json.Marshal(input.Tags)
 	if err != nil {
 		return domain.ProductReview{}, false
@@ -1603,6 +1726,7 @@ func (s *MySQLStore) ReplyReview(ctx context.Context, merchantID string, reviewI
 		return domain.ProductReview{}, false
 	}
 	now := time.Now()
+	// 回复时通过 products 关联校验商家归属，防止商家回复其他店铺的评价。
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE product_reviews r
 		JOIN products p ON p.product_id = r.product_id
@@ -1645,6 +1769,7 @@ func (s *MySQLStore) UpdateReviewStatus(ctx context.Context, reviewID string, st
 }
 
 func (s *MySQLStore) listReviews(ctx context.Context, where string, args ...any) []domain.ProductReview {
+	// 评价查询统一走这个方法，保证用户昵称、标签 JSON、商家回复时间等字段解析一致。
 	query := `
 		SELECT r.review_id, r.order_id, r.order_item_id, r.product_id, r.sku_id, r.account_id,
 			COALESCE(a.username, ''), r.rating, r.content, r.tags_json, r.status, COALESCE(r.merchant_reply, ''),
@@ -1683,6 +1808,7 @@ func (s *MySQLStore) listReviews(ctx context.Context, where string, args ...any)
 }
 
 func (s *MySQLStore) SearchKnowledge(ctx context.Context, query string) []domain.Citation {
+	// RAG 入口会把自然语言查询转成默认召回计划；空结果时退回默认知识片段兜底。
 	plan := rag.DefaultRetrievalPlan(query)
 	items := s.SearchKnowledgeByPlan(ctx, plan)
 	if len(items) == 0 && query != "" {
@@ -1703,6 +1829,7 @@ func (s *MySQLStore) SearchKnowledgeByPlan(ctx context.Context, plan rag.Retriev
 		clauses := []string{`title LIKE ?`, `snippet LIKE ?`}
 		like := "%" + plan.Query + "%"
 		args = append(args, like, like)
+		// 轻量版本先用 MySQL LIKE 做关键词召回，后续可替换为向量库或混合检索。
 		for _, term := range terms {
 			clauses = append(clauses, `title LIKE ?`, `snippet LIKE ?`)
 			termLike := "%" + term + "%"
@@ -1738,6 +1865,7 @@ func (s *MySQLStore) SearchKnowledgeByPlan(ctx context.Context, plan rag.Retriev
 			Source:  item.Source,
 		})
 	}
+	// 召回后交给 rag 包做统一排序和摘要截断，避免存储层承载过多策略逻辑。
 	ranked := rag.RankCandidates(plan, candidates)
 	items := make([]domain.Citation, 0, len(ranked))
 	for _, item := range ranked {
@@ -1796,6 +1924,31 @@ func (s *MySQLStore) ListAllDocuments(ctx context.Context) []domain.KnowledgeDoc
 	return items
 }
 
+func (s *MySQLStore) ListAllDocumentsPage(ctx context.Context, page int, pageSize int) ([]domain.KnowledgeDocument, int) {
+	page, pageSize = normalizePage(page, pageSize)
+	total := s.countRows(ctx, "knowledge_documents")
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT document_id, merchant_id, title, doc_type, status, chunk_count, created_at
+		FROM knowledge_documents
+		ORDER BY created_at DESC, document_id DESC
+		LIMIT ? OFFSET ?
+	`, pageSize, pageOffset(page, pageSize))
+	if err != nil {
+		return nil, 0
+	}
+	defer rows.Close()
+
+	items := make([]domain.KnowledgeDocument, 0)
+	for rows.Next() {
+		var item domain.KnowledgeDocument
+		if err := rows.Scan(&item.DocumentID, &item.MerchantID, &item.Title, &item.DocType, &item.Status, &item.ChunkCount, &item.CreatedAt); err != nil {
+			return nil, 0
+		}
+		items = append(items, item)
+	}
+	return items, total
+}
+
 func (s *MySQLStore) CreateMerchantDocument(ctx context.Context, input domain.KnowledgeDocumentInput) (domain.KnowledgeDocument, error) {
 	chunks := rag.SplitDocument(input.Title, input.Content, input.DocType)
 	if len(chunks) == 0 {
@@ -1842,6 +1995,86 @@ func (s *MySQLStore) getRun(ctx context.Context, runID string) (domain.AgentRun,
 	}
 	run.Status = domain.RunStatus(status)
 	return run, err == nil
+}
+
+func scanAgentRun(rows *sql.Rows) (domain.AgentRun, error) {
+	var item domain.AgentRun
+	var status string
+	err := rows.Scan(
+		&item.RunID,
+		&item.SessionID,
+		&item.MessageID,
+		&item.AccountID,
+		&status,
+		&item.TraceID,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	)
+	item.Status = domain.RunStatus(status)
+	return item, err
+}
+
+func scanAgentTraceEvents(rows *sql.Rows) []domain.AgentTraceEvent {
+	items := make([]domain.AgentTraceEvent, 0)
+	for rows.Next() {
+		var item domain.AgentTraceEvent
+		if err := rows.Scan(
+			&item.TraceEventID,
+			&item.RunID,
+			&item.TraceID,
+			&item.AccountID,
+			&item.Stage,
+			&item.EventType,
+			&item.Model,
+			&item.Status,
+			&item.DurationMS,
+			&item.Error,
+			&item.MetadataJSON,
+			&item.CreatedAt,
+		); err != nil {
+			return nil
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func normalizePage(page int, pageSize int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 10
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	return page, pageSize
+}
+
+func pageOffset(page int, pageSize int) int {
+	return (page - 1) * pageSize
+}
+
+func paginateSlice[T any](items []T, page int, pageSize int) []T {
+	page, pageSize = normalizePage(page, pageSize)
+	start := pageOffset(page, pageSize)
+	if start >= len(items) {
+		return []T{}
+	}
+	end := start + pageSize
+	if end > len(items) {
+		end = len(items)
+	}
+	return items[start:end]
+}
+
+func (s *MySQLStore) countRows(ctx context.Context, table string) int {
+	total := 0
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table).Scan(&total); err != nil {
+		return 0
+	}
+	return total
 }
 
 func (s *MySQLStore) queryProductCards(ctx context.Context, query string, args ...any) []domain.ProductCard {

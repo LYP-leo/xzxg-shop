@@ -219,6 +219,8 @@ data: {"type":"text_delta","run_id":"run_xxx","delta":"你好"}
 
 用于单个商品卡。
 
+> 兼容说明：ReAct 工具化链路上线后，Runtime 不再主动追加完整 `product_card`。主 Agent 默认输出 `product_refs`，前端拿到商品 ID 后自行调用商品详情接口渲染卡片。`product_card` 保留给旧链路和兼容层。
+
 ```json
 {
   "type": "product_card",
@@ -246,6 +248,59 @@ data: {"type":"text_delta","run_id":"run_xxx","delta":"你好"}
 
 - 点击卡片：打开商品详情。
 - 点击加购：调用购物车接口。
+
+### product_refs
+
+用于声明本轮回答引用了哪些商品。前端需要展示商品卡时，按 `product_ids` 调用商品详情接口或批量详情接口。
+
+```json
+{
+  "type": "product_refs",
+  "product_ids": ["p_001", "p_002"]
+}
+```
+
+前端动作：
+
+- 记录本轮回答关联商品。
+- 调用商品详情接口渲染卡片。
+- 不从自然语言中解析商品名称、价格或库存。
+
+### 文本内 `<item>` 挂品标签
+
+主 Agent 的自然语言 `text_delta` 中允许出现轻量挂品标签：
+
+```text
+这双更适合你现在的通勤和轻运动场景。<item>p_001</item>
+```
+
+约定：
+
+- `<item>` 内只能放商品 ID，即后端商品接口中的 `productId` / 工具 observation 中的 `product_id`。
+- 禁止在 `<item>` 内放商品名、品牌名、品类名、推荐语或自然语言挂品指令。
+- 合法示例：`<item>p_001</item>`、`<item>p_beauty_001</item>`。
+- 非法示例：`<item>X Phone 12</item>`、`<item>耐克跑鞋</item>`、`<item>推荐防水冲锋衣</item>`。
+- 前端如果选择解析 `<item>`，只按商品 ID 读取，不要从文本周边推断商品名、价格或库存。
+- 推荐优先使用结构化 `product_refs` block；`<item>` 只作为文本中挂品位置提示或兼容参考。
+
+前端建议处理：
+
+1. 扫描 `text_delta` 累积文本中的 `<item>{productId}</item>`。
+2. 提取 `productId` 后去重。
+3. 按 `productId` 调商品详情接口或批量详情接口渲染卡片。
+4. 展示给用户的正文中可以隐藏 `<item>` 标签本身，只保留自然语言。
+5. 如果同一轮同时收到 `product_refs` 和 `<item>`，以 `product_refs.product_ids` 为准，`<item>` 只补充排序或挂载位置。
+
+### citation_refs
+
+用于声明本轮回答引用了哪些知识片段。前端可选择折叠展示引用来源。
+
+```json
+{
+  "type": "citation_refs",
+  "chunk_ids": ["chunk_001", "chunk_002"]
+}
+```
 
 ### comparison_table
 
@@ -455,7 +510,7 @@ type AgentTurn = {
 3. 正常结束必须发送 `message_end`。
 4. 主回答文本只能通过 `text_delta` 输出。
 5. 商品、订单、优惠、评价、引用证据必须通过 `block_delta` 输出。
-6. 不要求前端解析 `<item>`、`<buyer>`、XML 或模型内部标签。
+6. 前端不需要解析 `<buyer>` 或其它 XML/内部标签；`<item>` 是唯一允许解析的文本内挂品标签，且标签内容必须是商品 ID。
 7. `block_delta` 可以在 `text_delta` 之前、中间或之后发送；前端按收到顺序追加展示。
 8. 错误后不再发送 `message_end`，前端以 `error` 为终态。
 
