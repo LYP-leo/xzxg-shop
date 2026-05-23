@@ -1,0 +1,4 @@
+{"id":"rag_001","keyword":"X Phone 12 儿童抓拍","expected_recall":["ck_phone_001"]}
+{"id":"rag_002","keyword":"Quiet Mouse S 静音按键","expected_recall":["ck_mouse_001"]}
+{"id":"rag_003","keyword":"手机 售后 保修","expected_recall":[]}
+{"id":"rag_004","keyword":"不要含酒精的护肤品","expected_recall":[]}

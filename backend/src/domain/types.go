@@ -21,10 +21,14 @@ type Account struct {
 }
 
 type ChatSession struct {
-	SessionID string    `json:"session_id"`
-	AccountID string    `json:"account_id,omitempty"`
-	Title     string    `json:"title"`
-	CreatedAt time.Time `json:"created_at"`
+	SessionID     string    `json:"session_id"`
+	AccountID     string    `json:"account_id,omitempty"`
+	Title         string    `json:"title"`
+	Summary       string    `json:"summary,omitempty"`
+	MessageCount  int       `json:"message_count"`
+	LastMessageAt time.Time `json:"last_message_at,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type UserMessage struct {
@@ -223,6 +227,21 @@ type Cart struct {
 	Summary CartSummary `json:"summary"`
 }
 
+type DiscountLine struct {
+	Type        string `json:"type"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Amount      string `json:"amount"`
+	Description string `json:"description,omitempty"`
+}
+
+type DiscountPreview struct {
+	TotalAmount    string         `json:"total_amount"`
+	DiscountAmount string         `json:"discount_amount"`
+	PayAmount      string         `json:"pay_amount"`
+	Lines          []DiscountLine `json:"lines"`
+}
+
 type OrderItem struct {
 	OrderItemID  string `json:"order_item_id"`
 	ProductID    string `json:"product_id"`
@@ -236,14 +255,125 @@ type OrderItem struct {
 }
 
 type Order struct {
-	OrderID      string      `json:"order_id"`
-	AccountID    string      `json:"account_id"`
-	MerchantID   string      `json:"merchant_id"`
-	MerchantName string      `json:"merchant_name"`
-	Status       string      `json:"status"`
-	TotalAmount  string      `json:"total_amount"`
-	Items        []OrderItem `json:"items"`
-	CreatedAt    time.Time   `json:"created_at"`
+	OrderID           string      `json:"order_id"`
+	OrderNo           string      `json:"order_no"`
+	AccountID         string      `json:"account_id"`
+	MerchantID        string      `json:"merchant_id"`
+	MerchantName      string      `json:"merchant_name"`
+	Status            string      `json:"status"`
+	TotalAmount       string      `json:"total_amount"`
+	DiscountAmount    string      `json:"discount_amount"`
+	PayAmount         string      `json:"pay_amount"`
+	PaymentDeadlineAt time.Time   `json:"payment_deadline_at,omitempty"`
+	PaidAt            time.Time   `json:"paid_at,omitempty"`
+	ClosedAt          time.Time   `json:"closed_at,omitempty"`
+	CompletedAt       time.Time   `json:"completed_at,omitempty"`
+	CancelReason      string      `json:"cancel_reason,omitempty"`
+	Items             []OrderItem `json:"items"`
+	CreatedAt         time.Time   `json:"created_at"`
+	UpdatedAt         time.Time   `json:"updated_at"`
+}
+
+type Payment struct {
+	PaymentID     string    `json:"payment_id"`
+	OrderID       string    `json:"order_id"`
+	AccountID     string    `json:"account_id"`
+	Amount        string    `json:"amount"`
+	Status        string    `json:"status"`
+	Method        string    `json:"method"`
+	TransactionNo string    `json:"transaction_no,omitempty"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	PaidAt        time.Time `json:"paid_at,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+type PromotionRule struct {
+	PromotionID     string    `json:"promotion_id"`
+	Name            string    `json:"name"`
+	Scope           string    `json:"scope"`
+	MerchantID      string    `json:"merchant_id,omitempty"`
+	ProductID       string    `json:"product_id,omitempty"`
+	CategoryID      string    `json:"category_id,omitempty"`
+	Type            string    `json:"type"`
+	ThresholdAmount string    `json:"threshold_amount"`
+	DiscountAmount  string    `json:"discount_amount"`
+	DiscountRate    string    `json:"discount_rate"`
+	Stackable       bool      `json:"stackable"`
+	StartAt         time.Time `json:"start_at"`
+	EndAt           time.Time `json:"end_at"`
+	Status          string    `json:"status"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+type PromotionRuleInput struct {
+	Name            string `json:"name"`
+	Scope           string `json:"scope"`
+	MerchantID      string `json:"merchant_id,omitempty"`
+	ProductID       string `json:"product_id,omitempty"`
+	CategoryID      string `json:"category_id,omitempty"`
+	Type            string `json:"type"`
+	ThresholdAmount string `json:"threshold_amount"`
+	DiscountAmount  string `json:"discount_amount"`
+	DiscountRate    string `json:"discount_rate"`
+	Stackable       bool   `json:"stackable"`
+	StartAt         string `json:"start_at,omitempty"`
+	EndAt           string `json:"end_at,omitempty"`
+	Status          string `json:"status"`
+}
+
+type Coupon struct {
+	CouponID        string    `json:"coupon_id"`
+	Name            string    `json:"name"`
+	Scope           string    `json:"scope"`
+	MerchantID      string    `json:"merchant_id,omitempty"`
+	Type            string    `json:"type"`
+	ThresholdAmount string    `json:"threshold_amount"`
+	DiscountAmount  string    `json:"discount_amount"`
+	TotalCount      int       `json:"total_count"`
+	ClaimedCount    int       `json:"claimed_count"`
+	PerUserLimit    int       `json:"per_user_limit"`
+	StartAt         time.Time `json:"start_at"`
+	EndAt           time.Time `json:"end_at"`
+	Status          string    `json:"status"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+type UserCoupon struct {
+	UserCouponID string    `json:"user_coupon_id"`
+	CouponID     string    `json:"coupon_id"`
+	AccountID    string    `json:"account_id"`
+	Status       string    `json:"status"`
+	OrderID      string    `json:"order_id,omitempty"`
+	ClaimedAt    time.Time `json:"claimed_at"`
+	UsedAt       time.Time `json:"used_at,omitempty"`
+	Coupon       Coupon    `json:"coupon"`
+}
+
+type ProductReview struct {
+	ReviewID          string    `json:"review_id"`
+	OrderID           string    `json:"order_id"`
+	OrderItemID       string    `json:"order_item_id"`
+	ProductID         string    `json:"product_id"`
+	SkuID             string    `json:"sku_id,omitempty"`
+	AccountID         string    `json:"account_id"`
+	Username          string    `json:"username,omitempty"`
+	Rating            int       `json:"rating"`
+	Content           string    `json:"content"`
+	Tags              []string  `json:"tags"`
+	Status            string    `json:"status"`
+	MerchantReply     string    `json:"merchant_reply,omitempty"`
+	MerchantRepliedAt time.Time `json:"merchant_replied_at,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+type ProductReviewInput struct {
+	Rating  int      `json:"rating"`
+	Content string   `json:"content"`
+	Tags    []string `json:"tags"`
 }
 
 type Citation struct {

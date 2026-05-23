@@ -127,7 +127,11 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   session_id VARCHAR(64) PRIMARY KEY,
   account_id VARCHAR(64) NOT NULL DEFAULT '',
   title VARCHAR(128) NOT NULL,
+  summary TEXT,
+  message_count INT NOT NULL DEFAULT 0,
+  last_message_at DATETIME NULL,
   created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_chat_sessions_account_id (account_id),
   INDEX idx_chat_sessions_created_at (created_at)
 );
@@ -180,15 +184,122 @@ CREATE TABLE IF NOT EXISTS agent_trace_events (
 
 CREATE TABLE IF NOT EXISTS orders (
   order_id VARCHAR(64) PRIMARY KEY,
+  order_no VARCHAR(64) NOT NULL DEFAULT '',
   account_id VARCHAR(64) NOT NULL,
   merchant_id VARCHAR(64) NOT NULL,
   status VARCHAR(32) NOT NULL,
   total_amount DECIMAL(10, 2) NOT NULL,
+  discount_amount DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+  pay_amount DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+  payment_deadline_at DATETIME NULL,
+  paid_at DATETIME NULL,
+  closed_at DATETIME NULL,
+  completed_at DATETIME NULL,
+  cancel_reason VARCHAR(256) NOT NULL DEFAULT '',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_orders_order_no (order_no),
   INDEX idx_orders_account_id (account_id),
   INDEX idx_orders_merchant_id (merchant_id),
-  INDEX idx_orders_status (status)
+  INDEX idx_orders_status (status),
+  INDEX idx_orders_payment_deadline_at (payment_deadline_at)
+);
+
+CREATE TABLE IF NOT EXISTS payments (
+  payment_id VARCHAR(64) PRIMARY KEY,
+  order_id VARCHAR(64) NOT NULL,
+  account_id VARCHAR(64) NOT NULL,
+  amount DECIMAL(10, 2) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  method VARCHAR(32) NOT NULL,
+  transaction_no VARCHAR(96) NOT NULL DEFAULT '',
+  expires_at DATETIME NOT NULL,
+  paid_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_payments_order_id (order_id),
+  INDEX idx_payments_account_id (account_id),
+  INDEX idx_payments_status (status),
+  INDEX idx_payments_expires_at (expires_at)
+);
+
+CREATE TABLE IF NOT EXISTS promotion_rules (
+  promotion_id VARCHAR(64) PRIMARY KEY,
+  name VARCHAR(128) NOT NULL,
+  scope VARCHAR(32) NOT NULL,
+  merchant_id VARCHAR(64) NOT NULL DEFAULT '',
+  product_id VARCHAR(64) NOT NULL DEFAULT '',
+  category_id VARCHAR(64) NOT NULL DEFAULT '',
+  type VARCHAR(32) NOT NULL,
+  threshold_amount DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+  discount_amount DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+  discount_rate DECIMAL(5, 4) NOT NULL DEFAULT 0.0000,
+  stackable BOOLEAN NOT NULL DEFAULT TRUE,
+  start_at DATETIME NOT NULL,
+  end_at DATETIME NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'active',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_promotion_rules_scope (scope),
+  INDEX idx_promotion_rules_merchant_id (merchant_id),
+  INDEX idx_promotion_rules_status (status),
+  INDEX idx_promotion_rules_time (start_at, end_at)
+);
+
+CREATE TABLE IF NOT EXISTS coupons (
+  coupon_id VARCHAR(64) PRIMARY KEY,
+  name VARCHAR(128) NOT NULL,
+  scope VARCHAR(32) NOT NULL,
+  merchant_id VARCHAR(64) NOT NULL DEFAULT '',
+  type VARCHAR(32) NOT NULL,
+  threshold_amount DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+  discount_amount DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+  total_count INT NOT NULL DEFAULT 0,
+  claimed_count INT NOT NULL DEFAULT 0,
+  per_user_limit INT NOT NULL DEFAULT 1,
+  start_at DATETIME NOT NULL,
+  end_at DATETIME NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'active',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_coupons_scope (scope),
+  INDEX idx_coupons_merchant_id (merchant_id),
+  INDEX idx_coupons_status (status),
+  INDEX idx_coupons_time (start_at, end_at)
+);
+
+CREATE TABLE IF NOT EXISTS user_coupons (
+  user_coupon_id VARCHAR(64) PRIMARY KEY,
+  coupon_id VARCHAR(64) NOT NULL,
+  account_id VARCHAR(64) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'unused',
+  order_id VARCHAR(64) NOT NULL DEFAULT '',
+  claimed_at DATETIME NOT NULL,
+  used_at DATETIME NULL,
+  INDEX idx_user_coupons_account_id (account_id),
+  INDEX idx_user_coupons_coupon_id (coupon_id),
+  INDEX idx_user_coupons_status (status)
+);
+
+CREATE TABLE IF NOT EXISTS product_reviews (
+  review_id VARCHAR(64) PRIMARY KEY,
+  order_id VARCHAR(64) NOT NULL,
+  order_item_id VARCHAR(64) NOT NULL,
+  product_id VARCHAR(64) NOT NULL,
+  sku_id VARCHAR(64) NOT NULL DEFAULT '',
+  account_id VARCHAR(64) NOT NULL,
+  rating INT NOT NULL,
+  content TEXT NOT NULL,
+  tags_json JSON NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'visible',
+  merchant_reply TEXT,
+  merchant_replied_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_product_reviews_order_item (order_item_id),
+  INDEX idx_product_reviews_product_id (product_id),
+  INDEX idx_product_reviews_account_id (account_id),
+  INDEX idx_product_reviews_status (status)
 );
 
 CREATE TABLE IF NOT EXISTS order_items (
@@ -209,6 +320,18 @@ CREATE TABLE IF NOT EXISTS order_items (
 
 INSERT IGNORE INTO merchants (merchant_id, name, logo_url, description, service_phone, status) VALUES
 ('m_001', '小猪数码旗舰店', '/placeholder-merchant.svg', '主营手机、耳机、智能设备和办公外设。', '400-000-0000', 'active');
+
+INSERT IGNORE INTO promotion_rules (
+  promotion_id, name, scope, merchant_id, type, threshold_amount, discount_amount, discount_rate, stackable, start_at, end_at, status
+) VALUES
+('promo_platform_001', '平台满 300 减 30', 'platform', '', 'full_reduction', 300.00, 30.00, 0.0000, TRUE, '2026-01-01 00:00:00', '2026-12-31 23:59:59', 'active'),
+('promo_m_001_001', '小猪数码满 1000 减 80', 'merchant', 'm_001', 'full_reduction', 1000.00, 80.00, 0.0000, TRUE, '2026-01-01 00:00:00', '2026-12-31 23:59:59', 'active');
+
+INSERT IGNORE INTO coupons (
+  coupon_id, name, scope, merchant_id, type, threshold_amount, discount_amount, total_count, claimed_count, per_user_limit, start_at, end_at, status
+) VALUES
+('coupon_platform_001', '平台新人满 200 减 20', 'platform', '', 'fixed_amount', 200.00, 20.00, 10000, 0, 1, '2026-01-01 00:00:00', '2026-12-31 23:59:59', 'active'),
+('coupon_m_001_001', '小猪数码满 500 减 50', 'merchant', 'm_001', 'fixed_amount', 500.00, 50.00, 10000, 0, 1, '2026-01-01 00:00:00', '2026-12-31 23:59:59', 'active');
 
 INSERT IGNORE INTO categories (category_id, parent_id, name, sort_order) VALUES
 ('c_phone', '', '手机', 10),

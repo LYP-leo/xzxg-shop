@@ -5,3 +5,5 @@ dist/
 .env.local
 *.tsbuildinfo
 .logs/
+quality/reports/
+.ai/pics
