@@ -121,6 +121,11 @@ public class ApiClient {
         return get("/products/" + urlEncode(productId));
     }
 
+    public JSONArray productReviews(String productId) throws Exception {
+        JSONObject response = get("/products/" + urlEncode(productId) + "/reviews");
+        return response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
+    }
+
     public String absoluteUrl(String url) {
         if (url == null || url.trim().isEmpty()) {
             return "";
@@ -140,6 +145,10 @@ public class ApiClient {
 
     public JSONObject cart() throws Exception {
         return get("/cart");
+    }
+
+    public JSONObject discountPreview() throws Exception {
+        return get("/cart/discount-preview");
     }
 
     public JSONObject addCartItem(String productId, String skuId, int quantity) throws Exception {
@@ -171,14 +180,72 @@ public class ApiClient {
         return response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
     }
 
+    public JSONObject orderDetail(String orderId) throws Exception {
+        return get("/orders/" + urlEncode(orderId));
+    }
+
     public JSONArray checkout() throws Exception {
         JSONObject response = post("/orders:checkout", new JSONObject());
         return response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
     }
 
+    public JSONObject payOrder(String orderId) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("method", "mock_balance");
+        return post("/orders/" + urlEncode(orderId) + ":pay", body);
+    }
+
+    public JSONObject cancelOrder(String orderId, String reason) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("reason", reason == null || reason.isEmpty() ? "暂时不买了" : reason);
+        return post("/orders/" + urlEncode(orderId) + ":cancel", body);
+    }
+
+    public JSONObject confirmReceipt(String orderId) throws Exception {
+        return post("/orders/" + urlEncode(orderId) + ":confirm-receipt", new JSONObject());
+    }
+
+    public JSONObject reviewOrderItem(String orderId, String orderItemId, int rating, String content, JSONArray tags) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("rating", rating);
+        body.put("content", content);
+        body.put("tags", tags == null ? new JSONArray() : tags);
+        return post("/orders/" + urlEncode(orderId) + "/items/" + urlEncode(orderItemId) + ":review", body);
+    }
+
+    public JSONArray promotions() throws Exception {
+        JSONObject response = get("/promotions");
+        return response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
+    }
+
+    public JSONArray availableCoupons() throws Exception {
+        JSONObject response = get("/coupons/available");
+        return response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
+    }
+
+    public JSONArray myCoupons() throws Exception {
+        JSONObject response = get("/coupons/mine");
+        return response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
+    }
+
+    public JSONObject claimCoupon(String couponId) throws Exception {
+        return post("/coupons/" + urlEncode(couponId) + ":claim", new JSONObject());
+    }
+
     public JSONArray sessions() throws Exception {
         JSONObject response = get("/agent/sessions");
         return response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
+    }
+
+    public JSONObject sessionDetail(String sessionId) throws Exception {
+        return get("/agent/sessions/" + urlEncode(sessionId));
+    }
+
+    public JSONObject updateSession(String sessionId, String title, String summary) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("title", title == null ? "" : title);
+        body.put("summary", summary == null ? "" : summary);
+        return patch("/agent/sessions/" + urlEncode(sessionId), body);
     }
 
     public JSONObject createSession(String title) throws Exception {

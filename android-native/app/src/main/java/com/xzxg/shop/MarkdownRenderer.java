@@ -16,7 +16,28 @@ public final class MarkdownRenderer {
     }
 
     public static void setMarkdown(TextView target, String markdown) {
-        instance(target.getContext()).setMarkdown(target, markdown == null ? "" : markdown);
+        target.setTextSize(15);
+        instance(target.getContext()).setMarkdown(target, normalizeHeadings(markdown == null ? "" : markdown));
+    }
+
+    private static String normalizeHeadings(String markdown) {
+        String[] lines = markdown.split("\\n", -1);
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i];
+            if (line.startsWith("### ")) {
+                line = "**" + line.substring(4).trim() + "**";
+            } else if (line.startsWith("## ")) {
+                line = "**" + line.substring(3).trim() + "**";
+            } else if (line.startsWith("# ")) {
+                line = "**" + line.substring(2).trim() + "**";
+            }
+            if (i > 0) {
+                builder.append('\n');
+            }
+            builder.append(line);
+        }
+        return builder.toString();
     }
 
     private static Markwon instance(Context context) {

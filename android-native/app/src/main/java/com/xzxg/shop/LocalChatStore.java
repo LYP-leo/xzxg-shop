@@ -47,6 +47,33 @@ public class LocalChatStore extends SQLiteOpenHelper {
         getWritableDatabase().update("sessions", values, "local_session_id = ?", new String[]{localSessionId});
     }
 
+    public String upsertRemoteSession(String serverSessionId, String title, String summary, long updatedAt) {
+        if (serverSessionId == null || serverSessionId.isEmpty()) {
+            return "";
+        }
+        String existing = localSessionIdForServer(serverSessionId);
+        String localId = existing.isEmpty() ? "remote_" + serverSessionId : existing;
+        ContentValues values = new ContentValues();
+        values.put("local_session_id", localId);
+        values.put("server_session_id", serverSessionId);
+        values.put("title", title == null || title.isEmpty() ? "导购会话" : title);
+        values.put("summary", summary == null ? "" : summary);
+        values.put("sync_state", "synced");
+        values.put("updated_at", updatedAt > 0 ? updatedAt : System.currentTimeMillis());
+        values.put("created_at", updatedAt > 0 ? updatedAt : System.currentTimeMillis());
+        getWritableDatabase().insertWithOnConflict("sessions", null, values, SQLiteDatabase.CONFLICT_REPLACE);
+        return localId;
+    }
+
+    public String localSessionIdForServer(String serverSessionId) {
+        Cursor cursor = getReadableDatabase().query("sessions", new String[]{"local_session_id"}, "server_session_id = ?", new String[]{serverSessionId}, null, null, null, "1");
+        try {
+            return cursor.moveToFirst() ? cursor.getString(0) : "";
+        } finally {
+            cursor.close();
+        }
+    }
+
     public void saveMessage(String localSessionId, String role, String content, String status) {
         saveMessage(localSessionId, role, content, "[]", "[]", status);
     }
