@@ -47,6 +47,12 @@ public class LocalChatStore extends SQLiteOpenHelper {
         getWritableDatabase().update("sessions", values, "local_session_id = ?", new String[]{localSessionId});
     }
 
+    public void markSessionSyncState(String localSessionId, String state) {
+        ContentValues values = new ContentValues();
+        values.put("sync_state", state);
+        getWritableDatabase().update("sessions", values, "local_session_id = ?", new String[]{localSessionId});
+    }
+
     public String upsertRemoteSession(String serverSessionId, String title, String summary, long updatedAt) {
         if (serverSessionId == null || serverSessionId.isEmpty()) {
             return "";

@@ -248,6 +248,10 @@ public class ApiClient {
         return patch("/agent/sessions/" + urlEncode(sessionId), body);
     }
 
+    public JSONObject cancelAgentRun(String runId) throws Exception {
+        return post("/agent/runs/" + urlEncode(runId) + ":cancel", new JSONObject());
+    }
+
     public JSONObject createSession(String title) throws Exception {
         JSONObject body = new JSONObject();
         body.put("title", title);
@@ -280,12 +284,13 @@ public class ApiClient {
         return value.replace("\"", "").replace("\r", "").replace("\n", "");
     }
 
-    public void streamMessage(String sessionId, String content, SseCallback callback) {
-        streamMessage(sessionId, content, new JSONArray(), callback);
+    public StreamCall streamMessage(String sessionId, String content, SseCallback callback) {
+        return streamMessage(sessionId, content, new JSONArray(), callback);
     }
 
-    public void streamMessage(String sessionId, String content, JSONArray attachments, SseCallback callback) {
-        new Thread(() -> {
+    public StreamCall streamMessage(String sessionId, String content, JSONArray attachments, SseCallback callback) {
+        StreamCall call = new StreamCall();
+        Thread thread = new Thread(() -> {
             HttpURLConnection conn = null;
             try {
                 JSONObject body = new JSONObject();
@@ -293,17 +298,20 @@ public class ApiClient {
                 body.put("content", content);
                 body.put("attachments", attachments == null ? new JSONArray() : attachments);
                 conn = open("/agent/sessions/" + sessionId + "/messages:stream", "POST");
+                call.connection = conn;
                 conn.setRequestProperty("Accept", "text/event-stream");
                 writeBody(conn, body);
 
                 int code = conn.getResponseCode();
                 if (code < 200 || code >= 300) {
-                    callback.onError(new RuntimeException(readText(conn.getErrorStream())));
+                    if (!call.canceled) {
+                        callback.onError(new RuntimeException(readText(conn.getErrorStream())));
+                    }
                     return;
                 }
                 BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
                 String line;
-                while ((line = reader.readLine()) != null) {
+                while (!call.canceled && (line = reader.readLine()) != null) {
                     if (!line.startsWith("data:")) {
                         continue;
                     }
@@ -314,13 +322,18 @@ public class ApiClient {
                     callback.onEvent(new JSONObject(data));
                 }
             } catch (Exception error) {
-                callback.onError(error);
+                if (!call.canceled) {
+                    callback.onError(error);
+                }
             } finally {
                 if (conn != null) {
                     conn.disconnect();
                 }
             }
-        }).start();
+        });
+        call.thread = thread;
+        thread.start();
+        return call;
     }
 
     private JSONObject get(String path) throws Exception {
@@ -406,6 +419,28 @@ public class ApiClient {
     public interface SseCallback {
         void onEvent(JSONObject event);
         void onError(Throwable error);
+    }
+
+    public static class StreamCall {
+        private volatile boolean canceled;
+        private volatile HttpURLConnection connection;
+        private volatile Thread thread;
+
+        public void cancel() {
+            canceled = true;
+            HttpURLConnection conn = connection;
+            if (conn != null) {
+                conn.disconnect();
+            }
+            Thread current = thread;
+            if (current != null) {
+                current.interrupt();
+            }
+        }
+
+        public boolean isCanceled() {
+            return canceled;
+        }
     }
 
     public static class ProductPage {

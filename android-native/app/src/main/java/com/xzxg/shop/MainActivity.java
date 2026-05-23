@@ -100,10 +100,20 @@ public class MainActivity extends Activity {
     private boolean restoreProductsScroll;
     private boolean loadingProducts;
     private ProductListState currentProductState;
+    private String activeProductTab = "list";
     private final Map<String, ProductListState> productListCache = new HashMap<>();
     private final Map<String, JSONObject> productDetailCache = new HashMap<>();
     private final Set<String> activeRenderedProductIds = new HashSet<>();
     private final List<PendingAttachment> pendingAttachments = new ArrayList<>();
+    private final Object sessionSyncLock = new Object();
+    private final Deque<SessionSyncJob> sessionSyncQueue = new ArrayDeque<>();
+    private boolean sessionSyncRunning;
+    private String activeRunId = "";
+    private ApiClient.StreamCall activeStreamCall;
+    private String activeStreamLocalSessionId = "";
+    private String activeStreamServerSessionId = "";
+    private String activeStreamTitle = "";
+    private boolean stopRequested;
     private final Deque<Runnable> backStack = new ArrayDeque<>();
     private Toast activeToast;
 
@@ -128,7 +138,23 @@ public class MainActivity extends Activity {
         String nextCursor = "0";
         boolean hasMore = true;
         boolean loaded;
+        boolean reachedBottomOnce;
         int scrollY;
+    }
+
+    private static class SessionSyncJob {
+        final String localSessionId;
+        final String serverSessionId;
+        final String title;
+        final String summary;
+        int retryCount;
+
+        SessionSyncJob(String localSessionId, String serverSessionId, String title, String summary) {
+            this.localSessionId = localSessionId;
+            this.serverSessionId = serverSessionId;
+            this.title = title;
+            this.summary = summary;
+        }
     }
 
     @Override
@@ -388,7 +414,7 @@ public class MainActivity extends Activity {
         actionButton = roundActionButton("mic");
         actionButton.setOnClickListener(v -> {
             if (streaming) {
-                toastLine("停止生成能力已预留，后续接入 run cancel。");
+                stopActiveStream();
                 return;
             }
             if (voiceMode) {
@@ -868,8 +894,6 @@ public class MainActivity extends Activity {
         navGroup.addView(drawerNavButton("▣", "商品", "products", v -> renderProducts()));
         navGroup.addView(drawerNavButton("□", "购物车", "cart", v -> renderCart()));
         navGroup.addView(drawerNavButton("≡", "订单", "orders", v -> renderOrders()));
-        navGroup.addView(drawerNavButton("券", "优惠券", "coupons", v -> renderCoupons()));
-        navGroup.addView(drawerNavButton("促", "活动", "promotions", v -> renderPromotions()));
         drawer.addView(navGroup);
 
         View divider = new View(this);
@@ -942,6 +966,70 @@ public class MainActivity extends Activity {
         }).start();
     }
 
+    private void enqueueSessionSync(String localId, String remoteId, String title, String summary) {
+        if (sessionStore.token().isEmpty() || localId == null || localId.isEmpty() || remoteId == null || remoteId.isEmpty()) {
+            return;
+        }
+        SessionSyncJob job = new SessionSyncJob(localId, remoteId, title, summary);
+        synchronized (sessionSyncLock) {
+            SessionSyncJob existing = null;
+            for (SessionSyncJob item : sessionSyncQueue) {
+                if (localId.equals(item.localSessionId)) {
+                    existing = item;
+                    break;
+                }
+            }
+            if (existing != null) {
+                sessionSyncQueue.remove(existing);
+            }
+            sessionSyncQueue.addLast(job);
+            chatStore.markSessionSyncState(localId, "pending_sync");
+            if (!sessionSyncRunning) {
+                sessionSyncRunning = true;
+                new Thread(this::drainSessionSyncQueue).start();
+            }
+        }
+    }
+
+    private void drainSessionSyncQueue() {
+        while (true) {
+            SessionSyncJob job;
+            synchronized (sessionSyncLock) {
+                job = sessionSyncQueue.pollFirst();
+                if (job == null) {
+                    sessionSyncRunning = false;
+                    return;
+                }
+            }
+            try {
+                chatStore.markSessionSyncState(job.localSessionId, "syncing");
+                api.updateSession(job.serverSessionId, job.title, job.summary);
+                chatStore.markSessionSyncState(job.localSessionId, "synced");
+            } catch (Exception error) {
+                if (job.retryCount < 2) {
+                    job.retryCount++;
+                    try {
+                        Thread.sleep(job.retryCount == 1 ? 2000 : 5000);
+                    } catch (InterruptedException ignored) {
+                    }
+                    synchronized (sessionSyncLock) {
+                        sessionSyncQueue.addLast(job);
+                    }
+                } else {
+                    chatStore.markSessionSyncState(job.localSessionId, "failed");
+                }
+            }
+        }
+    }
+
+    private String titleFromChatText(String text) {
+        String value = text == null ? "" : text.trim().replace('\n', ' ');
+        if (value.isEmpty()) {
+            return "导购会话";
+        }
+        return value.length() > 18 ? value.substring(0, 18) + "..." : value;
+    }
+
     private void sendMessage(String text) {
         sendMessage(text, new JSONArray());
     }
@@ -954,6 +1042,7 @@ public class MainActivity extends Activity {
         String visibleText = text == null || text.trim().isEmpty() ? attachmentSummary(attachments) : text;
         addBubble(visibleText, true);
         chatStore.saveMessage(localSessionId, "user", visibleText, "pending");
+        chatStore.touchSession(localSessionId);
         if (sessionStore.token().isEmpty()) {
             TextView assistant = addBubble("请先在右上角“未登录”入口完成登录。当前消息已经保存在本地，登录后可以继续使用 AI 导购。", false);
             chatStore.saveMessage(localSessionId, "assistant", assistant.getText().toString(), "local_only");
@@ -961,6 +1050,9 @@ public class MainActivity extends Activity {
             return;
         }
         streaming = true;
+        stopRequested = false;
+        activeRunId = "";
+        activeStreamLocalSessionId = localSessionId;
         setActionButtonText("■");
         loadingAssistant = addLoadingBubble();
         ensureServerSessionThenStream(visibleText, attachments == null ? new JSONArray() : attachments);
@@ -973,15 +1065,23 @@ public class MainActivity extends Activity {
 
     private void ensureServerSessionThenStream(String text, JSONArray attachments) {
         if (!serverSessionId.isEmpty()) {
+            enqueueSessionSync(localSessionId, serverSessionId, titleFromChatText(text), text);
             stream(text, attachments);
             return;
         }
+        String ownerLocalSessionId = localSessionId;
         new Thread(() -> {
             try {
                 JSONObject session = api.createSession("Android 新聊天");
-                serverSessionId = session.optString("session_id", "");
-                chatStore.bindServerSession(localSessionId, serverSessionId);
-                runOnUiThread(() -> stream(text, attachments));
+                String createdServerSessionId = session.optString("session_id", "");
+                chatStore.bindServerSession(ownerLocalSessionId, createdServerSessionId);
+                enqueueSessionSync(ownerLocalSessionId, createdServerSessionId, titleFromChatText(text), text);
+                runOnUiThread(() -> {
+                    if (ownerLocalSessionId.equals(localSessionId)) {
+                        serverSessionId = createdServerSessionId;
+                    }
+                    stream(ownerLocalSessionId, createdServerSessionId, text, attachments);
+                });
             } catch (Exception error) {
                 runOnUiThread(() -> failStream("创建会话失败：" + error.getMessage()));
             }
@@ -989,27 +1089,42 @@ public class MainActivity extends Activity {
     }
 
     private void stream(String text, JSONArray attachments) {
+        stream(localSessionId, serverSessionId, text, attachments);
+    }
+
+    private void stream(String ownerLocalSessionId, String ownerServerSessionId, String text, JSONArray attachments) {
         activeAssistantMarkdown = new StringBuilder();
         activeAssistantBlocks = new JSONArray();
         activeFollowups = new JSONArray();
         activeFollowupsView = null;
         activeRenderedProductIds.clear();
-        api.streamMessage(serverSessionId, text, attachments, new ApiClient.SseCallback() {
+        activeStreamLocalSessionId = ownerLocalSessionId;
+        activeStreamServerSessionId = ownerServerSessionId;
+        activeStreamTitle = titleFromChatText(text);
+        activeStreamCall = api.streamMessage(ownerServerSessionId, text, attachments, new ApiClient.SseCallback() {
             @Override
             public void onEvent(JSONObject event) {
-                runOnUiThread(() -> handleSse(event));
+                runOnUiThread(() -> handleSse(ownerLocalSessionId, event));
             }
 
             @Override
             public void onError(Throwable error) {
-                runOnUiThread(() -> failStream("发送失败：" + error.getMessage()));
+                runOnUiThread(() -> {
+                    if (!stopRequested) {
+                        failStream("发送失败：" + error.getMessage());
+                    }
+                });
             }
         });
     }
 
-    private void handleSse(JSONObject event) {
+    private void handleSse(String ownerLocalSessionId, JSONObject event) {
+        if (stopRequested || !ownerLocalSessionId.equals(localSessionId)) {
+            return;
+        }
         String type = event.optString("type");
         if ("message_start".equals(type)) {
+            activeRunId = event.optString("run_id", "");
             return;
         }
         if ("status".equals(type)) {
@@ -1034,11 +1149,15 @@ public class MainActivity extends Activity {
             return;
         }
         if ("message_end".equals(type)) {
-            finishStream();
+            finishStream(ownerLocalSessionId);
             return;
         }
         if ("error".equals(type)) {
-            failStream(event.optString("message", "生成失败"));
+            if ("canceled".equals(event.optString("code"))) {
+                finishCanceledStream();
+            } else {
+                failStream(event.optString("message", "生成失败"));
+            }
         }
     }
 
@@ -1066,6 +1185,10 @@ public class MainActivity extends Activity {
     }
 
     private void finishStream() {
+        finishStream(localSessionId);
+    }
+
+    private void finishStream(String ownerLocalSessionId) {
         String markdown = activeAssistantMarkdown == null ? "" : activeAssistantMarkdown.toString();
         RenderedMarkdown rendered = sanitizeAgentMarkdown(markdown);
         String visibleMarkdown = rendered.visibleMarkdown;
@@ -1074,13 +1197,20 @@ public class MainActivity extends Activity {
         }
         renderItemRefs(rendered.itemIds, chatList);
         if (!visibleMarkdown.trim().isEmpty() || activeAssistantBlocks.length() > 0 || activeFollowups.length() > 0) {
-            chatStore.saveAssistantTurn(localSessionId, visibleMarkdown, activeAssistantBlocks.toString(), activeFollowups.toString(), "completed");
+            chatStore.saveAssistantTurn(ownerLocalSessionId, visibleMarkdown, activeAssistantBlocks.toString(), activeFollowups.toString(), "completed");
         }
+        enqueueSessionSync(ownerLocalSessionId, activeStreamServerSessionId, activeStreamTitle, visibleMarkdown);
         activeAssistantMarkdown = null;
         activeAssistant = null;
         activeAssistantBlocks = new JSONArray();
         activeFollowups = new JSONArray();
         activeFollowupsView = null;
+        activeRunId = "";
+        activeStreamCall = null;
+        activeStreamLocalSessionId = "";
+        activeStreamServerSessionId = "";
+        activeStreamTitle = "";
+        stopRequested = false;
         removeLoadingBubbleIfNeeded();
         streaming = false;
         if (actionButton != null && input != null) {
@@ -1089,13 +1219,83 @@ public class MainActivity extends Activity {
     }
 
     private void failStream(String message) {
+        String ownerLocalSessionId = activeStreamLocalSessionId == null || activeStreamLocalSessionId.isEmpty() ? localSessionId : activeStreamLocalSessionId;
+        String ownerServerSessionId = activeStreamServerSessionId;
         if (loadingAssistant != null) {
             loadingAssistant.setText(message);
             loadingAssistant = null;
         } else {
             addChatSystemLine(message);
         }
+        enqueueSessionSync(ownerLocalSessionId, ownerServerSessionId, activeStreamTitle, message);
         streaming = false;
+        activeRunId = "";
+        activeStreamCall = null;
+        activeStreamLocalSessionId = "";
+        activeStreamServerSessionId = "";
+        activeStreamTitle = "";
+        stopRequested = false;
+        if (actionButton != null && input != null) {
+            setActionButtonText(voiceMode ? "⌨" : (input.getText().toString().trim().isEmpty() ? "mic" : "➤"));
+        }
+    }
+
+    private void stopActiveStream() {
+        if (!streaming) {
+            return;
+        }
+        stopRequested = true;
+        if (actionButton != null) {
+            actionButton.setEnabled(false);
+        }
+        updateLoadingStatus("正在停止...");
+        String runId = activeRunId;
+        if (runId != null && !runId.isEmpty()) {
+            new Thread(() -> {
+                try {
+                    api.cancelAgentRun(runId);
+                } catch (Exception ignored) {
+                }
+            }).start();
+        }
+        ApiClient.StreamCall call = activeStreamCall;
+        if (call != null) {
+            call.cancel();
+        }
+        finishCanceledStream();
+    }
+
+    private void finishCanceledStream() {
+        String ownerLocalSessionId = activeStreamLocalSessionId == null || activeStreamLocalSessionId.isEmpty() ? localSessionId : activeStreamLocalSessionId;
+        String markdown = activeAssistantMarkdown == null ? "" : activeAssistantMarkdown.toString();
+        RenderedMarkdown rendered = sanitizeAgentMarkdown(markdown);
+        String visibleMarkdown = rendered.visibleMarkdown;
+        removeLoadingBubbleIfNeeded();
+        if (activeAssistant != null) {
+            MarkdownRenderer.setMarkdown(activeAssistant, visibleMarkdown);
+        }
+        if (!visibleMarkdown.trim().isEmpty() || activeAssistantBlocks.length() > 0 || activeFollowups.length() > 0) {
+            chatStore.saveAssistantTurn(ownerLocalSessionId, visibleMarkdown, activeAssistantBlocks.toString(), activeFollowups.toString(), "canceled");
+        }
+        if (ownerLocalSessionId.equals(localSessionId)) {
+            addChatSystemLine("已停止生成");
+        }
+        enqueueSessionSync(ownerLocalSessionId, activeStreamServerSessionId, activeStreamTitle, visibleMarkdown);
+        activeAssistantMarkdown = null;
+        activeAssistant = null;
+        activeAssistantBlocks = new JSONArray();
+        activeFollowups = new JSONArray();
+        activeFollowupsView = null;
+        activeRunId = "";
+        activeStreamCall = null;
+        activeStreamLocalSessionId = "";
+        activeStreamServerSessionId = "";
+        activeStreamTitle = "";
+        stopRequested = false;
+        streaming = false;
+        if (actionButton != null) {
+            actionButton.setEnabled(true);
+        }
         if (actionButton != null && input != null) {
             setActionButtonText(voiceMode ? "⌨" : (input.getText().toString().trim().isEmpty() ? "mic" : "➤"));
         }
@@ -1420,7 +1620,7 @@ public class MainActivity extends Activity {
         } else if ("coupons".equals(route)) {
             renderCoupons();
         } else if ("promotions".equals(route)) {
-            renderPromotions();
+            renderProductsTab("activity", false);
         } else {
             toastLine("暂不支持该跳转");
         }
@@ -1587,6 +1787,13 @@ public class MainActivity extends Activity {
             profilePanel.addView(profileRow);
             page.addView(profilePanel);
 
+            LinearLayout servicePanel = panel();
+            servicePanel.addView(strong("我的服务"));
+            Button coupons = secondaryButton("我的优惠券");
+            coupons.setOnClickListener(v -> renderCoupons());
+            addFormButton(servicePanel, coupons);
+            page.addView(servicePanel);
+
             LinearLayout editPanel = panel();
             editPanel.addView(strong("编辑资料"));
             EditText nickname = inputField("昵称", sessionStore.nickname());
@@ -1718,11 +1925,25 @@ public class MainActivity extends Activity {
     }
 
     private void renderProducts(boolean restoreScroll) {
+        renderProductsTab("list", restoreScroll);
+    }
+
+    private void renderProductsTab(String tab, boolean restoreScroll) {
         closeDrawer();
         activePage = "products";
+        activeProductTab = tab == null || tab.isEmpty() ? "list" : tab;
         backStack.clear();
         baseScreen();
         addPageHeader("商品", "搜索商品、查看详情、加入购物车");
+        if ("activity".equals(activeProductTab)) {
+            renderProductPromotionsTab();
+        } else {
+            renderProductListTab(restoreScroll);
+        }
+        content.addView(productBottomBar(), new LinearLayout.LayoutParams(-1, dp(58)));
+    }
+
+    private void renderProductListTab(boolean restoreScroll) {
         productsScroll = new ScrollView(this);
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
@@ -1768,16 +1989,69 @@ public class MainActivity extends Activity {
         });
         productsScroll.setOnScrollChangeListener((v, scrollX, scrollY, oldScrollX, oldScrollY) -> {
             productsScrollY = scrollY;
+            if (currentProductState != null) {
+                currentProductState.scrollY = scrollY;
+            }
             if (productsScroll == null || productsList == null || currentProductState == null) {
                 return;
             }
             int bottomDistance = productsList.getBottom() - (productsScroll.getHeight() + scrollY);
-            if (bottomDistance < dp(560) && currentProductState.hasMore && !loadingProducts) {
+            if (bottomDistance > dp(8) || !currentProductState.hasMore || loadingProducts) {
+                return;
+            }
+            if (!currentProductState.reachedBottomOnce) {
+                currentProductState.reachedBottomOnce = true;
+                renderProductItems(productsList, currentProductState);
+                return;
+            }
+            if (scrollY >= oldScrollY) {
                 loadMoreProducts(productsList, lastProductKeyword, lastCategoryId);
             }
         });
         ensureCategoriesLoaded();
         loadProducts(productsList, lastProductKeyword, lastCategoryId);
+    }
+
+    private void renderProductPromotionsTab() {
+        LinearLayout page = pageBody();
+        page.addView(muted("正在加载活动..."));
+        new Thread(() -> {
+            try {
+                JSONArray items = api.promotions();
+                runOnUiThread(() -> renderPromotionItems(page, items));
+            } catch (Exception error) {
+                runOnUiThread(() -> renderError(page, "活动加载失败", error.getMessage(), () -> renderProductsTab("activity", false)));
+            }
+        }).start();
+    }
+
+    private View productBottomBar() {
+        LinearLayout bar = new LinearLayout(this);
+        bar.setGravity(Gravity.CENTER);
+        bar.setPadding(dp(12), dp(6), dp(12), dp(6));
+        bar.setBackgroundColor(Color.WHITE);
+        bar.addView(productTabButton("商品列表", "list"), new LinearLayout.LayoutParams(0, dp(46), 1));
+        bar.addView(productTabButton("活动", "activity"), new LinearLayout.LayoutParams(0, dp(46), 1));
+        return bar;
+    }
+
+    private TextView productTabButton(String text, String tab) {
+        boolean selected = tab.equals(activeProductTab);
+        TextView view = new TextView(this);
+        view.setText(text);
+        view.setTextSize(15);
+        view.setTypeface(Typeface.DEFAULT, selected ? Typeface.BOLD : Typeface.NORMAL);
+        view.setTextColor(selected ? Color.BLACK : Color.rgb(107, 114, 128));
+        view.setGravity(Gravity.CENTER);
+        view.setBackground(rounded(selected ? Color.rgb(245, 246, 248) : Color.WHITE, dp(14)));
+        view.setOnClickListener(v -> {
+            if ("list".equals(tab)) {
+                renderProductsTab("list", true);
+            } else {
+                renderProductsTab("activity", false);
+            }
+        });
+        return view;
     }
 
     private void ensureCategoriesLoaded() {
@@ -1998,6 +2272,7 @@ public class MainActivity extends Activity {
                     currentProductState.nextCursor = page.nextCursor;
                     currentProductState.hasMore = page.hasMore;
                     currentProductState.loaded = true;
+                    currentProductState.reachedBottomOnce = false;
                     loadingProducts = false;
                     renderProductItems(list, currentProductState);
                 });
@@ -2029,7 +2304,7 @@ public class MainActivity extends Activity {
             }
         }
         if (state.hasMore) {
-            TextView more = muted(loadingProducts ? "正在加载更多..." : "继续下滑加载更多");
+            TextView more = muted(loadingProducts ? "正在加载更多..." : (state.reachedBottomOnce ? "继续上拉加载更多" : "滑到底部后继续上拉加载更多"));
             more.setGravity(Gravity.CENTER);
             list.addView(more, new LinearLayout.LayoutParams(-1, dp(44)));
         } else {
@@ -3258,6 +3533,7 @@ public class MainActivity extends Activity {
         titleParams.leftMargin = dp(14);
         row.addView(title, titleParams);
         row.setOnClickListener(v -> {
+            chatStore.touchSession(item.localSessionId);
             localSessionId = item.localSessionId;
             serverSessionId = item.serverSessionId == null ? "" : item.serverSessionId;
             closeDrawerAnimated();
