@@ -506,7 +506,7 @@ func (r *Runtime) executeDeterministicIntent(ctx context.Context, run domain.Age
 			return true, r.emitToolClarification(run, "提交订单失败，请确认购物车里有已选中的有效商品。", emit)
 		}
 		r.trace(ctx, run, "tools", "checkout", "", "ok", 0, "", map[string]any{"order_count": len(orders)})
-		if err := r.emitText(run, fmt.Sprintf("已提交 %d 个订单，商家会按待发货流程处理。", len(orders)), emit); err != nil {
+		if err := r.emitText(run, fmt.Sprintf("已创建 %d 个待支付订单，请在支付截止时间前完成虚拟支付。", len(orders)), emit); err != nil {
 			return true, err
 		}
 		block := domain.AgentBlock{Type: "order_summary", Orders: orders}

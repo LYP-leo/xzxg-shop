@@ -37,10 +37,19 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/merchants", s.handleListMerchants)
 	mux.HandleFunc("GET /api/v1/products", s.handleListProducts)
 	mux.HandleFunc("GET /api/v1/products/", s.handleProductAction)
+	mux.HandleFunc("GET /api/v1/promotions", s.handleListPromotions)
+	mux.HandleFunc("GET /api/v1/coupons/available", s.handleListCoupons)
+	mux.HandleFunc("GET /api/v1/coupons/mine", s.handleListUserCoupons)
+	mux.HandleFunc("POST /api/v1/coupons/", s.handleCouponAction)
 	mux.HandleFunc("GET /api/v1/merchant/documents", s.handleListMerchantDocuments)
 	mux.HandleFunc("POST /api/v1/merchant/documents", s.handleCreateMerchantDocument)
 	mux.HandleFunc("GET /api/v1/merchant/orders", s.handleListMerchantOrders)
 	mux.HandleFunc("PATCH /api/v1/merchant/orders/", s.handleUpdateMerchantOrder)
+	mux.HandleFunc("GET /api/v1/merchant/promotions", s.handleListMerchantPromotions)
+	mux.HandleFunc("POST /api/v1/merchant/promotions", s.handleCreateMerchantPromotion)
+	mux.HandleFunc("PATCH /api/v1/merchant/promotions/", s.handleUpdateMerchantPromotion)
+	mux.HandleFunc("GET /api/v1/merchant/reviews", s.handleListMerchantReviews)
+	mux.HandleFunc("POST /api/v1/merchant/reviews/", s.handleMerchantReviewAction)
 	mux.HandleFunc("POST /api/v1/merchant/products", s.handleCreateMerchantProduct)
 	mux.HandleFunc("PATCH /api/v1/merchant/products/", s.handleUpdateMerchantProduct)
 	mux.HandleFunc("DELETE /api/v1/merchant/products/", s.handleDeleteMerchantProduct)
@@ -50,19 +59,28 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/admin/configs/", s.handleUpdateAdminConfig)
 	mux.HandleFunc("GET /api/v1/admin/documents", s.handleListAdminDocuments)
 	mux.HandleFunc("GET /api/v1/admin/orders", s.handleListAdminOrders)
+	mux.HandleFunc("GET /api/v1/admin/promotions", s.handleListAdminPromotions)
+	mux.HandleFunc("POST /api/v1/admin/promotions", s.handleCreateAdminPromotion)
+	mux.HandleFunc("PATCH /api/v1/admin/promotions/", s.handleUpdateAdminPromotion)
+	mux.HandleFunc("GET /api/v1/admin/reviews", s.handleListAdminReviews)
+	mux.HandleFunc("PATCH /api/v1/admin/reviews/", s.handleUpdateAdminReview)
 	mux.HandleFunc("GET /api/v1/admin/products", s.handleListAdminProducts)
 	mux.HandleFunc("PATCH /api/v1/admin/products/", s.handleUpdateAdminProduct)
 	mux.HandleFunc("POST /api/v1/eval/intent", s.handleEvalIntent)
 	mux.HandleFunc("POST /api/v1/eval/rag", s.handleEvalRAGRecall)
 	mux.HandleFunc("GET /api/v1/cart", s.handleGetCart)
+	mux.HandleFunc("GET /api/v1/cart/discount-preview", s.handleCartDiscountPreview)
 	mux.HandleFunc("POST /api/v1/cart/items", s.handleAddCartItem)
 	mux.HandleFunc("PATCH /api/v1/cart/items/", s.handleCartItemAction)
 	mux.HandleFunc("DELETE /api/v1/cart/items/", s.handleCartItemAction)
 	mux.HandleFunc("GET /api/v1/orders", s.handleListUserOrders)
 	mux.HandleFunc("POST /api/v1/orders:checkout", s.handleCheckout)
+	mux.HandleFunc("GET /api/v1/orders/", s.handleUserOrderAction)
+	mux.HandleFunc("POST /api/v1/orders/", s.handleUserOrderAction)
 	mux.HandleFunc("GET /api/v1/agent/sessions", s.handleListAgentSessions)
 	mux.HandleFunc("POST /api/v1/agent/sessions", s.handleCreateAgentSession)
 	mux.HandleFunc("GET /api/v1/agent/sessions/", s.handleAgentSessionAction)
+	mux.HandleFunc("PATCH /api/v1/agent/sessions/", s.handleAgentSessionAction)
 	mux.HandleFunc("POST /api/v1/agent/sessions/", s.handleAgentSessionAction)
 	mux.HandleFunc("GET /api/v1/agent/runs/", s.handleAgentRunTrace)
 	mux.HandleFunc("POST /api/v1/agent/runs/", s.handleAgentRunAction)
@@ -156,6 +174,10 @@ func (s *Server) handleProductAction(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListProductSKUs(r.Context(), productID)})
 		return
 	}
+	if action == "reviews" {
+		writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListProductReviews(r.Context(), productID)})
+		return
+	}
 	if action != "" {
 		writeError(w, http.StatusNotFound, "not_found", "接口不存在")
 		return
@@ -166,6 +188,41 @@ func (s *Server) handleProductAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, product)
+}
+
+func (s *Server) handleListPromotions(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListPromotions(r.Context(), "")})
+}
+
+func (s *Server) handleListCoupons(w http.ResponseWriter, r *http.Request) {
+	account, _ := accountFromContext(r.Context())
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListCoupons(r.Context(), account.AccountID)})
+}
+
+func (s *Server) handleListUserCoupons(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListUserCoupons(r.Context(), account.AccountID)})
+}
+
+func (s *Server) handleCouponAction(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	couponID, action, ok := splitCouponAction(r.URL.Path)
+	if !ok || action != "claim" {
+		writeError(w, http.StatusNotFound, "not_found", "接口不存在")
+		return
+	}
+	coupon, ok := s.store.ClaimCoupon(r.Context(), account.AccountID, couponID)
+	if !ok {
+		writeError(w, http.StatusConflict, "claim_failed", "优惠券不可领取，可能已领过、已过期或已领完")
+		return
+	}
+	writeJSON(w, http.StatusOK, coupon)
 }
 
 func (s *Server) handleCreateMerchantProduct(w http.ResponseWriter, r *http.Request) {
@@ -303,6 +360,92 @@ func (s *Server) handleUpdateMerchantOrder(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, order)
+}
+
+func (s *Server) handleListMerchantPromotions(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireMerchant(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListPromotions(r.Context(), account.MerchantID)})
+}
+
+func (s *Server) handleCreateMerchantPromotion(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireMerchant(w, r)
+	if !ok {
+		return
+	}
+	var request domain.PromotionRuleInput
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	request.Scope = "merchant"
+	request.MerchantID = account.MerchantID
+	promotion, err := s.store.CreatePromotion(r.Context(), request)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "create_promotion_failed", "创建促销失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, promotion)
+}
+
+func (s *Server) handleUpdateMerchantPromotion(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireMerchant(w, r)
+	if !ok {
+		return
+	}
+	promotionID := strings.TrimPrefix(r.URL.Path, "/api/v1/merchant/promotions/")
+	var request struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	if !allowedEnabledStatus(request.Status) {
+		writeError(w, http.StatusBadRequest, "bad_status", "促销状态不合法")
+		return
+	}
+	promotion, ok := s.store.UpdatePromotionStatus(r.Context(), promotionID, account.MerchantID, request.Status)
+	if !ok {
+		writeError(w, http.StatusNotFound, "promotion_not_found", "促销不存在或不属于当前商家")
+		return
+	}
+	writeJSON(w, http.StatusOK, promotion)
+}
+
+func (s *Server) handleListMerchantReviews(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireMerchant(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListMerchantReviews(r.Context(), account.MerchantID)})
+}
+
+func (s *Server) handleMerchantReviewAction(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireMerchant(w, r)
+	if !ok {
+		return
+	}
+	reviewID, action, ok := splitReviewAction(r.URL.Path, "/api/v1/merchant/reviews/")
+	if !ok || action != "reply" {
+		writeError(w, http.StatusNotFound, "not_found", "接口不存在")
+		return
+	}
+	var request struct {
+		Reply string `json:"reply"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	review, ok := s.store.ReplyReview(r.Context(), account.MerchantID, reviewID, request.Reply)
+	if !ok {
+		writeError(w, http.StatusNotFound, "review_not_found", "评价不存在或不属于当前商家")
+		return
+	}
+	writeJSON(w, http.StatusOK, review)
 }
 
 func (s *Server) handleListAdminAccounts(w http.ResponseWriter, r *http.Request) {
@@ -467,6 +610,85 @@ func (s *Server) handleListAdminOrders(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListAllOrders(r.Context())})
 }
 
+func (s *Server) handleListAdminPromotions(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListPromotions(r.Context(), "")})
+}
+
+func (s *Server) handleCreateAdminPromotion(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	var request domain.PromotionRuleInput
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	promotion, err := s.store.CreatePromotion(r.Context(), request)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "create_promotion_failed", "创建促销失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, promotion)
+}
+
+func (s *Server) handleUpdateAdminPromotion(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	promotionID := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/promotions/")
+	var request struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	if !allowedEnabledStatus(request.Status) {
+		writeError(w, http.StatusBadRequest, "bad_status", "促销状态不合法")
+		return
+	}
+	promotion, ok := s.store.UpdatePromotionStatus(r.Context(), promotionID, "", request.Status)
+	if !ok {
+		writeError(w, http.StatusNotFound, "promotion_not_found", "促销不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, promotion)
+}
+
+func (s *Server) handleListAdminReviews(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListAllReviews(r.Context())})
+}
+
+func (s *Server) handleUpdateAdminReview(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	reviewID := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/reviews/")
+	var request struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	if request.Status != "visible" && request.Status != "hidden" && request.Status != "deleted" {
+		writeError(w, http.StatusBadRequest, "bad_status", "评价状态不合法")
+		return
+	}
+	review, ok := s.store.UpdateReviewStatus(r.Context(), reviewID, request.Status)
+	if !ok {
+		writeError(w, http.StatusNotFound, "review_not_found", "评价不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, review)
+}
+
 func (s *Server) handleListAdminProducts(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
@@ -504,6 +726,14 @@ func (s *Server) handleGetCart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.store.GetCart(r.Context(), account.AccountID))
+}
+
+func (s *Server) handleCartDiscountPreview(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, s.store.PreviewCartDiscount(r.Context(), account.AccountID))
 }
 
 func (s *Server) handleAddCartItem(w http.ResponseWriter, r *http.Request) {
@@ -590,6 +820,86 @@ func (s *Server) handleCheckout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": orders})
 }
 
+func (s *Server) handleUserOrderAction(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if r.Method == http.MethodPost {
+		if orderID, orderItemID, ok := splitOrderItemReviewPath(r.URL.Path); ok {
+			var request domain.ProductReviewInput
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+				return
+			}
+			review, ok := s.store.CreateProductReview(r.Context(), account.AccountID, orderID, orderItemID, request)
+			if !ok {
+				writeError(w, http.StatusConflict, "review_failed", "评价失败，只有已完成订单项可评价且不可重复评价")
+				return
+			}
+			writeJSON(w, http.StatusOK, review)
+			return
+		}
+	}
+	orderID, action, hasAction := splitOrderAction(r.URL.Path)
+	if orderID == "" {
+		writeError(w, http.StatusNotFound, "not_found", "接口不存在")
+		return
+	}
+	if r.Method == http.MethodGet && !hasAction {
+		order, ok := s.store.GetOrder(r.Context(), account.AccountID, orderID)
+		if !ok {
+			writeError(w, http.StatusNotFound, "order_not_found", "订单不存在")
+			return
+		}
+		writeJSON(w, http.StatusOK, order)
+		return
+	}
+	if r.Method != http.MethodPost || !hasAction {
+		writeError(w, http.StatusNotFound, "not_found", "接口不存在")
+		return
+	}
+	switch action {
+	case "pay":
+		var request struct {
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil && err.Error() != "EOF" {
+			writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+			return
+		}
+		order, payment, ok := s.store.PayOrder(r.Context(), account.AccountID, orderID, request.Method)
+		if !ok {
+			writeError(w, http.StatusConflict, "pay_failed", "订单不可支付，可能已支付、取消或超时关闭")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"order": order, "payment": payment})
+	case "cancel":
+		var request struct {
+			Reason string `json:"reason"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil && err.Error() != "EOF" {
+			writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+			return
+		}
+		order, ok := s.store.CancelOrder(r.Context(), account.AccountID, orderID, request.Reason)
+		if !ok {
+			writeError(w, http.StatusConflict, "cancel_failed", "订单不可取消，只有待支付订单可以取消")
+			return
+		}
+		writeJSON(w, http.StatusOK, order)
+	case "confirm-receipt":
+		order, ok := s.store.ConfirmReceipt(r.Context(), account.AccountID, orderID)
+		if !ok {
+			writeError(w, http.StatusConflict, "confirm_failed", "订单不可确认收货，只有已发货订单可以确认")
+			return
+		}
+		writeJSON(w, http.StatusOK, order)
+	default:
+		writeError(w, http.StatusNotFound, "not_found", "接口不存在")
+	}
+}
+
 func (s *Server) handleListAgentSessions(w http.ResponseWriter, r *http.Request) {
 	account, ok := s.requireUser(w, r)
 	if !ok {
@@ -615,6 +925,28 @@ func (s *Server) handleAgentSessionAction(w http.ResponseWriter, r *http.Request
 			return
 		}
 		writeJSON(w, http.StatusOK, detail)
+		return
+	}
+	if r.Method == http.MethodPatch {
+		sessionID := strings.TrimPrefix(r.URL.Path, "/api/v1/agent/sessions/")
+		if sessionID == "" || strings.Contains(sessionID, "/") {
+			writeError(w, http.StatusNotFound, "not_found", "接口不存在")
+			return
+		}
+		var request struct {
+			Title   string `json:"title"`
+			Summary string `json:"summary"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+			return
+		}
+		session, ok := s.store.UpdateSessionSummary(r.Context(), account.AccountID, sessionID, request.Title, request.Summary)
+		if !ok {
+			writeError(w, http.StatusNotFound, "session_not_found", "会话不存在")
+			return
+		}
+		writeJSON(w, http.StatusOK, session)
 		return
 	}
 
@@ -806,11 +1138,61 @@ func datasetAssetRoot() string {
 
 func allowedOrderStatus(status string) bool {
 	switch status {
-	case "pending_ship", "shipped", "completed", "canceled":
+	case "pending_ship", "shipped", "completed", "canceled", "refund_requested", "refunded":
 		return true
 	default:
 		return false
 	}
+}
+
+func allowedEnabledStatus(status string) bool {
+	return status == "active" || status == "inactive"
+}
+
+func splitOrderAction(path string) (string, string, bool) {
+	rest := strings.TrimPrefix(path, "/api/v1/orders/")
+	if rest == "" {
+		return "", "", false
+	}
+	parts := strings.Split(rest, ":")
+	if len(parts) == 1 {
+		return parts[0], "", false
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+		return parts[0], parts[1], true
+	}
+	return "", "", false
+}
+
+func splitOrderItemReviewPath(path string) (string, string, bool) {
+	rest := strings.TrimPrefix(path, "/api/v1/orders/")
+	parts := strings.Split(rest, "/")
+	if len(parts) != 3 || parts[0] == "" || parts[1] != "items" {
+		return "", "", false
+	}
+	itemParts := strings.Split(parts[2], ":")
+	if len(itemParts) != 2 || itemParts[0] == "" || itemParts[1] != "review" {
+		return "", "", false
+	}
+	return parts[0], itemParts[0], true
+}
+
+func splitCouponAction(path string) (string, string, bool) {
+	rest := strings.TrimPrefix(path, "/api/v1/coupons/")
+	parts := strings.Split(rest, ":")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+func splitReviewAction(path string, prefix string) (string, string, bool) {
+	rest := strings.TrimPrefix(path, prefix)
+	parts := strings.Split(rest, ":")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
 }
 
 func splitSessionAction(path string) (string, string, bool) {

@@ -70,8 +70,20 @@ func (s *MySQLStore) ensureAccessSchema(ctx context.Context) error {
 	}{
 		{"cart_items", "account_id", "ALTER TABLE cart_items ADD COLUMN account_id VARCHAR(64) NOT NULL DEFAULT '' AFTER cart_item_id"},
 		{"chat_sessions", "account_id", "ALTER TABLE chat_sessions ADD COLUMN account_id VARCHAR(64) NOT NULL DEFAULT '' AFTER session_id"},
+		{"chat_sessions", "summary", "ALTER TABLE chat_sessions ADD COLUMN summary TEXT AFTER title"},
+		{"chat_sessions", "message_count", "ALTER TABLE chat_sessions ADD COLUMN message_count INT NOT NULL DEFAULT 0 AFTER summary"},
+		{"chat_sessions", "last_message_at", "ALTER TABLE chat_sessions ADD COLUMN last_message_at DATETIME NULL AFTER message_count"},
+		{"chat_sessions", "updated_at", "ALTER TABLE chat_sessions ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP AFTER created_at"},
 		{"user_messages", "account_id", "ALTER TABLE user_messages ADD COLUMN account_id VARCHAR(64) NOT NULL DEFAULT '' AFTER session_id"},
 		{"agent_runs", "account_id", "ALTER TABLE agent_runs ADD COLUMN account_id VARCHAR(64) NOT NULL DEFAULT '' AFTER message_id"},
+		{"orders", "order_no", "ALTER TABLE orders ADD COLUMN order_no VARCHAR(64) NOT NULL DEFAULT '' AFTER order_id"},
+		{"orders", "discount_amount", "ALTER TABLE orders ADD COLUMN discount_amount DECIMAL(10, 2) NOT NULL DEFAULT 0.00 AFTER total_amount"},
+		{"orders", "pay_amount", "ALTER TABLE orders ADD COLUMN pay_amount DECIMAL(10, 2) NOT NULL DEFAULT 0.00 AFTER discount_amount"},
+		{"orders", "payment_deadline_at", "ALTER TABLE orders ADD COLUMN payment_deadline_at DATETIME NULL AFTER pay_amount"},
+		{"orders", "paid_at", "ALTER TABLE orders ADD COLUMN paid_at DATETIME NULL AFTER payment_deadline_at"},
+		{"orders", "closed_at", "ALTER TABLE orders ADD COLUMN closed_at DATETIME NULL AFTER paid_at"},
+		{"orders", "completed_at", "ALTER TABLE orders ADD COLUMN completed_at DATETIME NULL AFTER closed_at"},
+		{"orders", "cancel_reason", "ALTER TABLE orders ADD COLUMN cancel_reason VARCHAR(256) NOT NULL DEFAULT '' AFTER completed_at"},
 	}
 	for _, column := range columns {
 		exists, err := s.columnExists(ctx, column.table, column.name)
@@ -90,6 +102,10 @@ func (s *MySQLStore) ensureAccessSchema(ctx context.Context) error {
 		"UPDATE chat_sessions SET account_id = 'acct_user_001' WHERE account_id = ''",
 		"UPDATE user_messages SET account_id = 'acct_user_001' WHERE account_id = ''",
 		"UPDATE agent_runs SET account_id = 'acct_user_001' WHERE account_id = ''",
+		"UPDATE chat_sessions cs SET message_count = (SELECT COUNT(*) FROM user_messages um WHERE um.session_id = cs.session_id), last_message_at = COALESCE((SELECT MAX(um.created_at) FROM user_messages um WHERE um.session_id = cs.session_id), cs.created_at) WHERE message_count = 0",
+		"UPDATE orders SET order_no = order_id WHERE order_no = ''",
+		"UPDATE orders SET pay_amount = total_amount WHERE pay_amount = 0 AND discount_amount = 0",
+		"UPDATE orders SET status = 'pending_ship', paid_at = COALESCE(paid_at, created_at) WHERE status = 'pending_ship'",
 		"UPDATE products SET recommend_reason = '抓拍和对焦能力适合日常拍照，价格为 2999 元。', risk_notes_json = JSON_ARRAY(), not_suitable_for_json = JSON_ARRAY() WHERE product_id = 'p_001'",
 		"UPDATE products SET recommend_reason = '影像和续航配置更高，价格为 3499 元。', risk_notes_json = JSON_ARRAY(), not_suitable_for_json = JSON_ARRAY() WHERE product_id = 'p_002'",
 	}
@@ -107,6 +123,10 @@ func (s *MySQLStore) ensureAccessSchema(ctx context.Context) error {
 		}
 	}
 
+	if err := s.ensureCommerceV3Tables(ctx); err != nil {
+		return err
+	}
+
 	indexes := []struct {
 		table string
 		name  string
@@ -117,6 +137,8 @@ func (s *MySQLStore) ensureAccessSchema(ctx context.Context) error {
 		{"chat_sessions", "idx_chat_sessions_account_id", "CREATE INDEX idx_chat_sessions_account_id ON chat_sessions (account_id)"},
 		{"user_messages", "idx_user_messages_account_id", "CREATE INDEX idx_user_messages_account_id ON user_messages (account_id)"},
 		{"agent_runs", "idx_agent_runs_account_id", "CREATE INDEX idx_agent_runs_account_id ON agent_runs (account_id)"},
+		{"orders", "uk_orders_order_no", "CREATE UNIQUE INDEX uk_orders_order_no ON orders (order_no)"},
+		{"orders", "idx_orders_payment_deadline_at", "CREATE INDEX idx_orders_payment_deadline_at ON orders (payment_deadline_at)"},
 	}
 	for _, index := range indexes {
 		exists, err := s.indexExists(ctx, index.table, index.name)
@@ -127,6 +149,102 @@ func (s *MySQLStore) ensureAccessSchema(ctx context.Context) error {
 			if _, err := s.db.ExecContext(ctx, index.ddl); err != nil {
 				return fmt.Errorf("create index %s.%s: %w", index.table, index.name, err)
 			}
+		}
+	}
+	return nil
+}
+
+func (s *MySQLStore) ensureCommerceV3Tables(ctx context.Context) error {
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS promotion_rules (
+			promotion_id VARCHAR(64) PRIMARY KEY,
+			name VARCHAR(128) NOT NULL,
+			scope VARCHAR(32) NOT NULL,
+			merchant_id VARCHAR(64) NOT NULL DEFAULT '',
+			product_id VARCHAR(64) NOT NULL DEFAULT '',
+			category_id VARCHAR(64) NOT NULL DEFAULT '',
+			type VARCHAR(32) NOT NULL,
+			threshold_amount DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+			discount_amount DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+			discount_rate DECIMAL(5, 4) NOT NULL DEFAULT 0.0000,
+			stackable BOOLEAN NOT NULL DEFAULT TRUE,
+			start_at DATETIME NOT NULL,
+			end_at DATETIME NOT NULL,
+			status VARCHAR(32) NOT NULL DEFAULT 'active',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+			INDEX idx_promotion_rules_scope (scope),
+			INDEX idx_promotion_rules_merchant_id (merchant_id),
+			INDEX idx_promotion_rules_status (status),
+			INDEX idx_promotion_rules_time (start_at, end_at)
+		)`,
+		`CREATE TABLE IF NOT EXISTS coupons (
+			coupon_id VARCHAR(64) PRIMARY KEY,
+			name VARCHAR(128) NOT NULL,
+			scope VARCHAR(32) NOT NULL,
+			merchant_id VARCHAR(64) NOT NULL DEFAULT '',
+			type VARCHAR(32) NOT NULL,
+			threshold_amount DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+			discount_amount DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+			total_count INT NOT NULL DEFAULT 0,
+			claimed_count INT NOT NULL DEFAULT 0,
+			per_user_limit INT NOT NULL DEFAULT 1,
+			start_at DATETIME NOT NULL,
+			end_at DATETIME NOT NULL,
+			status VARCHAR(32) NOT NULL DEFAULT 'active',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+			INDEX idx_coupons_scope (scope),
+			INDEX idx_coupons_merchant_id (merchant_id),
+			INDEX idx_coupons_status (status),
+			INDEX idx_coupons_time (start_at, end_at)
+		)`,
+		`CREATE TABLE IF NOT EXISTS user_coupons (
+			user_coupon_id VARCHAR(64) PRIMARY KEY,
+			coupon_id VARCHAR(64) NOT NULL,
+			account_id VARCHAR(64) NOT NULL,
+			status VARCHAR(32) NOT NULL DEFAULT 'unused',
+			order_id VARCHAR(64) NOT NULL DEFAULT '',
+			claimed_at DATETIME NOT NULL,
+			used_at DATETIME NULL,
+			INDEX idx_user_coupons_account_id (account_id),
+			INDEX idx_user_coupons_coupon_id (coupon_id),
+			INDEX idx_user_coupons_status (status)
+		)`,
+		`CREATE TABLE IF NOT EXISTS product_reviews (
+			review_id VARCHAR(64) PRIMARY KEY,
+			order_id VARCHAR(64) NOT NULL,
+			order_item_id VARCHAR(64) NOT NULL,
+			product_id VARCHAR(64) NOT NULL,
+			sku_id VARCHAR(64) NOT NULL DEFAULT '',
+			account_id VARCHAR(64) NOT NULL,
+			rating INT NOT NULL,
+			content TEXT NOT NULL,
+			tags_json JSON NOT NULL,
+			status VARCHAR(32) NOT NULL DEFAULT 'visible',
+			merchant_reply TEXT,
+			merchant_replied_at DATETIME NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+			UNIQUE KEY uk_product_reviews_order_item (order_item_id),
+			INDEX idx_product_reviews_product_id (product_id),
+			INDEX idx_product_reviews_account_id (account_id),
+			INDEX idx_product_reviews_status (status)
+		)`,
+		`INSERT IGNORE INTO promotion_rules (
+			promotion_id, name, scope, merchant_id, type, threshold_amount, discount_amount, discount_rate, stackable, start_at, end_at, status
+		) VALUES
+		('promo_platform_001', '平台满 300 减 30', 'platform', '', 'full_reduction', 300.00, 30.00, 0.0000, TRUE, '2026-01-01 00:00:00', '2026-12-31 23:59:59', 'active'),
+		('promo_m_001_001', '小猪数码满 1000 减 80', 'merchant', 'm_001', 'full_reduction', 1000.00, 80.00, 0.0000, TRUE, '2026-01-01 00:00:00', '2026-12-31 23:59:59', 'active')`,
+		`INSERT IGNORE INTO coupons (
+			coupon_id, name, scope, merchant_id, type, threshold_amount, discount_amount, total_count, claimed_count, per_user_limit, start_at, end_at, status
+		) VALUES
+		('coupon_platform_001', '平台新人满 200 减 20', 'platform', '', 'fixed_amount', 200.00, 20.00, 10000, 0, 1, '2026-01-01 00:00:00', '2026-12-31 23:59:59', 'active'),
+		('coupon_m_001_001', '小猪数码满 500 减 50', 'merchant', 'm_001', 'fixed_amount', 500.00, 50.00, 10000, 0, 1, '2026-01-01 00:00:00', '2026-12-31 23:59:59', 'active')`,
+	}
+	for _, stmt := range statements {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("ensure commerce v3 table: %w", err)
 		}
 	}
 	return nil
@@ -241,15 +359,19 @@ func (s *MySQLStore) CreateAuthToken(ctx context.Context, accountID string) (str
 func (s *MySQLStore) CreateSession(ctx context.Context, accountID string, title string) (domain.ChatSession, error) {
 	now := time.Now()
 	session := domain.ChatSession{
-		SessionID: nextID("sess"),
-		AccountID: accountID,
-		Title:     title,
-		CreatedAt: now,
+		SessionID:     nextID("sess"),
+		AccountID:     accountID,
+		Title:         title,
+		Summary:       "",
+		MessageCount:  0,
+		LastMessageAt: now,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO chat_sessions (session_id, account_id, title, created_at)
-		VALUES (?, ?, ?, ?)
-	`, session.SessionID, session.AccountID, session.Title, session.CreatedAt)
+		INSERT INTO chat_sessions (session_id, account_id, title, summary, message_count, last_message_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, session.SessionID, session.AccountID, session.Title, session.Summary, session.MessageCount, session.LastMessageAt, session.CreatedAt, session.UpdatedAt)
 	if err != nil {
 		return domain.ChatSession{}, fmt.Errorf("insert chat session: %w", err)
 	}
@@ -258,23 +380,31 @@ func (s *MySQLStore) CreateSession(ctx context.Context, accountID string, title 
 
 func (s *MySQLStore) GetSession(ctx context.Context, accountID string, sessionID string) (domain.ChatSession, bool) {
 	var session domain.ChatSession
+	var summary sql.NullString
+	var lastMessageAt sql.NullTime
 	err := s.db.QueryRowContext(ctx, `
-		SELECT session_id, account_id, title, created_at
+		SELECT session_id, account_id, title, summary, message_count, last_message_at, created_at, updated_at
 		FROM chat_sessions
 		WHERE session_id = ? AND account_id = ?
-	`, sessionID, accountID).Scan(&session.SessionID, &session.AccountID, &session.Title, &session.CreatedAt)
+	`, sessionID, accountID).Scan(&session.SessionID, &session.AccountID, &session.Title, &summary, &session.MessageCount, &lastMessageAt, &session.CreatedAt, &session.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.ChatSession{}, false
+	}
+	if summary.Valid {
+		session.Summary = summary.String
+	}
+	if lastMessageAt.Valid {
+		session.LastMessageAt = lastMessageAt.Time
 	}
 	return session, err == nil
 }
 
 func (s *MySQLStore) ListUserSessions(ctx context.Context, accountID string) []domain.ChatSession {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT session_id, account_id, title, created_at
+		SELECT session_id, account_id, title, summary, message_count, last_message_at, created_at, updated_at
 		FROM chat_sessions
 		WHERE account_id = ?
-		ORDER BY created_at DESC
+		ORDER BY COALESCE(last_message_at, created_at) DESC, created_at DESC
 	`, accountID)
 	if err != nil {
 		return nil
@@ -284,12 +414,43 @@ func (s *MySQLStore) ListUserSessions(ctx context.Context, accountID string) []d
 	items := make([]domain.ChatSession, 0)
 	for rows.Next() {
 		var item domain.ChatSession
-		if err := rows.Scan(&item.SessionID, &item.AccountID, &item.Title, &item.CreatedAt); err != nil {
+		var summary sql.NullString
+		var lastMessageAt sql.NullTime
+		if err := rows.Scan(&item.SessionID, &item.AccountID, &item.Title, &summary, &item.MessageCount, &lastMessageAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil
+		}
+		if summary.Valid {
+			item.Summary = summary.String
+		}
+		if lastMessageAt.Valid {
+			item.LastMessageAt = lastMessageAt.Time
 		}
 		items = append(items, item)
 	}
 	return items
+}
+
+func (s *MySQLStore) UpdateSessionSummary(ctx context.Context, accountID string, sessionID string, title string, summary string) (domain.ChatSession, bool) {
+	sets := []string{"updated_at = ?"}
+	args := []any{time.Now()}
+	if strings.TrimSpace(title) != "" {
+		sets = append(sets, "title = ?")
+		args = append(args, truncateRunes(strings.TrimSpace(title), 128))
+	}
+	if strings.TrimSpace(summary) != "" {
+		sets = append(sets, "summary = ?")
+		args = append(args, truncateRunes(strings.TrimSpace(summary), 500))
+	}
+	args = append(args, sessionID, accountID)
+	result, err := s.db.ExecContext(ctx, `UPDATE chat_sessions SET `+strings.Join(sets, ", ")+` WHERE session_id = ? AND account_id = ?`, args...)
+	if err != nil {
+		return domain.ChatSession{}, false
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return domain.ChatSession{}, false
+	}
+	return s.GetSession(ctx, accountID, sessionID)
 }
 
 func (s *MySQLStore) GetSessionDetail(ctx context.Context, accountID string, sessionID string) (domain.ChatSessionDetail, bool) {
@@ -346,6 +507,18 @@ func (s *MySQLStore) CreateUserMessage(ctx context.Context, input domain.UserMes
 	if err != nil {
 		return domain.UserMessage{}, fmt.Errorf("insert user message: %w", err)
 	}
+	title := deriveSessionTitle(input.Content)
+	summary := deriveSessionSummary(input.Content)
+	_, _ = s.db.ExecContext(ctx, `
+		UPDATE chat_sessions
+		SET
+			title = CASE WHEN title = '' OR title = 'AI 导购' THEN ? ELSE title END,
+			summary = CASE WHEN summary IS NULL OR summary = '' THEN ? ELSE summary END,
+			message_count = message_count + 1,
+			last_message_at = ?,
+			updated_at = ?
+		WHERE session_id = ? AND account_id = ?
+	`, title, summary, input.CreatedAt, input.CreatedAt, input.SessionID, input.AccountID)
 	return input, nil
 }
 
@@ -845,10 +1018,21 @@ func (s *MySQLStore) CreateOrderFromCart(ctx context.Context, accountID string) 
 		}
 		amount := fmt.Sprintf("%.2f", total)
 		createdAt := time.Now()
+		orderNo := nextOrderNo(createdAt)
+		deadline := createdAt.Add(30 * time.Minute)
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO orders (order_id, account_id, merchant_id, status, total_amount, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
-		`, orderID, accountID, merchantID, "pending_ship", amount, createdAt, createdAt); err != nil {
+			INSERT INTO orders (
+				order_id, order_no, account_id, merchant_id, status, total_amount, discount_amount, pay_amount,
+				payment_deadline_at, created_at, updated_at
+			)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, orderID, orderNo, accountID, merchantID, "pending_payment", amount, "0.00", amount, deadline, createdAt, createdAt); err != nil {
+			return nil, false
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO payments (payment_id, order_id, account_id, amount, status, method, expires_at, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, nextID("pay"), orderID, accountID, amount, "pending", "mock", deadline, createdAt, createdAt); err != nil {
 			return nil, false
 		}
 		orderItems := make([]domain.OrderItem, 0, len(items))
@@ -873,14 +1057,19 @@ func (s *MySQLStore) CreateOrderFromCart(ctx context.Context, accountID string) 
 			orderItems = append(orderItems, orderItem)
 		}
 		orders = append(orders, domain.Order{
-			OrderID:      orderID,
-			AccountID:    accountID,
-			MerchantID:   merchantID,
-			MerchantName: merchantName,
-			Status:       "pending_ship",
-			TotalAmount:  amount,
-			Items:        orderItems,
-			CreatedAt:    createdAt,
+			OrderID:           orderID,
+			OrderNo:           orderNo,
+			AccountID:         accountID,
+			MerchantID:        merchantID,
+			MerchantName:      merchantName,
+			Status:            "pending_payment",
+			TotalAmount:       amount,
+			DiscountAmount:    "0.00",
+			PayAmount:         amount,
+			PaymentDeadlineAt: deadline,
+			Items:             orderItems,
+			CreatedAt:         createdAt,
+			UpdatedAt:         createdAt,
 		})
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM cart_items WHERE account_id = ? AND selected = TRUE`, accountID); err != nil {
@@ -893,24 +1082,174 @@ func (s *MySQLStore) CreateOrderFromCart(ctx context.Context, accountID string) 
 }
 
 func (s *MySQLStore) ListUserOrders(ctx context.Context, accountID string) []domain.Order {
+	s.ExpirePendingOrders(ctx)
 	return s.listOrders(ctx, "WHERE o.account_id = ?", accountID)
 }
 
 func (s *MySQLStore) ListMerchantOrders(ctx context.Context, merchantID string) []domain.Order {
+	s.ExpirePendingOrders(ctx)
 	return s.listOrders(ctx, "WHERE o.merchant_id = ?", merchantID)
 }
 
 func (s *MySQLStore) ListAllOrders(ctx context.Context) []domain.Order {
-	return s.listOrders(ctx, "", nil)
+	s.ExpirePendingOrders(ctx)
+	return s.listOrders(ctx, "")
+}
+
+func (s *MySQLStore) GetOrder(ctx context.Context, accountID string, orderID string) (domain.Order, bool) {
+	s.ExpirePendingOrders(ctx)
+	orders := s.listOrders(ctx, "WHERE o.order_id = ? AND o.account_id = ?", orderID, accountID)
+	if len(orders) == 0 {
+		return domain.Order{}, false
+	}
+	return orders[0], true
+}
+
+func (s *MySQLStore) PayOrder(ctx context.Context, accountID string, orderID string, method string) (domain.Order, domain.Payment, bool) {
+	s.ExpirePendingOrders(ctx)
+	method = strings.TrimSpace(method)
+	if method == "" {
+		method = "mock_balance"
+	}
+	now := time.Now()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Order{}, domain.Payment{}, false
+	}
+	defer tx.Rollback()
+
+	var amount string
+	var deadline sql.NullTime
+	err = tx.QueryRowContext(ctx, `
+		SELECT pay_amount, payment_deadline_at
+		FROM orders
+		WHERE order_id = ? AND account_id = ? AND status = 'pending_payment'
+		FOR UPDATE
+	`, orderID, accountID).Scan(&amount, &deadline)
+	if err != nil {
+		return domain.Order{}, domain.Payment{}, false
+	}
+	if deadline.Valid && now.After(deadline.Time) {
+		_, _ = tx.ExecContext(ctx, `
+			UPDATE orders SET status = 'closed_timeout', closed_at = ?, cancel_reason = '支付超时自动关闭', updated_at = ?
+			WHERE order_id = ?
+		`, now, now, orderID)
+		_, _ = tx.ExecContext(ctx, `
+			UPDATE payments SET status = 'expired', updated_at = ?
+			WHERE order_id = ? AND status = 'pending'
+		`, now, orderID)
+		_ = tx.Commit()
+		return domain.Order{}, domain.Payment{}, false
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE orders
+		SET status = 'pending_ship', paid_at = ?, updated_at = ?
+		WHERE order_id = ? AND account_id = ? AND status = 'pending_payment'
+	`, now, now, orderID, accountID); err != nil {
+		return domain.Order{}, domain.Payment{}, false
+	}
+	transactionNo := nextID("txn")
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE payments
+		SET status = 'success', method = ?, transaction_no = ?, paid_at = ?, updated_at = ?
+		WHERE order_id = ? AND account_id = ? AND status = 'pending'
+	`, method, transactionNo, now, now, orderID, accountID); err != nil {
+		return domain.Order{}, domain.Payment{}, false
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Order{}, domain.Payment{}, false
+	}
+	order, ok := s.GetOrder(ctx, accountID, orderID)
+	if !ok {
+		return domain.Order{}, domain.Payment{}, false
+	}
+	payment, _ := s.getLatestPayment(ctx, accountID, orderID)
+	return order, payment, true
+}
+
+func (s *MySQLStore) CancelOrder(ctx context.Context, accountID string, orderID string, reason string) (domain.Order, bool) {
+	s.ExpirePendingOrders(ctx)
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "用户取消"
+	}
+	now := time.Now()
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE orders
+		SET status = 'canceled', closed_at = ?, cancel_reason = ?, updated_at = ?
+		WHERE order_id = ? AND account_id = ? AND status = 'pending_payment'
+	`, now, truncateRunes(reason, 256), now, orderID, accountID)
+	if err != nil {
+		return domain.Order{}, false
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return domain.Order{}, false
+	}
+	_, _ = s.db.ExecContext(ctx, `
+		UPDATE payments SET status = 'failed', updated_at = ?
+		WHERE order_id = ? AND account_id = ? AND status = 'pending'
+	`, now, orderID, accountID)
+	return s.GetOrder(ctx, accountID, orderID)
+}
+
+func (s *MySQLStore) ConfirmReceipt(ctx context.Context, accountID string, orderID string) (domain.Order, bool) {
+	s.ExpirePendingOrders(ctx)
+	now := time.Now()
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE orders
+		SET status = 'completed', completed_at = ?, updated_at = ?
+		WHERE order_id = ? AND account_id = ? AND status = 'shipped'
+	`, now, now, orderID, accountID)
+	if err != nil {
+		return domain.Order{}, false
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return domain.Order{}, false
+	}
+	return s.GetOrder(ctx, accountID, orderID)
+}
+
+func (s *MySQLStore) ExpirePendingOrders(ctx context.Context) int {
+	now := time.Now()
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE orders
+		SET status = 'closed_timeout', closed_at = ?, cancel_reason = '支付超时自动关闭', updated_at = ?
+		WHERE status = 'pending_payment' AND payment_deadline_at IS NOT NULL AND payment_deadline_at < ?
+	`, now, now, now)
+	if err != nil {
+		return 0
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return 0
+	}
+	_, _ = s.db.ExecContext(ctx, `
+		UPDATE payments p
+		JOIN orders o ON o.order_id = p.order_id
+		SET p.status = 'expired', p.updated_at = ?
+		WHERE p.status = 'pending' AND o.status = 'closed_timeout'
+	`, now)
+	return int(affected)
 }
 
 func (s *MySQLStore) UpdateOrderStatus(ctx context.Context, merchantID string, orderID string, status string) (domain.Order, bool) {
-	args := []any{status, time.Now(), orderID}
-	query := `UPDATE orders SET status = ?, updated_at = ? WHERE order_id = ?`
+	s.ExpirePendingOrders(ctx)
+	now := time.Now()
+	sets := `status = ?, updated_at = ?`
+	args := []any{status, now}
+	if status == "completed" {
+		sets += `, completed_at = ?`
+		args = append(args, now)
+	}
+	query := `UPDATE orders SET ` + sets + ` WHERE order_id = ?`
+	args = append(args, orderID)
 	if merchantID != "" {
 		query += ` AND merchant_id = ?`
 		args = append(args, merchantID)
 	}
+	query += ` AND status IN ('pending_ship', 'shipped')`
 	result, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return domain.Order{}, false
@@ -924,6 +1263,423 @@ func (s *MySQLStore) UpdateOrderStatus(ctx context.Context, merchantID string, o
 		return domain.Order{}, false
 	}
 	return orders[0], true
+}
+
+func (s *MySQLStore) PreviewCartDiscount(ctx context.Context, accountID string) domain.DiscountPreview {
+	cart := s.loadCart(ctx, accountID)
+	total := 0.0
+	merchantTotals := make(map[string]float64)
+	for _, item := range cart.Items {
+		if !item.Selected {
+			continue
+		}
+		price, _ := parseAmount(item.Price)
+		amount := price * float64(item.Quantity)
+		total += amount
+		merchantTotals[item.MerchantID] += amount
+	}
+	lines := make([]domain.DiscountLine, 0)
+	discount := 0.0
+	now := time.Now()
+	for _, promotion := range s.ListPromotions(ctx, "") {
+		if promotion.Status != "active" || now.Before(promotion.StartAt) || now.After(promotion.EndAt) {
+			continue
+		}
+		base := total
+		if promotion.Scope == "merchant" {
+			base = merchantTotals[promotion.MerchantID]
+		}
+		lineAmount := discountAmountFor(base, promotion.Type, promotion.ThresholdAmount, promotion.DiscountAmount, promotion.DiscountRate)
+		if lineAmount <= 0 {
+			continue
+		}
+		discount += lineAmount
+		lines = append(lines, domain.DiscountLine{Type: "promotion", ID: promotion.PromotionID, Name: promotion.Name, Amount: fmt.Sprintf("%.2f", lineAmount)})
+	}
+	for _, userCoupon := range s.ListUserCoupons(ctx, accountID) {
+		if userCoupon.Status != "unused" || userCoupon.Coupon.Status != "active" || now.Before(userCoupon.Coupon.StartAt) || now.After(userCoupon.Coupon.EndAt) {
+			continue
+		}
+		base := total
+		if userCoupon.Coupon.Scope == "merchant" {
+			base = merchantTotals[userCoupon.Coupon.MerchantID]
+		}
+		lineAmount := discountAmountFor(base, userCoupon.Coupon.Type, userCoupon.Coupon.ThresholdAmount, userCoupon.Coupon.DiscountAmount, "0")
+		if lineAmount <= 0 {
+			continue
+		}
+		discount += lineAmount
+		lines = append(lines, domain.DiscountLine{Type: "coupon", ID: userCoupon.UserCouponID, Name: userCoupon.Coupon.Name, Amount: fmt.Sprintf("%.2f", lineAmount)})
+	}
+	if discount > total {
+		discount = total
+	}
+	return domain.DiscountPreview{
+		TotalAmount:    fmt.Sprintf("%.2f", total),
+		DiscountAmount: fmt.Sprintf("%.2f", discount),
+		PayAmount:      fmt.Sprintf("%.2f", total-discount),
+		Lines:          lines,
+	}
+}
+
+func (s *MySQLStore) ListPromotions(ctx context.Context, merchantID string) []domain.PromotionRule {
+	query := `
+		SELECT promotion_id, name, scope, merchant_id, product_id, category_id, type, threshold_amount,
+			discount_amount, discount_rate, stackable, start_at, end_at, status, created_at, updated_at
+		FROM promotion_rules
+	`
+	args := []any{}
+	if merchantID != "" {
+		query += ` WHERE merchant_id = ?`
+		args = append(args, merchantID)
+	}
+	query += ` ORDER BY created_at DESC, promotion_id DESC`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	items := make([]domain.PromotionRule, 0)
+	for rows.Next() {
+		var item domain.PromotionRule
+		if err := rows.Scan(
+			&item.PromotionID, &item.Name, &item.Scope, &item.MerchantID, &item.ProductID, &item.CategoryID, &item.Type,
+			&item.ThresholdAmount, &item.DiscountAmount, &item.DiscountRate, &item.Stackable, &item.StartAt, &item.EndAt,
+			&item.Status, &item.CreatedAt, &item.UpdatedAt,
+		); err != nil {
+			return nil
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func (s *MySQLStore) CreatePromotion(ctx context.Context, input domain.PromotionRuleInput) (domain.PromotionRule, error) {
+	now := time.Now()
+	startAt := parseAPITime(input.StartAt, now)
+	endAt := parseAPITime(input.EndAt, now.Add(30*24*time.Hour))
+	if input.Scope == "" {
+		input.Scope = "platform"
+	}
+	if input.Type == "" {
+		input.Type = "full_reduction"
+	}
+	if input.Status == "" {
+		input.Status = "active"
+	}
+	if input.ThresholdAmount == "" {
+		input.ThresholdAmount = "0.00"
+	}
+	if input.DiscountAmount == "" {
+		input.DiscountAmount = "0.00"
+	}
+	if input.DiscountRate == "" {
+		input.DiscountRate = "0.0000"
+	}
+	item := domain.PromotionRule{
+		PromotionID:     nextID("promo"),
+		Name:            strings.TrimSpace(input.Name),
+		Scope:           strings.TrimSpace(input.Scope),
+		MerchantID:      strings.TrimSpace(input.MerchantID),
+		ProductID:       strings.TrimSpace(input.ProductID),
+		CategoryID:      strings.TrimSpace(input.CategoryID),
+		Type:            strings.TrimSpace(input.Type),
+		ThresholdAmount: input.ThresholdAmount,
+		DiscountAmount:  input.DiscountAmount,
+		DiscountRate:    input.DiscountRate,
+		Stackable:       input.Stackable,
+		StartAt:         startAt,
+		EndAt:           endAt,
+		Status:          input.Status,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if item.Name == "" {
+		return domain.PromotionRule{}, errors.New("empty promotion name")
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO promotion_rules (
+			promotion_id, name, scope, merchant_id, product_id, category_id, type, threshold_amount,
+			discount_amount, discount_rate, stackable, start_at, end_at, status, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, item.PromotionID, item.Name, item.Scope, item.MerchantID, item.ProductID, item.CategoryID, item.Type,
+		item.ThresholdAmount, item.DiscountAmount, item.DiscountRate, item.Stackable, item.StartAt, item.EndAt,
+		item.Status, item.CreatedAt, item.UpdatedAt)
+	if err != nil {
+		return domain.PromotionRule{}, err
+	}
+	return item, nil
+}
+
+func (s *MySQLStore) UpdatePromotionStatus(ctx context.Context, promotionID string, merchantID string, status string) (domain.PromotionRule, bool) {
+	args := []any{status, time.Now(), promotionID}
+	query := `UPDATE promotion_rules SET status = ?, updated_at = ? WHERE promotion_id = ?`
+	if merchantID != "" {
+		query += ` AND merchant_id = ?`
+		args = append(args, merchantID)
+	}
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return domain.PromotionRule{}, false
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return domain.PromotionRule{}, false
+	}
+	items := s.ListPromotions(ctx, merchantID)
+	for _, item := range items {
+		if item.PromotionID == promotionID {
+			return item, true
+		}
+	}
+	return domain.PromotionRule{}, false
+}
+
+func (s *MySQLStore) ListCoupons(ctx context.Context, accountID string) []domain.Coupon {
+	now := time.Now()
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT coupon_id, name, scope, merchant_id, type, threshold_amount, discount_amount, total_count,
+			claimed_count, per_user_limit, start_at, end_at, status, created_at, updated_at
+		FROM coupons
+		WHERE status = 'active' AND start_at <= ? AND end_at >= ?
+		ORDER BY created_at DESC, coupon_id DESC
+	`, now, now)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	items := make([]domain.Coupon, 0)
+	for rows.Next() {
+		var item domain.Coupon
+		if err := rows.Scan(&item.CouponID, &item.Name, &item.Scope, &item.MerchantID, &item.Type, &item.ThresholdAmount,
+			&item.DiscountAmount, &item.TotalCount, &item.ClaimedCount, &item.PerUserLimit, &item.StartAt, &item.EndAt,
+			&item.Status, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func (s *MySQLStore) ListUserCoupons(ctx context.Context, accountID string) []domain.UserCoupon {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT uc.user_coupon_id, uc.coupon_id, uc.account_id, uc.status, uc.order_id, uc.claimed_at, uc.used_at,
+			c.coupon_id, c.name, c.scope, c.merchant_id, c.type, c.threshold_amount, c.discount_amount,
+			c.total_count, c.claimed_count, c.per_user_limit, c.start_at, c.end_at, c.status, c.created_at, c.updated_at
+		FROM user_coupons uc
+		JOIN coupons c ON c.coupon_id = uc.coupon_id
+		WHERE uc.account_id = ?
+		ORDER BY uc.claimed_at DESC, uc.user_coupon_id DESC
+	`, accountID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	items := make([]domain.UserCoupon, 0)
+	for rows.Next() {
+		var item domain.UserCoupon
+		var usedAt sql.NullTime
+		if err := rows.Scan(&item.UserCouponID, &item.CouponID, &item.AccountID, &item.Status, &item.OrderID, &item.ClaimedAt, &usedAt,
+			&item.Coupon.CouponID, &item.Coupon.Name, &item.Coupon.Scope, &item.Coupon.MerchantID, &item.Coupon.Type,
+			&item.Coupon.ThresholdAmount, &item.Coupon.DiscountAmount, &item.Coupon.TotalCount, &item.Coupon.ClaimedCount,
+			&item.Coupon.PerUserLimit, &item.Coupon.StartAt, &item.Coupon.EndAt, &item.Coupon.Status,
+			&item.Coupon.CreatedAt, &item.Coupon.UpdatedAt); err != nil {
+			return nil
+		}
+		if usedAt.Valid {
+			item.UsedAt = usedAt.Time
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func (s *MySQLStore) ClaimCoupon(ctx context.Context, accountID string, couponID string) (domain.UserCoupon, bool) {
+	now := time.Now()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.UserCoupon{}, false
+	}
+	defer tx.Rollback()
+	var coupon domain.Coupon
+	err = tx.QueryRowContext(ctx, `
+		SELECT coupon_id, name, scope, merchant_id, type, threshold_amount, discount_amount, total_count,
+			claimed_count, per_user_limit, start_at, end_at, status, created_at, updated_at
+		FROM coupons
+		WHERE coupon_id = ? AND status = 'active' AND start_at <= ? AND end_at >= ?
+		FOR UPDATE
+	`, couponID, now, now).Scan(&coupon.CouponID, &coupon.Name, &coupon.Scope, &coupon.MerchantID, &coupon.Type,
+		&coupon.ThresholdAmount, &coupon.DiscountAmount, &coupon.TotalCount, &coupon.ClaimedCount, &coupon.PerUserLimit,
+		&coupon.StartAt, &coupon.EndAt, &coupon.Status, &coupon.CreatedAt, &coupon.UpdatedAt)
+	if err != nil {
+		return domain.UserCoupon{}, false
+	}
+	if coupon.TotalCount > 0 && coupon.ClaimedCount >= coupon.TotalCount {
+		return domain.UserCoupon{}, false
+	}
+	var owned int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_coupons WHERE account_id = ? AND coupon_id = ?`, accountID, couponID).Scan(&owned); err != nil {
+		return domain.UserCoupon{}, false
+	}
+	if owned >= coupon.PerUserLimit {
+		return domain.UserCoupon{}, false
+	}
+	item := domain.UserCoupon{UserCouponID: nextID("uc"), CouponID: couponID, AccountID: accountID, Status: "unused", ClaimedAt: now, Coupon: coupon}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO user_coupons (user_coupon_id, coupon_id, account_id, status, claimed_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, item.UserCouponID, item.CouponID, item.AccountID, item.Status, item.ClaimedAt); err != nil {
+		return domain.UserCoupon{}, false
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE coupons SET claimed_count = claimed_count + 1, updated_at = ? WHERE coupon_id = ?`, now, couponID); err != nil {
+		return domain.UserCoupon{}, false
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.UserCoupon{}, false
+	}
+	coupon.ClaimedCount++
+	item.Coupon = coupon
+	return item, true
+}
+
+func (s *MySQLStore) ListProductReviews(ctx context.Context, productID string) []domain.ProductReview {
+	return s.listReviews(ctx, "WHERE r.product_id = ? AND r.status = 'visible'", productID)
+}
+
+func (s *MySQLStore) CreateProductReview(ctx context.Context, accountID string, orderID string, orderItemID string, input domain.ProductReviewInput) (domain.ProductReview, bool) {
+	if input.Rating < 1 || input.Rating > 5 || strings.TrimSpace(input.Content) == "" {
+		return domain.ProductReview{}, false
+	}
+	var productID string
+	var skuID string
+	var status string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT oi.product_id, oi.sku_id, o.status
+		FROM order_items oi
+		JOIN orders o ON o.order_id = oi.order_id
+		WHERE oi.order_item_id = ? AND oi.order_id = ? AND o.account_id = ?
+	`, orderItemID, orderID, accountID).Scan(&productID, &skuID, &status)
+	if err != nil || status != "completed" {
+		return domain.ProductReview{}, false
+	}
+	tagsJSON, err := json.Marshal(input.Tags)
+	if err != nil {
+		return domain.ProductReview{}, false
+	}
+	now := time.Now()
+	review := domain.ProductReview{
+		ReviewID:    nextID("rev"),
+		OrderID:     orderID,
+		OrderItemID: orderItemID,
+		ProductID:   productID,
+		SkuID:       skuID,
+		AccountID:   accountID,
+		Rating:      input.Rating,
+		Content:     strings.TrimSpace(input.Content),
+		Tags:        input.Tags,
+		Status:      "visible",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO product_reviews (
+			review_id, order_id, order_item_id, product_id, sku_id, account_id, rating, content, tags_json, status, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, review.ReviewID, review.OrderID, review.OrderItemID, review.ProductID, review.SkuID, review.AccountID,
+		review.Rating, review.Content, string(tagsJSON), review.Status, review.CreatedAt, review.UpdatedAt)
+	if err != nil {
+		return domain.ProductReview{}, false
+	}
+	return review, true
+}
+
+func (s *MySQLStore) ListMerchantReviews(ctx context.Context, merchantID string) []domain.ProductReview {
+	return s.listReviews(ctx, "JOIN products p ON p.product_id = r.product_id WHERE p.merchant_id = ?", merchantID)
+}
+
+func (s *MySQLStore) ReplyReview(ctx context.Context, merchantID string, reviewID string, reply string) (domain.ProductReview, bool) {
+	reply = strings.TrimSpace(reply)
+	if reply == "" {
+		return domain.ProductReview{}, false
+	}
+	now := time.Now()
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE product_reviews r
+		JOIN products p ON p.product_id = r.product_id
+		SET r.merchant_reply = ?, r.merchant_replied_at = ?, r.updated_at = ?
+		WHERE r.review_id = ? AND p.merchant_id = ?
+	`, truncateRunes(reply, 1000), now, now, reviewID, merchantID)
+	if err != nil {
+		return domain.ProductReview{}, false
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return domain.ProductReview{}, false
+	}
+	reviews := s.listReviews(ctx, "JOIN products p ON p.product_id = r.product_id WHERE r.review_id = ? AND p.merchant_id = ?", reviewID, merchantID)
+	if len(reviews) == 0 {
+		return domain.ProductReview{}, false
+	}
+	return reviews[0], true
+}
+
+func (s *MySQLStore) ListAllReviews(ctx context.Context) []domain.ProductReview {
+	return s.listReviews(ctx, "")
+}
+
+func (s *MySQLStore) UpdateReviewStatus(ctx context.Context, reviewID string, status string) (domain.ProductReview, bool) {
+	now := time.Now()
+	result, err := s.db.ExecContext(ctx, `UPDATE product_reviews SET status = ?, updated_at = ? WHERE review_id = ?`, status, now, reviewID)
+	if err != nil {
+		return domain.ProductReview{}, false
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return domain.ProductReview{}, false
+	}
+	reviews := s.listReviews(ctx, "WHERE r.review_id = ?", reviewID)
+	if len(reviews) == 0 {
+		return domain.ProductReview{}, false
+	}
+	return reviews[0], true
+}
+
+func (s *MySQLStore) listReviews(ctx context.Context, where string, args ...any) []domain.ProductReview {
+	query := `
+		SELECT r.review_id, r.order_id, r.order_item_id, r.product_id, r.sku_id, r.account_id,
+			COALESCE(a.username, ''), r.rating, r.content, r.tags_json, r.status, COALESCE(r.merchant_reply, ''),
+			r.merchant_replied_at, r.created_at, r.updated_at
+		FROM product_reviews r
+		LEFT JOIN accounts a ON a.account_id = r.account_id
+	`
+	if where != "" {
+		query += " " + where
+	}
+	query += " ORDER BY r.created_at DESC, r.review_id DESC"
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	items := make([]domain.ProductReview, 0)
+	for rows.Next() {
+		var item domain.ProductReview
+		var tagsJSON string
+		var repliedAt sql.NullTime
+		if err := rows.Scan(
+			&item.ReviewID, &item.OrderID, &item.OrderItemID, &item.ProductID, &item.SkuID, &item.AccountID,
+			&item.Username, &item.Rating, &item.Content, &tagsJSON, &item.Status, &item.MerchantReply,
+			&repliedAt, &item.CreatedAt, &item.UpdatedAt,
+		); err != nil {
+			return nil
+		}
+		_ = json.Unmarshal([]byte(tagsJSON), &item.Tags)
+		if repliedAt.Valid {
+			item.MerchantRepliedAt = repliedAt.Time
+		}
+		items = append(items, item)
+	}
+	return items
 }
 
 func (s *MySQLStore) SearchKnowledge(ctx context.Context, query string) []domain.Citation {
@@ -1158,18 +1914,17 @@ func (s *MySQLStore) loadCart(ctx context.Context, accountID string) domain.Cart
 	return buildCart(items)
 }
 
-func (s *MySQLStore) listOrders(ctx context.Context, where string, arg any) []domain.Order {
+func (s *MySQLStore) listOrders(ctx context.Context, where string, args ...any) []domain.Order {
 	query := `
-		SELECT o.order_id, o.account_id, o.merchant_id, m.name, o.status, o.total_amount, o.created_at
+		SELECT
+			o.order_id, o.order_no, o.account_id, o.merchant_id, m.name, o.status,
+			o.total_amount, o.discount_amount, o.pay_amount, o.payment_deadline_at,
+			o.paid_at, o.closed_at, o.completed_at, o.cancel_reason, o.created_at, o.updated_at
 		FROM orders o
 		JOIN merchants m ON m.merchant_id = o.merchant_id
 	`
-	args := make([]any, 0, 1)
 	if where != "" {
 		query += " " + where
-		if arg != nil {
-			args = append(args, arg)
-		}
 	}
 	query += " ORDER BY o.created_at DESC, o.order_id DESC"
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -1181,13 +1936,77 @@ func (s *MySQLStore) listOrders(ctx context.Context, where string, arg any) []do
 	orders := make([]domain.Order, 0)
 	for rows.Next() {
 		var order domain.Order
-		if err := rows.Scan(&order.OrderID, &order.AccountID, &order.MerchantID, &order.MerchantName, &order.Status, &order.TotalAmount, &order.CreatedAt); err != nil {
+		var deadline sql.NullTime
+		var paidAt sql.NullTime
+		var closedAt sql.NullTime
+		var completedAt sql.NullTime
+		if err := rows.Scan(
+			&order.OrderID,
+			&order.OrderNo,
+			&order.AccountID,
+			&order.MerchantID,
+			&order.MerchantName,
+			&order.Status,
+			&order.TotalAmount,
+			&order.DiscountAmount,
+			&order.PayAmount,
+			&deadline,
+			&paidAt,
+			&closedAt,
+			&completedAt,
+			&order.CancelReason,
+			&order.CreatedAt,
+			&order.UpdatedAt,
+		); err != nil {
 			return nil
+		}
+		if deadline.Valid {
+			order.PaymentDeadlineAt = deadline.Time
+		}
+		if paidAt.Valid {
+			order.PaidAt = paidAt.Time
+		}
+		if closedAt.Valid {
+			order.ClosedAt = closedAt.Time
+		}
+		if completedAt.Valid {
+			order.CompletedAt = completedAt.Time
 		}
 		order.Items = s.listOrderItems(ctx, order.OrderID)
 		orders = append(orders, order)
 	}
 	return orders
+}
+
+func (s *MySQLStore) getLatestPayment(ctx context.Context, accountID string, orderID string) (domain.Payment, bool) {
+	var payment domain.Payment
+	var paidAt sql.NullTime
+	err := s.db.QueryRowContext(ctx, `
+		SELECT payment_id, order_id, account_id, amount, status, method, transaction_no, expires_at, paid_at, created_at, updated_at
+		FROM payments
+		WHERE account_id = ? AND order_id = ?
+		ORDER BY created_at DESC, payment_id DESC
+		LIMIT 1
+	`, accountID, orderID).Scan(
+		&payment.PaymentID,
+		&payment.OrderID,
+		&payment.AccountID,
+		&payment.Amount,
+		&payment.Status,
+		&payment.Method,
+		&payment.TransactionNo,
+		&payment.ExpiresAt,
+		&paidAt,
+		&payment.CreatedAt,
+		&payment.UpdatedAt,
+	)
+	if err != nil {
+		return domain.Payment{}, false
+	}
+	if paidAt.Valid {
+		payment.PaidAt = paidAt.Time
+	}
+	return payment, true
 }
 
 func (s *MySQLStore) listOrderItems(ctx context.Context, orderID string) []domain.OrderItem {
@@ -1221,6 +2040,75 @@ func parseAmount(input string) (float64, error) {
 	var value float64
 	_, err := fmt.Sscanf(input, "%f", &value)
 	return value, err
+}
+
+func nextOrderNo(now time.Time) string {
+	return "NO" + now.Format("20060102150405") + strings.TrimPrefix(nextID(""), "_")
+}
+
+func deriveSessionTitle(content string) string {
+	content = strings.TrimSpace(strings.Join(strings.Fields(content), " "))
+	if content == "" {
+		return "AI 导购"
+	}
+	return truncateRunes(content, 20)
+}
+
+func deriveSessionSummary(content string) string {
+	content = strings.TrimSpace(strings.Join(strings.Fields(content), " "))
+	if content == "" {
+		return ""
+	}
+	return truncateRunes("用户咨询："+content, 120)
+}
+
+func truncateRunes(input string, limit int) string {
+	runes := []rune(strings.TrimSpace(input))
+	if len(runes) <= limit {
+		return string(runes)
+	}
+	return string(runes[:limit])
+}
+
+func parseAPITime(input string, fallback time.Time) time.Time {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return fallback
+	}
+	if value, err := time.Parse(time.RFC3339, input); err == nil {
+		return value
+	}
+	if value, err := time.ParseInLocation("2006-01-02 15:04:05", input, time.Local); err == nil {
+		return value
+	}
+	if value, err := time.ParseInLocation("2006-01-02", input, time.Local); err == nil {
+		return value
+	}
+	return fallback
+}
+
+func discountAmountFor(base float64, discountType string, threshold string, fixedAmount string, rate string) float64 {
+	thresholdValue, _ := parseAmount(threshold)
+	if thresholdValue > 0 && base < thresholdValue {
+		return 0
+	}
+	switch discountType {
+	case "percentage":
+		rateValue, _ := parseAmount(rate)
+		if rateValue <= 0 || rateValue >= 1 {
+			return 0
+		}
+		return base * rateValue
+	default:
+		amount, _ := parseAmount(fixedAmount)
+		if amount < 0 {
+			return 0
+		}
+		if amount > base {
+			return base
+		}
+		return amount
+	}
 }
 
 func scanProductCard(scanner productCardScanner) (domain.ProductCard, error) {
