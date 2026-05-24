@@ -5,6 +5,12 @@ dist/
 .env.local
 *.tsbuildinfo
 .logs/
+.gradle/
+build/
+android-native/.gradle/
+android-native/build/
+android-native/app/build/
+android-native/exports/
 quality/reports/
 .ai/pics
 .ai/tech/**/*.jpg
