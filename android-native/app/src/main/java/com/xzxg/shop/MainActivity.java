@@ -138,7 +138,7 @@ public class MainActivity extends Activity {
 
     private static class ProductListState {
         JSONArray items = new JSONArray();
-        String nextCursor = "0";
+        int nextPage = 1;
         boolean hasMore = true;
         boolean loaded;
         boolean reachedBottomOnce;
@@ -2329,10 +2329,10 @@ public class MainActivity extends Activity {
         loadingProducts = true;
         new Thread(() -> {
             try {
-                ApiClient.ProductPage page = api.productsPage(keyword, categoryId, PRODUCT_PAGE_SIZE, currentProductState.nextCursor);
+                ApiClient.ProductPage page = api.productsPage(keyword, categoryId, currentProductState.nextPage, PRODUCT_PAGE_SIZE);
                 runOnUiThread(() -> {
                     appendProducts(currentProductState.items, page.items);
-                    currentProductState.nextCursor = page.nextCursor;
+                    currentProductState.nextPage = page.nextPage;
                     currentProductState.hasMore = page.hasMore;
                     currentProductState.loaded = true;
                     currentProductState.reachedBottomOnce = false;

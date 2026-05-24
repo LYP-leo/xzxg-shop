@@ -83,10 +83,10 @@ public class ApiClient {
     }
 
     public JSONArray products(String keyword, String categoryId) throws Exception {
-        return productsPage(keyword, categoryId, 0, "").items;
+        return productsPage(keyword, categoryId, 1, 100).items;
     }
 
-    public ProductPage productsPage(String keyword, String categoryId, int limit, String cursor) throws Exception {
+    public ProductPage productsPage(String keyword, String categoryId, int page, int pageSize) throws Exception {
         StringBuilder path = new StringBuilder("/products");
         String separator = "?";
         if (keyword != null && !keyword.trim().isEmpty()) {
@@ -97,62 +97,19 @@ public class ApiClient {
             path.append(separator).append("category_id=").append(urlEncode(categoryId.trim()));
             separator = "&";
         }
-        if (limit > 0) {
-            path.append(separator).append("limit=").append(limit);
+        if (pageSize > 0) {
+            int safePage = Math.max(1, page);
+            path.append(separator).append("page=").append(safePage);
             separator = "&";
-            path.append(separator).append("page_size=").append(limit);
-            separator = "&";
-            int offset = intCursor(cursor);
-            int page = offset <= 0 ? 1 : (offset / limit) + 1;
-            path.append(separator).append("page=").append(page);
-            separator = "&";
-            if (cursor != null && !cursor.trim().isEmpty()) {
-                path.append(separator).append("cursor=").append(urlEncode(cursor.trim()));
-            }
+            path.append(separator).append("page_size=").append(pageSize);
         }
         JSONObject response = get(path.toString());
-        JSONArray rawItems = response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
-        boolean hasPaginationMeta = response.has("has_more") || response.has("next_cursor");
-        boolean responseLooksUnpaged = limit > 0 && !hasPaginationMeta && rawItems.length() > limit;
-        JSONArray items = limit > 0 ? pageItems(rawItems, limit, intCursor(cursor), responseLooksUnpaged) : rawItems;
-        boolean hasMore = response.optBoolean("has_more", false);
-        String nextCursor = response.optString("next_cursor", "");
-        if (limit > 0 && !hasPaginationMeta) {
-            int offset = intCursor(cursor);
-            hasMore = responseLooksUnpaged ? rawItems.length() > offset + limit : rawItems.length() >= limit;
-            nextCursor = hasMore ? String.valueOf(offset + limit) : "";
-        } else if (limit > 0 && rawItems.length() > limit) {
-            hasMore = true;
-            if (nextCursor.isEmpty()) {
-                nextCursor = String.valueOf(intCursor(cursor) + limit);
-            }
-        }
-        return new ProductPage(
-                items,
-                nextCursor,
-                hasMore
-        );
-    }
-
-    private JSONArray pageItems(JSONArray rawItems, int limit, int offset, boolean responseLooksUnpaged) {
-        JSONArray items = new JSONArray();
-        int start = responseLooksUnpaged ? Math.max(0, offset) : 0;
-        int end = Math.min(rawItems.length(), start + limit);
-        for (int i = start; i < end; i++) {
-            items.put(rawItems.opt(i));
-        }
-        return items;
-    }
-
-    private int intCursor(String cursor) {
-        if (cursor == null || cursor.trim().isEmpty()) {
-            return 0;
-        }
-        try {
-            return Math.max(0, Integer.parseInt(cursor.trim()));
-        } catch (NumberFormatException ignored) {
-            return 0;
-        }
+        JSONArray items = response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
+        int currentPage = response.optInt("page", Math.max(1, page));
+        int currentPageSize = response.optInt("page_size", pageSize);
+        int total = response.optInt("total", items.length());
+        boolean hasMore = currentPageSize > 0 && currentPage * currentPageSize < total;
+        return new ProductPage(items, currentPage + 1, hasMore, total);
     }
 
     public JSONArray productSkus(String productId) throws Exception {
@@ -488,13 +445,15 @@ public class ApiClient {
 
     public static class ProductPage {
         public final JSONArray items;
-        public final String nextCursor;
+        public final int nextPage;
         public final boolean hasMore;
+        public final int total;
 
-        ProductPage(JSONArray items, String nextCursor, boolean hasMore) {
+        ProductPage(JSONArray items, int nextPage, boolean hasMore, int total) {
             this.items = items;
-            this.nextCursor = nextCursor;
+            this.nextPage = nextPage;
             this.hasMore = hasMore;
+            this.total = total;
         }
     }
 }
