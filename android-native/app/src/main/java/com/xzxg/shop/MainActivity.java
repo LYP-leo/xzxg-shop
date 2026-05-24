@@ -141,7 +141,6 @@ public class MainActivity extends Activity {
         int nextPage = 1;
         boolean hasMore = true;
         boolean loaded;
-        boolean reachedBottomOnce;
         int scrollY;
     }
 
@@ -2062,11 +2061,6 @@ public class MainActivity extends Activity {
             if (bottomDistance > dp(8) || !currentProductState.hasMore || loadingProducts) {
                 return;
             }
-            if (!currentProductState.reachedBottomOnce) {
-                currentProductState.reachedBottomOnce = true;
-                renderProductItems(productsList, currentProductState);
-                return;
-            }
             if (scrollY >= oldScrollY) {
                 loadMoreProducts(productsList, lastProductKeyword, lastCategoryId);
             }
@@ -2327,6 +2321,9 @@ public class MainActivity extends Activity {
             productListCache.put(productCacheKey(keyword, categoryId), currentProductState);
         }
         loadingProducts = true;
+        if (currentProductState.loaded) {
+            renderProductItems(list, currentProductState);
+        }
         new Thread(() -> {
             try {
                 ApiClient.ProductPage page = api.productsPage(keyword, categoryId, currentProductState.nextPage, PRODUCT_PAGE_SIZE);
@@ -2335,7 +2332,6 @@ public class MainActivity extends Activity {
                     currentProductState.nextPage = page.nextPage;
                     currentProductState.hasMore = page.hasMore;
                     currentProductState.loaded = true;
-                    currentProductState.reachedBottomOnce = false;
                     loadingProducts = false;
                     renderProductItems(list, currentProductState);
                 });
@@ -2367,7 +2363,7 @@ public class MainActivity extends Activity {
             }
         }
         if (state.hasMore) {
-            TextView more = muted(loadingProducts ? "正在加载更多..." : (state.reachedBottomOnce ? "继续上拉加载更多" : "滑到底部后继续上拉加载更多"));
+            TextView more = muted(loadingProducts ? "正在加载更多..." : "向下滑动加载更多");
             more.setGravity(Gravity.CENTER);
             list.addView(more, new LinearLayout.LayoutParams(-1, dp(44)));
         } else {

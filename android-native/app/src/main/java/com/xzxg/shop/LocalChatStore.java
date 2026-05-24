@@ -60,14 +60,21 @@ public class LocalChatStore extends SQLiteOpenHelper {
         String existing = localSessionIdForServer(serverSessionId);
         String localId = existing.isEmpty() ? "remote_" + serverSessionId : existing;
         ContentValues values = new ContentValues();
-        values.put("local_session_id", localId);
         values.put("server_session_id", serverSessionId);
         values.put("title", title == null || title.isEmpty() ? "导购会话" : title);
         values.put("summary", summary == null ? "" : summary);
         values.put("sync_state", "synced");
-        values.put("updated_at", updatedAt > 0 ? updatedAt : System.currentTimeMillis());
-        values.put("created_at", updatedAt > 0 ? updatedAt : System.currentTimeMillis());
-        getWritableDatabase().insertWithOnConflict("sessions", null, values, SQLiteDatabase.CONFLICT_REPLACE);
+        long remoteTime = updatedAt > 0 ? updatedAt : System.currentTimeMillis();
+        if (existing.isEmpty()) {
+            values.put("local_session_id", localId);
+            values.put("updated_at", remoteTime);
+            values.put("created_at", remoteTime);
+            getWritableDatabase().insertWithOnConflict("sessions", null, values, SQLiteDatabase.CONFLICT_REPLACE);
+        } else {
+            long localTime = sessionUpdatedAt(localId);
+            values.put("updated_at", Math.max(localTime, remoteTime));
+            getWritableDatabase().update("sessions", values, "local_session_id = ?", new String[]{localId});
+        }
         return localId;
     }
 
@@ -190,6 +197,15 @@ public class LocalChatStore extends SQLiteOpenHelper {
         ContentValues values = new ContentValues();
         values.put("updated_at", System.currentTimeMillis());
         getWritableDatabase().update("sessions", values, "local_session_id = ?", new String[]{localSessionId});
+    }
+
+    private long sessionUpdatedAt(String localSessionId) {
+        Cursor cursor = getReadableDatabase().query("sessions", new String[]{"updated_at"}, "local_session_id = ?", new String[]{localSessionId}, null, null, null, "1");
+        try {
+            return cursor.moveToFirst() ? cursor.getLong(0) : 0;
+        } finally {
+            cursor.close();
+        }
     }
 
     private String titleFromMessage(String content) {
