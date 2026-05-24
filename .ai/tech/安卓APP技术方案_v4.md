@@ -455,4 +455,3 @@ private View createComposerOverlay()
 - 如果仍使用 `LinearLayout.VERTICAL`，这个问题会反复出现，因此必须改成 `FrameLayout overlay`。
 - 顶部栏高度必须用固定设计值控制，不能继续靠多层 padding 叠加。
 - 参考图中的电话、语音等按钮不是本轮目标；本轮只解决顶部栏覆盖和高度问题。
-

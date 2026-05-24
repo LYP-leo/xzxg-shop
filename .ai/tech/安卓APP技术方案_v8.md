@@ -622,4 +622,3 @@ gradle --no-daemon -Dorg.gradle.vfs.watch=false assembleDebug
 6. 保存和恢复商品页滚动位置。
 7. 商品详情长内容折叠/展开。
 8. 构建并模拟器回归。
-

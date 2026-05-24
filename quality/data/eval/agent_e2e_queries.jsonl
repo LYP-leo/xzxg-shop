@@ -1,0 +1,8 @@
+{"id":"agent_e2e_001","query":"你好"}
+{"id":"agent_e2e_002","query":"手机推荐"}
+{"id":"agent_e2e_003","query":"对比一下两款手机"}
+{"id":"agent_e2e_004","query":"把手机加到购物车"}
+{"id":"agent_e2e_005","query":"删除第二个商品"}
+{"id":"agent_e2e_006","query":"确认下单"}
+{"id":"agent_e2e_007","query":"不要含酒精的护肤品"}
+{"id":"agent_e2e_008","query":"我拍照找同款","attachments":[{"type":"image","url":"https://example.com/test.jpg"}]}

@@ -803,4 +803,3 @@ ANDROID_HOME=/opt/homebrew/share/android-commandlinetools gradle assembleDebug
 - 连续 Toast 不排队。
 - 模拟器实测通过。
 - Debug APK 可以构建并安装运行。
-
