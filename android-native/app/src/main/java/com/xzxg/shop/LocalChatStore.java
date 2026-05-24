@@ -122,7 +122,7 @@ public class LocalChatStore extends SQLiteOpenHelper {
         ArrayList<SessionSummary> items = new ArrayList<>();
         String sql = "SELECT s.local_session_id, s.server_session_id, s.title, s.summary, s.sync_state " +
                 "FROM sessions s " +
-                "WHERE s.server_session_id IS NOT NULL AND s.server_session_id != '' OR EXISTS (SELECT 1 FROM messages m WHERE m.local_session_id = s.local_session_id AND m.role = 'user') " +
+                "WHERE (s.server_session_id IS NOT NULL AND s.server_session_id != '') OR EXISTS (SELECT 1 FROM messages m WHERE m.local_session_id = s.local_session_id AND m.role = 'user') " +
                 "ORDER BY s.updated_at DESC LIMIT 100";
         Cursor cursor = getReadableDatabase().rawQuery(sql, null);
         try {
@@ -148,9 +148,33 @@ public class LocalChatStore extends SQLiteOpenHelper {
         ArrayList<SessionSummary> items = new ArrayList<>();
         String sql = "SELECT s.local_session_id, s.server_session_id, s.title, s.summary, s.sync_state " +
                 "FROM sessions s " +
-                "WHERE s.server_session_id IS NOT NULL AND s.server_session_id != '' OR EXISTS (SELECT 1 FROM messages m WHERE m.local_session_id = s.local_session_id AND m.role = 'user') " +
+                "WHERE (s.server_session_id IS NOT NULL AND s.server_session_id != '') OR EXISTS (SELECT 1 FROM messages m WHERE m.local_session_id = s.local_session_id AND m.role = 'user') " +
                 "ORDER BY s.updated_at DESC LIMIT 50";
         Cursor cursor = getReadableDatabase().rawQuery(sql, null);
+        try {
+            while (cursor.moveToNext()) {
+                items.add(new SessionSummary(cursor.getString(0), cursor.getString(1), cursor.getString(2), cursor.getString(3), cursor.getString(4)));
+            }
+        } finally {
+            cursor.close();
+        }
+        return items;
+    }
+
+    public List<SessionSummary> searchSessionsLocal(String query) {
+        String keyword = query == null ? "" : query.trim();
+        if (keyword.isEmpty()) {
+            return recentSessionsWithMessages();
+        }
+        ArrayList<SessionSummary> items = new ArrayList<>();
+        String like = "%" + keyword + "%";
+        String sql = "SELECT DISTINCT s.local_session_id, s.server_session_id, s.title, s.summary, s.sync_state, s.updated_at " +
+                "FROM sessions s " +
+                "LEFT JOIN messages m ON m.local_session_id = s.local_session_id " +
+                "WHERE ((s.server_session_id IS NOT NULL AND s.server_session_id != '') OR EXISTS (SELECT 1 FROM messages um WHERE um.local_session_id = s.local_session_id AND um.role = 'user')) " +
+                "AND (s.title LIKE ? OR s.summary LIKE ? OR m.content LIKE ?) " +
+                "ORDER BY s.updated_at DESC LIMIT 50";
+        Cursor cursor = getReadableDatabase().rawQuery(sql, new String[]{like, like, like});
         try {
             while (cursor.moveToNext()) {
                 items.add(new SessionSummary(cursor.getString(0), cursor.getString(1), cursor.getString(2), cursor.getString(3), cursor.getString(4)));

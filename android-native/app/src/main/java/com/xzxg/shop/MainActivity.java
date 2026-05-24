@@ -129,6 +129,7 @@ public class MainActivity extends Activity {
     private Toast activeToast;
     private byte[] pendingAvatarBytes;
     private String pendingAvatarMime = "image/jpeg";
+    private Bitmap pendingAvatarPreview;
     private Runnable pendingAvatarChanged;
 
     private static class PendingAttachment {
@@ -189,13 +190,26 @@ public class MainActivity extends Activity {
             closeDrawerAnimated();
             return;
         }
+        if ("login".equals(activePage)) {
+            renderChatHome();
+            loadHomeCopy();
+            return;
+        }
+        if ("help".equals(activePage) || "about".equals(activePage) || "account".equals(activePage) || "avatar".equals(activePage) || "edit_profile".equals(activePage)) {
+            renderSettings();
+            return;
+        }
         if (!backStack.isEmpty()) {
             Runnable action = backStack.pop();
             action.run();
             return;
         }
         if (isPrimaryPage(activePage)) {
-            showDrawer();
+            if (sessionStore.token().isEmpty()) {
+                renderLoginPage();
+            } else {
+                showDrawer();
+            }
             return;
         }
         renderChatHome();
@@ -274,65 +288,41 @@ public class MainActivity extends Activity {
         title.setPadding(dp(10), 0, dp(8), 0);
         toolbar.addView(title, new LinearLayout.LayoutParams(0, -1, 1));
 
-        View account = topBarAccountView(rightText);
-        if (account != null) {
-            toolbar.addView(account, new LinearLayout.LayoutParams(-2, dp(40)));
-        }
-
         return toolbar;
     }
 
-    private View topBarAccountView(String rightText) {
-        if (rightText != null && !rightText.isEmpty()) {
-            TextView status = new TextView(this);
-            status.setText(rightText);
-            status.setTextSize(15);
-            status.setTextColor(Color.rgb(75, 85, 99));
-            status.setPadding(dp(12), 0, dp(12), 0);
-            status.setOnClickListener(v -> renderSettings());
-            status.setGravity(Gravity.CENTER);
-            return status;
-        }
-        if (sessionStore.token().isEmpty()) {
-            TextView login = new TextView(this);
-            login.setText("登录");
-            login.setTextSize(15);
-            login.setTypeface(Typeface.DEFAULT_BOLD);
-            login.setTextColor(Color.rgb(20, 24, 30));
-            login.setGravity(Gravity.CENTER);
-            login.setPadding(dp(12), 0, dp(12), 0);
-            login.setOnClickListener(v -> renderLoginPage());
-            return login;
-        }
-        LinearLayout user = new LinearLayout(this);
-        user.setGravity(Gravity.CENTER_VERTICAL);
-        user.setPadding(dp(6), 0, 0, 0);
-        user.setOnClickListener(v -> renderSettings());
-        ImageView avatarImage = new ImageView(this);
-        avatarImage.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        avatarImage.setBackground(rounded(Color.rgb(236, 244, 255), dp(16)));
-        String avatarUrl = api.absoluteUrl(sessionStore.avatarUrl());
-        if (!avatarUrl.isEmpty()) {
-            imageLoader.load(avatarImage, avatarUrl);
-            user.addView(avatarImage, new LinearLayout.LayoutParams(dp(32), dp(32)));
-        } else {
-            TextView avatar = new TextView(this);
-            avatar.setText(initialOf(sessionStore.nickname()));
-            avatar.setTextSize(14);
-            avatar.setTypeface(Typeface.DEFAULT_BOLD);
-            avatar.setGravity(Gravity.CENTER);
-            avatar.setTextColor(Color.rgb(30, 64, 175));
-            avatar.setBackground(rounded(Color.rgb(219, 234, 254), dp(16)));
-            user.addView(avatar, new LinearLayout.LayoutParams(dp(32), dp(32)));
-        }
-        TextView name = new TextView(this);
-        name.setText(shortName(sessionStore.nickname()));
-        name.setTextSize(14);
-        name.setTextColor(Color.rgb(31, 41, 55));
-        LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(-2, -2);
-        nameParams.leftMargin = dp(6);
-        user.addView(name, nameParams);
-        return user;
+    private View createBackTopBar(String titleText, Runnable backAction) {
+        LinearLayout toolbar = new LinearLayout(this);
+        toolbar.setGravity(Gravity.CENTER_VERTICAL);
+        toolbar.setPadding(dp(16), 0, dp(16), 0);
+        toolbar.setBackgroundColor(BG_COLOR);
+        toolbar.setClickable(true);
+        toolbar.setElevation(dp(1));
+
+        Button back = transparentIconButton("‹");
+        back.setTextSize(30);
+        back.setOnClickListener(v -> {
+            hideKeyboard();
+            if (backAction != null) {
+                backAction.run();
+            } else {
+                onBackPressed();
+            }
+        });
+        toolbar.addView(back, new LinearLayout.LayoutParams(dp(40), dp(40)));
+
+        TextView title = new TextView(this);
+        title.setText(titleText);
+        title.setTextSize(18);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTextColor(Color.rgb(20, 24, 30));
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        title.setPadding(dp(10), 0, dp(8), 0);
+        toolbar.addView(title, new LinearLayout.LayoutParams(0, -1, 1));
+
+        SpaceView right = new SpaceView(this);
+        toolbar.addView(right, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        return toolbar;
     }
 
     private View createChatMessageLayer() {
@@ -649,6 +639,10 @@ public class MainActivity extends Activity {
             try {
                 pendingAvatarBytes = squareAvatarBytes(uri);
                 pendingAvatarMime = "image/jpeg";
+                if (pendingAvatarPreview != null) {
+                    pendingAvatarPreview.recycle();
+                }
+                pendingAvatarPreview = BitmapFactory.decodeByteArray(pendingAvatarBytes, 0, pendingAvatarBytes.length);
                 if (pendingAvatarChanged != null) {
                     pendingAvatarChanged.run();
                 }
@@ -891,15 +885,12 @@ public class MainActivity extends Activity {
         drawerLayer = new FrameLayout(this);
         drawerLayer.setBackgroundColor(Color.argb(92, 0, 0, 0));
         drawerLayer.setAlpha(0f);
-        drawerLayer.setOnClickListener(v -> closeDrawerAnimated());
 
         LinearLayout drawer = new LinearLayout(this);
         drawerPanel = drawer;
         drawer.setOrientation(LinearLayout.VERTICAL);
         drawer.setPadding(dp(14), dp(10), dp(14), dp(10));
         drawer.setBackgroundColor(Color.WHITE);
-        drawer.setOnClickListener(v -> {
-        });
 
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
@@ -940,12 +931,54 @@ public class MainActivity extends Activity {
         drawer.addView(divider, new LinearLayout.LayoutParams(-1, 1));
 
         FrameLayout historyFrame = new FrameLayout(this);
+        historyFrame.setClickable(true);
         ScrollView historyScroll = new ScrollView(this);
+        historyScroll.setFillViewport(true);
+        historyScroll.setClickable(true);
         LinearLayout historyList = new LinearLayout(this);
         historyList.setOrientation(LinearLayout.VERTICAL);
+        historyList.setClickable(true);
         historyList.setPadding(0, dp(12), 0, dp(72));
         renderHistoryList(historyList, chatStore.recentSessionsWithMessages());
         final int[] searchVersion = {0};
+        final boolean[] searchExpanded = {false};
+        Runnable refreshSearchChrome = () -> {
+            boolean expanded = search.hasFocus();
+            if (searchExpanded[0] == expanded) {
+                return;
+            }
+            searchExpanded[0] = expanded;
+            navGroup.setVisibility(expanded ? View.GONE : View.VISIBLE);
+            divider.setVisibility(expanded ? View.GONE : View.VISIBLE);
+            historyList.setPadding(0, expanded ? dp(4) : dp(12), 0, dp(72));
+        };
+        Runnable hideSearchKeyboard = () -> {
+            if (search.hasFocus()) {
+                hideKeyboardFrom(search);
+                search.clearFocus();
+                refreshSearchChrome.run();
+            }
+        };
+        drawerLayer.setOnClickListener(v -> {
+            if (search.hasFocus()) {
+                hideSearchKeyboard.run();
+            } else {
+                closeDrawerAnimated();
+            }
+        });
+        drawerLayer.setOnApplyWindowInsetsListener((view, insets) -> {
+            boolean imeVisible = insets.getInsets(WindowInsets.Type.ime()).bottom > 0;
+            if (!imeVisible && searchExpanded[0] && search.hasFocus()) {
+                search.clearFocus();
+                refreshSearchChrome.run();
+            }
+            return insets;
+        });
+        drawer.setOnClickListener(v -> hideSearchKeyboard.run());
+        historyFrame.setOnClickListener(v -> hideSearchKeyboard.run());
+        historyScroll.setOnClickListener(v -> hideSearchKeyboard.run());
+        historyList.setOnClickListener(v -> hideSearchKeyboard.run());
+        search.setOnFocusChangeListener((v, hasFocus) -> refreshSearchChrome.run());
         search.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
@@ -956,6 +989,7 @@ public class MainActivity extends Activity {
                     renderHistoryList(historyList, chatStore.recentSessionsWithMessages());
                     return;
                 }
+                renderHistoryList(historyList, chatStore.searchSessionsLocal(query));
                 new Thread(() -> {
                     try {
                         Thread.sleep(300);
@@ -1006,8 +1040,17 @@ public class MainActivity extends Activity {
         historyFrame.addView(returnChat, returnParams);
         drawer.addView(historyFrame, new LinearLayout.LayoutParams(-1, 0, 1));
 
-        drawer.addView(bottomUserBar(), new LinearLayout.LayoutParams(-1, dp(68)));
-        syncRemoteSessions();
+        View bottomBar = bottomUserBar();
+        bottomBar.setOnClickListener(v -> hideSearchKeyboard.run());
+        drawer.addView(bottomBar, new LinearLayout.LayoutParams(-1, dp(68)));
+        syncRemoteSessions(() -> {
+            String query = search.getText().toString().trim();
+            if (query.isEmpty()) {
+                renderHistoryList(historyList, chatStore.recentSessionsWithMessages());
+            } else {
+                renderHistoryList(historyList, chatStore.searchSessionsLocal(query));
+            }
+        });
 
         int panelWidth = (int) (getResources().getDisplayMetrics().widthPixels * 0.82f);
         FrameLayout.LayoutParams drawerParams = new FrameLayout.LayoutParams(panelWidth, -1, Gravity.LEFT | Gravity.TOP);
@@ -1019,8 +1062,11 @@ public class MainActivity extends Activity {
         drawer.startAnimation(slideIn);
     }
 
-    private void syncRemoteSessions() {
+    private void syncRemoteSessions(Runnable onDone) {
         if (sessionStore.token().isEmpty()) {
+            if (onDone != null) {
+                runOnUiThread(onDone);
+            }
             return;
         }
         new Thread(() -> {
@@ -1034,6 +1080,10 @@ public class MainActivity extends Activity {
                     chatStore.upsertRemoteSession(item.optString("session_id", ""), item.optString("title", "导购会话"), item.optString("summary", ""), remoteSessionTime(item));
                 }
             } catch (Exception ignored) {
+            } finally {
+                if (onDone != null) {
+                    runOnUiThread(onDone);
+                }
             }
         }).start();
     }
@@ -1222,7 +1272,7 @@ public class MainActivity extends Activity {
         chatStore.saveMessage(localSessionId, "user", visibleText, "pending");
         chatStore.touchSession(localSessionId);
         if (sessionStore.token().isEmpty()) {
-            TextView assistant = addBubble("请先在右上角“未登录”入口完成登录。当前消息已经保存在本地，登录后可以继续使用 AI 导购。", false);
+            TextView assistant = addBubble("请先通过左上角入口完成登录。当前消息已经保存在本地，登录后可以继续使用 AI 导购。", false);
             chatStore.saveMessage(localSessionId, "assistant", assistant.getText().toString(), "local_only");
             toastLine("请先登录后再发送到后端");
             return;
@@ -1875,6 +1925,17 @@ public class MainActivity extends Activity {
         view.clearFocus();
     }
 
+    private void hideKeyboardFrom(View view) {
+        if (view == null) {
+            hideKeyboard();
+            return;
+        }
+        InputMethodManager manager = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        if (manager != null) {
+            manager.hideSoftInputFromWindow(view.getWindowToken(), 0);
+        }
+    }
+
     private RenderedMarkdown sanitizeAgentMarkdown(String raw) {
         String value = raw == null ? "" : raw;
         JSONArray toolCalls = new JSONArray();
@@ -2043,7 +2104,10 @@ public class MainActivity extends Activity {
         activePage = "login";
         backStack.clear();
         baseScreen();
-        addPageHeader("登录", "账号登录和注册");
+        content.addView(createBackTopBar("登录", () -> {
+            renderChatHome();
+            loadHomeCopy();
+        }), new LinearLayout.LayoutParams(-1, dp(56)));
         LinearLayout page = pageBody();
         LinearLayout loginPanel = panel();
         loginPanel.addView(strong("账号登录"));
@@ -2066,9 +2130,7 @@ public class MainActivity extends Activity {
             dev.addView(apiBase);
             Button save = secondaryButton("保存测试地址");
             save.setOnClickListener(v -> {
-                sessionStore.saveApiBase(apiBase.getText().toString().trim());
-                api = new ApiClient(sessionStore);
-                toastLine("已保存测试后端地址");
+                saveApiBaseFromInput(apiBase.getText().toString());
             });
             addFormButton(dev, save);
             page.addView(dev);
@@ -2084,6 +2146,7 @@ public class MainActivity extends Activity {
                 saveAccountSession(result.optString("token"), account, role, displayName);
                 runOnUiThread(() -> {
                     toastLine("注册成功");
+                    syncRemoteSessions(null);
                     createFreshLocalSession();
                     renderChatHome();
                     loadHomeCopy();
@@ -2102,6 +2165,7 @@ public class MainActivity extends Activity {
                 saveAccountSession(result.optString("token"), account, "user", username);
                 runOnUiThread(() -> {
                     toastLine("登录成功");
+                    syncRemoteSessions(null);
                     createFreshLocalSession();
                     renderChatHome();
                     loadHomeCopy();
@@ -2345,14 +2409,19 @@ public class MainActivity extends Activity {
         Runnable[] renderSecondary = new Runnable[1];
         renderSecondary[0] = () -> {
         };
-        addPrimaryCategoryButton(primary, secondary, "全部", null, pendingId, pendingName);
+        final JSONObject[] selectedPrimary = {null};
+        addPrimaryCategoryButton(primary, secondary, "全部", null, pendingId, pendingName, pendingId[0] == null || pendingId[0].isEmpty());
         for (int i = 0; i < cachedCategoryTree.length(); i++) {
             JSONObject category = cachedCategoryTree.optJSONObject(i);
             if (category != null) {
-                addPrimaryCategoryButton(primary, secondary, category.optString("name", "分类"), category, pendingId, pendingName);
+                String categoryId = category.optString("categoryId", "");
+                if (categoryId.equals(pendingId[0])) {
+                    selectedPrimary[0] = category;
+                }
+                addPrimaryCategoryButton(primary, secondary, category.optString("name", "分类"), category, pendingId, pendingName, categoryId.equals(pendingId[0]));
             }
         }
-        fillSecondaryCategories(secondary, null, pendingId, pendingName);
+        fillSecondaryCategories(secondary, selectedPrimary[0], pendingId, pendingName);
 
         new AlertDialog.Builder(this)
                 .setTitle("选择商品类别")
@@ -2375,14 +2444,16 @@ public class MainActivity extends Activity {
                 .show();
     }
 
-    private void addPrimaryCategoryButton(LinearLayout primary, LinearLayout secondary, String name, JSONObject category, String[] pendingId, String[] pendingName) {
-        TextView button = categoryRow(name, false);
+    private void addPrimaryCategoryButton(LinearLayout primary, LinearLayout secondary, String name, JSONObject category, String[] pendingId, String[] pendingName, boolean selected) {
+        TextView button = categoryRow(name, selected);
         button.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
         button.setOnClickListener(v -> {
             for (int i = 0; i < primary.getChildCount(); i++) {
                 primary.getChildAt(i).setBackgroundColor(Color.TRANSPARENT);
             }
             button.setBackgroundColor(Color.rgb(238, 242, 247));
+            pendingId[0] = category == null ? "" : category.optString("categoryId", "");
+            pendingName[0] = category == null ? "全部" : category.optString("name", "全部");
             fillSecondaryCategories(secondary, category, pendingId, pendingName);
         });
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(44));
@@ -3843,8 +3914,9 @@ public class MainActivity extends Activity {
     private View bottomUserBar() {
         LinearLayout bar = new LinearLayout(this);
         bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setPadding(dp(6), dp(6), dp(2), dp(6));
-        bar.setBackgroundColor(Color.WHITE);
+        bar.setPadding(dp(6), dp(8), dp(2), dp(8));
+        bar.setBackgroundColor(Color.rgb(243, 244, 246));
+        bar.setClickable(true);
 
         LinearLayout user = new LinearLayout(this);
         user.setGravity(Gravity.CENTER_VERTICAL);
@@ -3913,9 +3985,7 @@ public class MainActivity extends Activity {
             dev.addView(apiBase);
             Button saveApi = primaryButton("保存测试地址");
             saveApi.setOnClickListener(v -> {
-                sessionStore.saveApiBase(apiBase.getText().toString().trim());
-                api = new ApiClient(sessionStore);
-                toastLine("已保存测试后端地址");
+                saveApiBaseFromInput(apiBase.getText().toString());
             });
             addFormButton(dev, saveApi);
             page.addView(dev);
@@ -3923,6 +3993,20 @@ public class MainActivity extends Activity {
         TextView version = muted("Version: " + BuildConfig.VERSION_NAME + "\n由 AI 大模型提供支持");
         version.setGravity(Gravity.CENTER);
         page.addView(version, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    private void saveApiBaseFromInput(String value) {
+        String base = value == null ? "" : value.trim();
+        while (base.endsWith("/")) {
+            base = base.substring(0, base.length() - 1);
+        }
+        if (!base.contains("/api/v1")) {
+            toastLine("后端地址应包含 /api/v1");
+            return;
+        }
+        sessionStore.saveApiBase(base);
+        api = new ApiClient(sessionStore);
+        toastLine("已保存测试后端地址");
     }
 
     private View settingsRow(String iconText, String label, View.OnClickListener listener, int iconColor) {
@@ -3941,10 +4025,12 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams textParams = new LinearLayout.LayoutParams(0, -2, 1);
         textParams.leftMargin = dp(18);
         row.addView(text, textParams);
-        TextView arrow = muted("›");
-        arrow.setTextSize(30);
+        TextView arrow = new TextView(this);
+        arrow.setText("›");
+        arrow.setTextSize(24);
+        arrow.setTextColor(Color.rgb(156, 163, 175));
         arrow.setGravity(Gravity.CENTER);
-        row.addView(arrow, new LinearLayout.LayoutParams(dp(30), -1));
+        row.addView(arrow, new LinearLayout.LayoutParams(dp(28), -1));
         row.setOnClickListener(listener);
         return row;
     }
@@ -3952,16 +4038,16 @@ public class MainActivity extends Activity {
     private void renderAvatarPreviewPage() {
         closeDrawer();
         activePage = "avatar";
-        backStack.push(() -> renderSettings());
         baseScreen();
         root.setBackgroundColor(Color.BLACK);
+        content.addView(createBackTopBar("", () -> renderSettings()), new LinearLayout.LayoutParams(-1, dp(56)));
         ImageView image = new ImageView(this);
         image.setScaleType(ImageView.ScaleType.FIT_CENTER);
         String url = api.absoluteUrl(sessionStore.avatarUrl());
         if (!url.isEmpty()) {
             imageLoader.load(image, url);
         }
-        root.addView(image, new FrameLayout.LayoutParams(-1, -1));
+        content.addView(image, new LinearLayout.LayoutParams(-1, 0, 1));
         Button edit = secondaryButton("编辑个人资料");
         edit.setTextSize(18);
         edit.setOnClickListener(v -> renderEditProfilePage());
@@ -4015,7 +4101,7 @@ public class MainActivity extends Activity {
         TextView heading = title("个人资料");
         heading.setGravity(Gravity.CENTER);
         bar.addView(heading, new LinearLayout.LayoutParams(0, -1, 1));
-        TextView done = muted("完成");
+        TextView done = muted("保存");
         done.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
         done.setTextSize(17);
         done.setEnabled(false);
@@ -4025,8 +4111,25 @@ public class MainActivity extends Activity {
         LinearLayout page = pageBody();
         page.setGravity(Gravity.CENTER_HORIZONTAL);
         FrameLayout avatarWrap = new FrameLayout(this);
-        View avatar = accountAvatarView(dp(128), 38);
-        avatarWrap.addView(avatar, new FrameLayout.LayoutParams(dp(128), dp(128), Gravity.CENTER));
+        TextView avatarInitial = new TextView(this);
+        avatarInitial.setText(initialOf(sessionStore.nickname()));
+        avatarInitial.setTextSize(38);
+        avatarInitial.setTypeface(Typeface.DEFAULT_BOLD);
+        avatarInitial.setGravity(Gravity.CENTER);
+        avatarInitial.setTextColor(Color.rgb(30, 64, 175));
+        avatarInitial.setBackground(rounded(Color.rgb(219, 234, 254), dp(64)));
+        avatarWrap.addView(avatarInitial, new FrameLayout.LayoutParams(dp(128), dp(128), Gravity.CENTER));
+        ImageView avatarImage = new ImageView(this);
+        avatarImage.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        avatarImage.setBackground(rounded(Color.rgb(236, 244, 255), dp(64)));
+        avatarImage.setVisibility(View.GONE);
+        String avatarUrl = api.absoluteUrl(sessionStore.avatarUrl());
+        if (!avatarUrl.isEmpty()) {
+            avatarImage.setVisibility(View.VISIBLE);
+            avatarInitial.setVisibility(View.GONE);
+            imageLoader.load(avatarImage, avatarUrl);
+        }
+        avatarWrap.addView(avatarImage, new FrameLayout.LayoutParams(dp(128), dp(128), Gravity.CENTER));
         TextView plus = new TextView(this);
         plus.setText("+");
         plus.setTextSize(30);
@@ -4044,10 +4147,16 @@ public class MainActivity extends Activity {
         page.addView(nickname);
         final boolean[] changed = {false};
         pendingAvatarBytes = null;
+        pendingAvatarPreview = null;
         pendingAvatarChanged = () -> {
             changed[0] = true;
             done.setEnabled(true);
             done.setTextColor(Color.rgb(37, 99, 235));
+            if (pendingAvatarPreview != null) {
+                avatarImage.setVisibility(View.VISIBLE);
+                avatarInitial.setVisibility(View.GONE);
+                avatarImage.setImageBitmap(pendingAvatarPreview);
+            }
             toastLine("头像已裁剪为正方形");
         };
         nickname.addTextChangedListener(new TextWatcher() {
@@ -4075,6 +4184,7 @@ public class MainActivity extends Activity {
         }
         new Thread(() -> {
             try {
+                api.profile();
                 String avatarUrl = "";
                 if (pendingAvatarBytes != null) {
                     JSONObject upload = api.uploadAvatar("avatar.jpg", pendingAvatarMime, pendingAvatarBytes);
@@ -4083,13 +4193,21 @@ public class MainActivity extends Activity {
                 JSONObject profile = api.updateProfile(name, avatarUrl);
                 saveAccountSession(sessionStore.token(), profile, sessionStore.role(), name);
                 pendingAvatarBytes = null;
+                pendingAvatarPreview = null;
                 pendingAvatarChanged = null;
                 runOnUiThread(() -> {
                     toastLine("资料已保存");
                     renderSettings();
                 });
             } catch (Exception error) {
-                runOnUiThread(() -> toastLine("保存失败：" + error.getMessage()));
+                runOnUiThread(() -> {
+                    String message = error.getMessage();
+                    if (message != null && message.contains("404")) {
+                        toastLine("保存失败：当前后端不是最新版，请切换测试后端");
+                    } else {
+                        toastLine("保存失败：" + message);
+                    }
+                });
             }
         }).start();
     }
@@ -4101,7 +4219,6 @@ public class MainActivity extends Activity {
             return;
         }
         activePage = "account";
-        backStack.push(() -> renderSettings());
         baseScreen();
         LinearLayout toolbar = new LinearLayout(this);
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
@@ -4249,7 +4366,7 @@ public class MainActivity extends Activity {
     private void renderHelpPage() {
         activePage = "help";
         baseScreen();
-        addPageHeader("帮助", "常见问题");
+        content.addView(createBackTopBar("帮助", () -> renderSettings()), new LinearLayout.LayoutParams(-1, dp(56)));
         LinearLayout page = pageBody();
         page.addView(card("AI导购", "在聊天页输入需求，AI 会结合商品、购物车和订单能力给出建议。"));
         page.addView(card("商品与购物车", "商品页可以搜索、筛选、查看详情并加入购物车。"));
@@ -4259,7 +4376,7 @@ public class MainActivity extends Activity {
     private void renderAboutPage() {
         activePage = "about";
         baseScreen();
-        addPageHeader("关于", "应用信息");
+        content.addView(createBackTopBar("关于", () -> renderSettings()), new LinearLayout.LayoutParams(-1, dp(56)));
         LinearLayout page = pageBody();
         page.addView(card("小猪小狗导购", "Version: " + BuildConfig.VERSION_NAME + "\n由 AI 大模型提供支持"));
     }
