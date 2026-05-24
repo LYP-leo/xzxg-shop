@@ -12,6 +12,8 @@ import (
 
 	"github.com/LYP-leo/xzxg-shop/backend/src/configcenter"
 	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
+	"github.com/LYP-leo/xzxg-shop/backend/src/rag"
+	"github.com/LYP-leo/xzxg-shop/backend/src/retrievalconfig"
 	"github.com/LYP-leo/xzxg-shop/backend/src/store"
 )
 
@@ -37,6 +39,12 @@ func (r *Runtime) ClassifyIntent(ctx context.Context, query string) string {
 
 func (r *Runtime) ClassifyPlan(ctx context.Context, query string) runPlan {
 	return r.classifyIntent(ctx, domain.AgentRun{}, query, false)
+}
+
+func (r *Runtime) retrievalPlan(ctx context.Context, query string) rag.RetrievalPlan {
+	plan := rag.DefaultRetrievalPlan(query)
+	retrievalconfig.Apply(&plan, r.configs.GetMap(ctx))
+	return plan
 }
 
 // Stream 是 Agent 单轮对话主链路。

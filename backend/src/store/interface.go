@@ -33,6 +33,11 @@ type Store interface {
 	ListAgentTraceByRun(ctx context.Context, runID string) []domain.AgentTraceEvent
 	ListRecentAgentRuns(ctx context.Context, limit int) []domain.AgentRun
 	ListAgentRunsPage(ctx context.Context, page int, pageSize int) ([]domain.AgentRun, int)
+	ListAgentPromptsPage(ctx context.Context, page int, pageSize int) ([]domain.AgentPrompt, int)
+	SeedAgentPrompts(ctx context.Context, defaults []domain.AgentPromptInput) error
+	SaveAgentPromptDraft(ctx context.Context, input domain.AgentPromptInput) (domain.AgentPrompt, error)
+	PublishAgentPrompt(ctx context.Context, promptKey string, publishedBy string, nacosDataID string) (domain.AgentPrompt, domain.AgentPromptPublishRecord, error)
+	ListAgentPromptPublishRecords(ctx context.Context, promptKey string, limit int) []domain.AgentPromptPublishRecord
 
 	// 商品、类目、商家和 SKU。
 	SearchProducts(ctx context.Context, query string) []domain.ProductCard
@@ -80,6 +85,7 @@ type Store interface {
 	UpdateReviewStatus(ctx context.Context, reviewID string, status string) (domain.ProductReview, bool)
 
 	// RAG 知识库。
+	VectorIndexStatus(ctx context.Context) domain.VectorIndexStatus
 	SearchKnowledge(ctx context.Context, query string) []domain.Citation
 	SearchKnowledgeByPlan(ctx context.Context, plan rag.RetrievalPlan) []domain.Citation
 	ListMerchantDocuments(ctx context.Context, merchantID string) []domain.KnowledgeDocument

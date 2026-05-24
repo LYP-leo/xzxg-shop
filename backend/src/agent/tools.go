@@ -140,7 +140,9 @@ func (r *Runtime) toolSearchKnowledge(ctx context.Context, raw json.RawMessage) 
 		return toolObservation{Tool: toolSearchKnowledge, Message: "query 不能为空"}
 	}
 	limit := clampLimit(args.Limit, 3, 8)
-	citations := r.store.SearchKnowledge(ctx, args.Query)
+	plan := r.retrievalPlan(ctx, args.Query)
+	plan.Rerank.TopK = limit
+	citations := r.store.SearchKnowledgeByPlan(ctx, plan)
 	if len(citations) > limit {
 		citations = citations[:limit]
 	}

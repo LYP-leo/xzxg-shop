@@ -1,19 +1,26 @@
 package httpapi
 
 import (
+	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/LYP-leo/xzxg-shop/backend/src/agent"
 	"github.com/LYP-leo/xzxg-shop/backend/src/configcenter"
 	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
+	"github.com/LYP-leo/xzxg-shop/backend/src/rag"
+	"github.com/LYP-leo/xzxg-shop/backend/src/retrievalconfig"
 	"github.com/LYP-leo/xzxg-shop/backend/src/store"
 )
 
@@ -60,6 +67,12 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/admin/accounts/", s.handleUpdateAdminAccount)
 	mux.HandleFunc("GET /api/v1/admin/configs", s.handleListAdminConfigs)
 	mux.HandleFunc("PATCH /api/v1/admin/configs/", s.handleUpdateAdminConfig)
+	mux.HandleFunc("GET /api/v1/admin/prompts", s.handleListAdminPrompts)
+	mux.HandleFunc("PATCH /api/v1/admin/prompts/", s.handleAdminPromptAction)
+	mux.HandleFunc("POST /api/v1/admin/prompts/", s.handleAdminPromptAction)
+	mux.HandleFunc("GET /api/v1/admin/vector/status", s.handleAdminVectorStatus)
+	mux.HandleFunc("GET /api/v1/admin/evals", s.handleAdminEvalDashboard)
+	mux.HandleFunc("GET /api/v1/admin/evals/reports/", s.handleAdminEvalReportDetail)
 	mux.HandleFunc("GET /api/v1/admin/agent/runs", s.handleListAdminAgentRuns)
 	mux.HandleFunc("GET /api/v1/admin/agent/runs/", s.handleAdminAgentRunTrace)
 	mux.HandleFunc("GET /api/v1/admin/documents", s.handleListAdminDocuments)
@@ -160,13 +173,17 @@ func (s *Server) handleListCategories(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListMerchants(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListMerchants(r.Context())})
+	page, pageSize := readPagination(r)
+	items, total := paginateList(s.store.ListMerchants(r.Context()), page, pageSize)
+	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
 func (s *Server) handleListProducts(w http.ResponseWriter, r *http.Request) {
 	keyword := r.URL.Query().Get("keyword")
 	categoryID := r.URL.Query().Get("category_id")
-	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListProducts(r.Context(), keyword, categoryID)})
+	page, pageSize := readPagination(r)
+	items, total := paginateList(s.store.ListProducts(r.Context(), keyword, categoryID), page, pageSize)
+	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
 func (s *Server) handleProductAction(w http.ResponseWriter, r *http.Request) {
@@ -177,12 +194,16 @@ func (s *Server) handleProductAction(w http.ResponseWriter, r *http.Request) {
 	}
 	if action == "skus" {
 		// SKU 与商品详情分开查询，前端可在详情页懒加载规格信息。
-		writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListProductSKUs(r.Context(), productID)})
+		page, pageSize := readPagination(r)
+		items, total := paginateList(s.store.ListProductSKUs(r.Context(), productID), page, pageSize)
+		writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 		return
 	}
 	if action == "reviews" {
 		// 商品评价是公开信息，只返回 visible 状态的评价。
-		writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListProductReviews(r.Context(), productID)})
+		page, pageSize := readPagination(r)
+		items, total := paginateList(s.store.ListProductReviews(r.Context(), productID), page, pageSize)
+		writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 		return
 	}
 	if action != "" {
@@ -198,12 +219,16 @@ func (s *Server) handleProductAction(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListPromotions(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListPromotions(r.Context(), "")})
+	page, pageSize := readPagination(r)
+	items, total := paginateList(s.store.ListPromotions(r.Context(), ""), page, pageSize)
+	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
 func (s *Server) handleListCoupons(w http.ResponseWriter, r *http.Request) {
 	account, _ := accountFromContext(r.Context())
-	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListCoupons(r.Context(), account.AccountID)})
+	page, pageSize := readPagination(r)
+	items, total := paginateList(s.store.ListCoupons(r.Context(), account.AccountID), page, pageSize)
+	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
 func (s *Server) handleListUserCoupons(w http.ResponseWriter, r *http.Request) {
@@ -211,7 +236,9 @@ func (s *Server) handleListUserCoupons(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListUserCoupons(r.Context(), account.AccountID)})
+	page, pageSize := readPagination(r)
+	items, total := paginateList(s.store.ListUserCoupons(r.Context(), account.AccountID), page, pageSize)
+	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
 func (s *Server) handleCouponAction(w http.ResponseWriter, r *http.Request) {
@@ -306,7 +333,9 @@ func (s *Server) handleListMerchantDocuments(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListMerchantDocuments(r.Context(), account.MerchantID)})
+	page, pageSize := readPagination(r)
+	items, total := paginateList(s.store.ListMerchantDocuments(r.Context(), account.MerchantID), page, pageSize)
+	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
 func (s *Server) handleCreateMerchantDocument(w http.ResponseWriter, r *http.Request) {
@@ -341,7 +370,9 @@ func (s *Server) handleListMerchantOrders(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListMerchantOrders(r.Context(), account.MerchantID)})
+	page, pageSize := readPagination(r)
+	items, total := paginateList(s.store.ListMerchantOrders(r.Context(), account.MerchantID), page, pageSize)
+	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
 func (s *Server) handleUpdateMerchantOrder(w http.ResponseWriter, r *http.Request) {
@@ -374,7 +405,9 @@ func (s *Server) handleListMerchantPromotions(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListPromotions(r.Context(), account.MerchantID)})
+	page, pageSize := readPagination(r)
+	items, total := paginateList(s.store.ListPromotions(r.Context(), account.MerchantID), page, pageSize)
+	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
 func (s *Server) handleCreateMerchantPromotion(w http.ResponseWriter, r *http.Request) {
@@ -427,7 +460,9 @@ func (s *Server) handleListMerchantReviews(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListMerchantReviews(r.Context(), account.MerchantID)})
+	page, pageSize := readPagination(r)
+	items, total := paginateList(s.store.ListMerchantReviews(r.Context(), account.MerchantID), page, pageSize)
+	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
 func (s *Server) handleMerchantReviewAction(w http.ResponseWriter, r *http.Request) {
@@ -493,7 +528,15 @@ func (s *Server) handleListAdminConfigs(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	page, pageSize := readPagination(r)
-	items, total := paginateList(s.configs.List(r.Context(), false), page, pageSize)
+	all := s.configs.List(r.Context(), false)
+	itemsForPage := make([]domain.AppConfig, 0, len(all))
+	for _, item := range all {
+		if item.Domain == "prompt" || strings.HasPrefix(item.ConfigKey, "agent.prompt.") {
+			continue
+		}
+		itemsForPage = append(itemsForPage, item)
+	}
+	items, total := paginateList(itemsForPage, page, pageSize)
 	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
@@ -544,6 +587,94 @@ func (s *Server) handleUpdateAdminConfig(w http.ResponseWriter, r *http.Request)
 		config.ConfigValue = "******"
 	}
 	writeJSON(w, http.StatusOK, config)
+}
+
+func (s *Server) handleListAdminPrompts(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	page, pageSize := readPagination(r)
+	items, total := s.store.ListAgentPromptsPage(r.Context(), page, pageSize)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":           items,
+		"page":            page,
+		"page_size":       pageSize,
+		"total":           total,
+		"publish_records": s.store.ListAgentPromptPublishRecords(r.Context(), "", 20),
+	})
+}
+
+func (s *Server) handleAdminPromptAction(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	promptKey, publish, ok := splitAdminPromptPath(r.URL.Path)
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "接口不存在")
+		return
+	}
+	if publish {
+		s.handlePublishAdminPrompt(w, r, account, promptKey)
+		return
+	}
+	if r.Method != http.MethodPatch {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "请求方法不支持")
+		return
+	}
+	var request struct {
+		Title       string `json:"title"`
+		Content     string `json:"content"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	prompt, err := s.store.SaveAgentPromptDraft(r.Context(), domain.AgentPromptInput{
+		PromptKey:   promptKey,
+		Title:       request.Title,
+		Content:     request.Content,
+		Description: request.Description,
+		CreatedBy:   account.AccountID,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "save_prompt_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, prompt)
+}
+
+func (s *Server) handlePublishAdminPrompt(w http.ResponseWriter, r *http.Request, account domain.Account, promptKey string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "请求方法不支持")
+		return
+	}
+	prompt, record, err := s.store.PublishAgentPrompt(r.Context(), promptKey, account.AccountID, "xzxg-shop-agent-prompts.json")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "publish_prompt_failed", err.Error())
+		return
+	}
+	_, err = s.configs.Upsert(r.Context(), domain.AppConfigInput{
+		ConfigKey:   prompt.PromptKey,
+		ConfigValue: prompt.Content,
+		ValueType:   "text",
+		Description: prompt.Description,
+		Domain:      "prompt",
+	})
+	if err != nil {
+		s.logger.Error("publish prompt to nacos failed", "error", err, "prompt_key", promptKey)
+		writeError(w, http.StatusInternalServerError, "publish_nacos_failed", "Prompt 已入库，但同步 Nacos 失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"prompt": prompt, "record": record})
+}
+
+func (s *Server) handleAdminVectorStatus(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, s.store.VectorIndexStatus(r.Context()))
 }
 
 func (s *Server) handleListAdminAgentRuns(w http.ResponseWriter, r *http.Request) {
@@ -619,7 +750,9 @@ func (s *Server) handleEvalRAGRecall(w http.ResponseWriter, r *http.Request) {
 	if topK <= 0 || topK > 20 {
 		topK = 5
 	}
-	items := s.store.SearchKnowledge(r.Context(), keyword)
+	plan := s.retrievalPlan(r.Context(), keyword)
+	plan.Rerank.TopK = topK
+	items := s.store.SearchKnowledgeByPlan(r.Context(), plan)
 	if len(items) > topK {
 		items = items[:topK]
 	}
@@ -627,6 +760,321 @@ func (s *Server) handleEvalRAGRecall(w http.ResponseWriter, r *http.Request) {
 		"keyword": keyword,
 		"items":   items,
 	})
+}
+
+func (s *Server) retrievalPlan(ctx context.Context, query string) rag.RetrievalPlan {
+	plan := rag.DefaultRetrievalPlan(query)
+	retrievalconfig.Apply(&plan, s.configs.GetMap(ctx))
+	return plan
+}
+
+func (s *Server) handleAdminEvalDashboard(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	datasets := listEvalDatasets()
+	reports := listEvalReports()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"tools":    evalToolSuites(datasets, reports),
+		"datasets": datasets,
+		"reports":  reports,
+	})
+}
+
+func (s *Server) handleAdminEvalReportDetail(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	reportID := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/evals/reports/")
+	reportID = strings.Trim(reportID, "/")
+	if reportID == "" || strings.Contains(reportID, "..") {
+		writeError(w, http.StatusBadRequest, "bad_report_id", "报告 ID 不合法")
+		return
+	}
+	parts := strings.Split(reportID, "/")
+	if len(parts) != 2 {
+		writeError(w, http.StatusBadRequest, "bad_report_id", "报告 ID 应为 run/file")
+		return
+	}
+	reportPath := projectPath("quality", "reports", parts[0], parts[1]+".json")
+	raw, err := os.ReadFile(reportPath)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "report_not_found", "测评报告不存在")
+		return
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		writeError(w, http.StatusInternalServerError, "bad_report", "测评报告 JSON 不合法")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":      reportID,
+		"path":    filepath.ToSlash(reportPath),
+		"summary": evalReportSummary(payload),
+		"results": reportResults(payload),
+		"raw":     evalReportSummary(payload),
+	})
+}
+
+type adminEvalDataset struct {
+	ID        string    `json:"id"`
+	Type      string    `json:"type"`
+	Name      string    `json:"name"`
+	Path      string    `json:"path"`
+	CaseCount int       `json:"case_count"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type adminEvalReport struct {
+	ID          string    `json:"id"`
+	Type        string    `json:"type"`
+	Dataset     string    `json:"dataset"`
+	Path        string    `json:"path"`
+	GeneratedAt time.Time `json:"generated_at"`
+	Total       int       `json:"total"`
+	Evaluated   int       `json:"evaluated"`
+	Hits        int       `json:"hits"`
+	PassRate    float64   `json:"pass_rate"`
+}
+
+type adminEvalToolSuite struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Scope          string `json:"scope"`
+	DatasetID      string `json:"dataset_id"`
+	LatestReportID string `json:"latest_report_id"`
+	Command        string `json:"command"`
+}
+
+func listEvalDatasets() []adminEvalDataset {
+	root := projectPath("quality", "data", "eval")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	items := make([]adminEvalDataset, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		info, _ := entry.Info()
+		id := strings.TrimSuffix(entry.Name(), ".jsonl")
+		items = append(items, adminEvalDataset{
+			ID:        id,
+			Type:      evalTypeFromDataset(id),
+			Name:      evalDatasetName(id),
+			Path:      filepath.ToSlash(path),
+			CaseCount: countJSONLLines(path),
+			UpdatedAt: fileModTime(info),
+		})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
+	return items
+}
+
+func listEvalReports() []adminEvalReport {
+	root := projectPath("quality", "reports")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	items := make([]adminEvalReport, 0)
+	for _, runDir := range entries {
+		if !runDir.IsDir() {
+			continue
+		}
+		reportDir := filepath.Join(root, runDir.Name())
+		files, err := os.ReadDir(reportDir)
+		if err != nil {
+			continue
+		}
+		for _, file := range files {
+			if file.IsDir() || !strings.HasSuffix(file.Name(), ".json") {
+				continue
+			}
+			path := filepath.Join(reportDir, file.Name())
+			if report, ok := readEvalReport(path, runDir.Name()); ok {
+				items = append(items, report)
+			}
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].GeneratedAt.After(items[j].GeneratedAt) })
+	if len(items) > 50 {
+		items = items[:50]
+	}
+	return items
+}
+
+func readEvalReport(path string, runID string) (adminEvalReport, bool) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return adminEvalReport{}, false
+	}
+	var payload struct {
+		Type              string  `json:"type"`
+		Dataset           string  `json:"dataset"`
+		GeneratedAt       string  `json:"generated_at"`
+		Total             int     `json:"total"`
+		Evaluated         int     `json:"evaluated"`
+		Hits              int     `json:"hits"`
+		RecallCaseHitRate float64 `json:"recall_case_hit_rate"`
+		HitRateAtK        float64 `json:"hit_rate_at_k"`
+		Accuracy          float64 `json:"accuracy"`
+		PassRate          float64 `json:"pass_rate"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return adminEvalReport{}, false
+	}
+	generatedAt, _ := time.Parse(time.RFC3339, payload.GeneratedAt)
+	passRate := payload.PassRate
+	if passRate == 0 {
+		passRate = payload.Accuracy
+	}
+	if passRate == 0 {
+		passRate = payload.RecallCaseHitRate
+	}
+	if passRate == 0 {
+		passRate = payload.HitRateAtK
+	}
+	return adminEvalReport{
+		ID:          runID + "/" + strings.TrimSuffix(filepath.Base(path), ".json"),
+		Type:        payload.Type,
+		Dataset:     payload.Dataset,
+		Path:        filepath.ToSlash(path),
+		GeneratedAt: generatedAt,
+		Total:       payload.Total,
+		Evaluated:   payload.Evaluated,
+		Hits:        payload.Hits,
+		PassRate:    passRate,
+	}, true
+}
+
+func evalReportSummary(payload map[string]any) map[string]any {
+	return map[string]any{
+		"type":          payload["type"],
+		"dataset":       payload["dataset"],
+		"generated_at":  payload["generated_at"],
+		"total":         payload["total"],
+		"evaluated":     payload["evaluated"],
+		"hits":          payload["hits"],
+		"correct":       payload["correct"],
+		"accuracy":      payload["accuracy"],
+		"hit_rate_at_k": payload["hit_rate_at_k"],
+		"mrr":           payload["mrr"],
+		"by_query_type": payload["by_query_type"],
+		"by_group":      payload["by_group"],
+		"pass_rate":     firstNumber(payload["pass_rate"], payload["accuracy"], payload["hit_rate_at_k"], payload["recall_case_hit_rate"]),
+	}
+}
+
+func reportResults(payload map[string]any) []any {
+	results, ok := payload["results"].([]any)
+	if !ok {
+		return nil
+	}
+	return results
+}
+
+func firstNumber(values ...any) float64 {
+	for _, value := range values {
+		if number, ok := value.(float64); ok && number != 0 {
+			return number
+		}
+	}
+	return 0
+}
+
+func evalToolSuites(datasets []adminEvalDataset, reports []adminEvalReport) []adminEvalToolSuite {
+	suites := []adminEvalToolSuite{
+		{ID: "rag_retriever_eval", Name: "RAG 检索召回", Scope: "tool", DatasetID: "rag_recall_cases", Command: "node quality/evals/run_rag_recall_eval.mjs quality/data/eval/rag_recall_cases.jsonl"},
+		{ID: "intent", Name: "意图识别", Scope: "tool", DatasetID: "intent_cases", Command: "node quality/evals/run_intent_eval.mjs quality/data/eval/intent_cases.jsonl"},
+		{ID: "agent_e2e", Name: "导购 Agent 端到端", Scope: "agent", DatasetID: "agent_e2e_queries", Command: "node quality/evals/run_agent_e2e.mjs quality/data/eval/agent_e2e_queries.jsonl"},
+	}
+	datasetSet := make(map[string]bool, len(datasets))
+	for _, item := range datasets {
+		datasetSet[item.ID] = true
+	}
+	for i := range suites {
+		if !datasetSet[suites[i].DatasetID] {
+			suites[i].DatasetID = ""
+		}
+		for _, report := range reports {
+			if report.Type == suites[i].ID || strings.Contains(report.Type, suites[i].ID) || sameEvalFamily(report.Type, suites[i].ID) {
+				suites[i].LatestReportID = report.ID
+				break
+			}
+		}
+	}
+	return suites
+}
+
+func sameEvalFamily(reportType string, suiteID string) bool {
+	if strings.HasPrefix(reportType, "rag_") && strings.HasPrefix(suiteID, "rag_") {
+		return true
+	}
+	if strings.HasPrefix(reportType, "intent") && strings.HasPrefix(suiteID, "intent") {
+		return true
+	}
+	return false
+}
+
+func evalTypeFromDataset(id string) string {
+	switch {
+	case strings.Contains(id, "rag"):
+		return "rag_recall"
+	case strings.Contains(id, "intent"):
+		return "intent"
+	case strings.Contains(id, "agent"):
+		return "agent_e2e"
+	default:
+		return "custom"
+	}
+}
+
+func evalDatasetName(id string) string {
+	switch id {
+	case "rag_recall_cases":
+		return "RAG 召回测试集"
+	case "intent_cases":
+		return "意图识别测试集"
+	case "agent_e2e_queries":
+		return "Agent 端到端测试集"
+	default:
+		return id
+	}
+}
+
+func projectPath(parts ...string) string {
+	path := filepath.Join(parts...)
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	return filepath.Join(append([]string{".."}, parts...)...)
+}
+
+func countJSONLLines(path string) int {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer file.Close()
+	count := 0
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line != "" && !strings.HasPrefix(line, "#") {
+			count++
+		}
+	}
+	return count
+}
+
+func fileModTime(info os.FileInfo) time.Time {
+	if info == nil {
+		return time.Time{}
+	}
+	return info.ModTime()
 }
 
 func (s *Server) handleListAdminDocuments(w http.ResponseWriter, r *http.Request) {
@@ -848,7 +1296,9 @@ func (s *Server) handleListUserOrders(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListUserOrders(r.Context(), account.AccountID)})
+	page, pageSize := readPagination(r)
+	items, total := paginateList(s.store.ListUserOrders(r.Context(), account.AccountID), page, pageSize)
+	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
 func (s *Server) handleCheckout(w http.ResponseWriter, r *http.Request) {
@@ -954,7 +1404,9 @@ func (s *Server) handleListAgentSessions(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": s.store.ListUserSessions(r.Context(), account.AccountID)})
+	page, pageSize := readPagination(r)
+	items, total := paginateList(s.store.ListUserSessions(r.Context(), account.AccountID), page, pageSize)
+	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
 func (s *Server) handleAgentSessionAction(w http.ResponseWriter, r *http.Request) {
@@ -1324,6 +1776,20 @@ func splitAdminRunTracePath(path string) (string, bool) {
 		return "", false
 	}
 	return parts[0], true
+}
+
+func splitAdminPromptPath(path string) (string, bool, bool) {
+	rest := strings.TrimPrefix(path, "/api/v1/admin/prompts/")
+	parts := strings.Split(rest, "/")
+	if len(parts) == 1 && parts[0] != "" {
+		key, err := url.PathUnescape(parts[0])
+		return key, false, err == nil
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "publish" {
+		key, err := url.PathUnescape(parts[0])
+		return key, true, err == nil
+	}
+	return "", false, false
 }
 
 func splitProductAction(path string) (string, string, bool) {

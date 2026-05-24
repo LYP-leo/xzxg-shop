@@ -26,13 +26,82 @@ export type EvalRun = {
   passRate: string;
 };
 
+export type EvalDataset = {
+  id: string;
+  type: string;
+  name: string;
+  path: string;
+  case_count: number;
+  updated_at: string;
+};
+
+export type EvalReport = {
+  id: string;
+  type: string;
+  dataset: string;
+  path: string;
+  generated_at: string;
+  total: number;
+  evaluated: number;
+  hits: number;
+  pass_rate: number;
+};
+
+export type EvalToolSuite = {
+  id: string;
+  name: string;
+  scope: 'tool' | 'agent' | string;
+  dataset_id: string;
+  latest_report_id: string;
+  command: string;
+};
+
+export type EvalDashboard = {
+  tools: EvalToolSuite[];
+  datasets: EvalDataset[];
+  reports: EvalReport[];
+};
+
+export type EvalReportDetail = {
+  id: string;
+  path: string;
+  summary: Record<string, unknown>;
+  results: Record<string, unknown>[];
+  raw: Record<string, unknown>;
+};
+
 export type AppConfig = {
   config_key: string;
   config_value: string;
   value_type: 'string' | 'bool' | 'int' | string;
   description: string;
+  domain?: string;
   is_secret: boolean;
   updated_at: string;
+};
+
+export type AgentPrompt = {
+  prompt_id: string;
+  prompt_key: string;
+  title: string;
+  content: string;
+  status: 'draft' | 'active' | 'archived' | string;
+  version: number;
+  description: string;
+  created_by?: string;
+  published_at?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AgentPromptPublishRecord = {
+  record_id: string;
+  prompt_key: string;
+  prompt_id: string;
+  version: number;
+  published_by?: string;
+  nacos_data_id: string;
+  created_at: string;
 };
 
 export type AgentRun = {
@@ -59,6 +128,26 @@ export type AgentTraceEvent = {
   error?: string;
   metadata_json?: string;
   created_at: string;
+};
+
+export type VectorCollectionStatus = {
+  name: string;
+  kind: string;
+  primary_key: string;
+  vector_key: string;
+  metric_type: string;
+  dimension: number;
+  row_count: number;
+  load_state: string;
+};
+
+export type VectorIndexStatus = {
+  enabled: boolean;
+  ready: boolean;
+  address: string;
+  collections: VectorCollectionStatus[];
+  error?: string;
+  updated_at: string;
 };
 
 export type PagedProducts = {
@@ -173,6 +262,31 @@ export async function updateAppConfig(token: string, key: string, patch: { value
   });
 }
 
+export async function listAgentPromptsPage(token: string, page = 1, pageSize = 10): Promise<PagedResponse<AgentPrompt> & { publish_records: AgentPromptPublishRecord[] }> {
+  return requestJSON<PagedResponse<AgentPrompt> & { publish_records: AgentPromptPublishRecord[] }>(`/admin/prompts?page=${page}&page_size=${pageSize}`, {
+    headers: authHeaders(token)
+  });
+}
+
+export async function saveAgentPromptDraft(
+  token: string,
+  promptKey: string,
+  patch: { title: string; content: string; description?: string }
+): Promise<AgentPrompt> {
+  return requestJSON<AgentPrompt>(`/admin/prompts/${encodeURIComponent(promptKey)}`, {
+    method: 'PATCH',
+    headers: authHeaders(token),
+    body: JSON.stringify(patch)
+  });
+}
+
+export async function publishAgentPrompt(token: string, promptKey: string): Promise<{ prompt: AgentPrompt; record: AgentPromptPublishRecord }> {
+  return requestJSON<{ prompt: AgentPrompt; record: AgentPromptPublishRecord }>(`/admin/prompts/${encodeURIComponent(promptKey)}/publish`, {
+    method: 'POST',
+    headers: authHeaders(token)
+  });
+}
+
 export async function listAdminAgentRuns(token: string, limit = 30): Promise<AgentRun[]> {
   const data = await requestJSON<{ items: AgentRun[] }>(`/admin/agent/runs?page=1&page_size=${limit}`, {
     headers: authHeaders(token)
@@ -191,6 +305,24 @@ export async function getAdminAgentRunTrace(token: string, runId: string): Promi
     headers: authHeaders(token)
   });
   return data.items;
+}
+
+export async function getVectorIndexStatus(token: string): Promise<VectorIndexStatus> {
+  return requestJSON<VectorIndexStatus>('/admin/vector/status', {
+    headers: authHeaders(token)
+  });
+}
+
+export async function getEvalDashboard(token: string): Promise<EvalDashboard> {
+  return requestJSON<EvalDashboard>('/admin/evals', {
+    headers: authHeaders(token)
+  });
+}
+
+export async function getEvalReportDetail(token: string, reportId: string): Promise<EvalReportDetail> {
+  return requestJSON<EvalReportDetail>(`/admin/evals/reports/${reportId}`, {
+    headers: authHeaders(token)
+  });
 }
 
 export async function listEvalRuns(): Promise<EvalRun[]> {

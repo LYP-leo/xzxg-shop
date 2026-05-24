@@ -7,3 +7,7 @@ dist/
 .logs/
 quality/reports/
 .ai/pics
+.ai/tech/**/*.jpg
+.ai/tech/**/*.jpeg
+.ai/tech/**/*.png
+.ai/tech/**/*.webp

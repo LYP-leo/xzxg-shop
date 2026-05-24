@@ -7,12 +7,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/LYP-leo/xzxg-shop/backend/src/agent"
 	"github.com/LYP-leo/xzxg-shop/backend/src/configcenter"
+	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
 	"github.com/LYP-leo/xzxg-shop/backend/src/httpapi"
+	"github.com/LYP-leo/xzxg-shop/backend/src/rag"
 	"github.com/LYP-leo/xzxg-shop/backend/src/store"
 )
 
@@ -48,6 +51,24 @@ func main() {
 	if err := configCenter.Seed(ctx); err != nil {
 		logger.Warn("nacos config center unavailable, using in-memory defaults", "error", err)
 	}
+	if err := mysqlStore.SeedAgentPrompts(ctx, promptDefaultsFromConfig(configCenter.List(ctx, true))); err != nil {
+		logger.Warn("seed agent prompts failed", "error", err)
+	}
+	vectorConfig := rag.ConfigFromMap(configCenter.GetMap(ctx), runtimeConfig.Models.APIKey, runtimeConfig.Models.BaseURL)
+	if vectorConfig.Enabled {
+		vectorClient := rag.NewClient(vectorConfig, rag.NewOpenAIEmbedder(vectorConfig.EmbeddingBaseURL, vectorConfig.EmbeddingAPIKey, vectorConfig.EmbeddingModel))
+		mysqlStore.SetVectorClient(vectorClient)
+		go func() {
+			bootstrapCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			defer cancel()
+			logger.Info("vector index bootstrap started", "milvus", vectorConfig.MilvusAddress)
+			if err := mysqlStore.BootstrapVectorIndex(bootstrapCtx); err != nil {
+				logger.Warn("vector index unavailable, falling back to mysql retrieval", "error", err)
+				return
+			}
+			logger.Info("vector index ready", "milvus", vectorConfig.MilvusAddress)
+		}()
+	}
 	runtime := agent.NewRuntime(mysqlStore, configCenter, logger, runtimeConfig)
 	server := httpapi.NewServer(mysqlStore, configCenter, runtime, logger)
 
@@ -81,6 +102,37 @@ func main() {
 func env(key string, fallback string) string {
 	value := os.Getenv(key)
 	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func promptDefaultsFromConfig(items []domain.AppConfig) []domain.AgentPromptInput {
+	defaults := configcenter.PromptDefaults()
+	byKey := make(map[string]domain.AgentPromptInput, len(defaults))
+	for _, item := range defaults {
+		byKey[item.PromptKey] = item
+	}
+	for _, item := range items {
+		if !strings.HasPrefix(item.ConfigKey, "agent.prompt.") || strings.TrimSpace(item.ConfigValue) == "" {
+			continue
+		}
+		current := byKey[item.ConfigKey]
+		current.PromptKey = item.ConfigKey
+		current.Title = emptyFallback(item.Description, item.ConfigKey)
+		current.Content = item.ConfigValue
+		current.Description = item.Description
+		byKey[item.ConfigKey] = current
+	}
+	merged := make([]domain.AgentPromptInput, 0, len(byKey))
+	for _, item := range byKey {
+		merged = append(merged, item)
+	}
+	return merged
+}
+
+func emptyFallback(value string, fallback string) string {
+	if strings.TrimSpace(value) == "" {
 		return fallback
 	}
 	return value

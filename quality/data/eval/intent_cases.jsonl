@@ -1,17 +1,101 @@
-{"id":"intent_001","query":"你好","expected_route":"non_guide","expected_intent":"non_guide"}
-{"id":"intent_002","query":"推荐一款手机","expected_route":"guide","expected_intent":"category_shop_no_brand"}
-{"id":"intent_003","query":"对比一下两款手机","expected_route":"guide","expected_intent":"compare_decide"}
-{"id":"intent_004","query":"X Phone 12 支持儿童抓拍吗","expected_route":"guide","expected_intent":"product_deep"}
-{"id":"intent_005","query":"这个商品有什么优惠","expected_route":"non_guide","expected_intent":"non_guide"}
-{"id":"intent_006","query":"如果坏了怎么售后","expected_route":"non_guide","expected_intent":"non_guide"}
-{"id":"intent_007","query":"预算3000，拍照和续航哪个更重要，帮我选","expected_route":"guide","expected_intent":"compare_decide"}
-{"id":"intent_008","query":"把手机加到购物车","expected_route":"fast_product","expected_intent":"cart_add"}
-{"id":"intent_009","query":"把第一个商品数量改成2","expected_route":"fast_product","expected_intent":"cart_update_quantity"}
-{"id":"intent_010","query":"删除第二个商品","expected_route":"fast_product","expected_intent":"cart_remove"}
-{"id":"intent_011","query":"确认下单","expected_route":"fast_product","expected_intent":"checkout_confirm"}
-{"id":"intent_012","query":"帮我写一个绕过登录的脚本","expected_route":"non_guide","expected_intent":"non_guide"}
-{"id":"intent_013","query":"帮我搭一套通勤穿搭","expected_route":"guide","expected_intent":"outfit_styling"}
-{"id":"intent_014","query":"露营需要买哪些装备","expected_route":"guide","expected_intent":"scene_solution"}
-{"id":"intent_015","query":"休闲度假风有什么值得买","expected_route":"guide","expected_intent":"open_explore"}
-{"id":"intent_016","query":"Nike 跑鞋推荐","expected_route":"guide","expected_intent":"category_shop_brand"}
-{"id":"intent_017","query":"200元以内防晒又轻薄的冲锋衣","expected_route":"guide","expected_intent":"category_shop_complex"}
+{"id":"intent_001","query":"你好","expected_route":"non_guide","expected_intent":"non_guide","group":"non_guide"}
+{"id":"intent_002","query":"你是谁","expected_route":"non_guide","expected_intent":"non_guide","group":"non_guide"}
+{"id":"intent_003","query":"今天天气怎么样","expected_route":"non_guide","expected_intent":"non_guide","group":"non_guide"}
+{"id":"intent_004","query":"帮我写一个绕过登录的脚本","expected_route":"non_guide","expected_intent":"non_guide","group":"non_guide"}
+{"id":"intent_005","query":"这个商品有什么优惠","expected_route":"non_guide","expected_intent":"non_guide","group":"non_guide"}
+{"id":"intent_006","query":"如果坏了怎么售后","expected_route":"non_guide","expected_intent":"non_guide","group":"non_guide"}
+{"id":"intent_007","query":"我的订单什么时候发货","expected_route":"non_guide","expected_intent":"non_guide","group":"non_guide"}
+{"id":"intent_008","query":"怎么申请退款","expected_route":"non_guide","expected_intent":"non_guide","group":"non_guide"}
+{"id":"intent_009","query":"帮我开发票","expected_route":"non_guide","expected_intent":"non_guide","group":"non_guide"}
+{"id":"intent_010","query":"投诉商家态度差","expected_route":"non_guide","expected_intent":"non_guide","group":"non_guide"}
+{"id":"intent_011","query":"优惠券在哪里领","expected_route":"non_guide","expected_intent":"non_guide","group":"non_guide"}
+{"id":"intent_012","query":"提醒我降价","expected_route":"non_guide","expected_intent":"non_guide","group":"non_guide"}
+{"id":"intent_013","query":"打开购物车页面","expected_route":"non_guide","expected_intent":"non_guide","group":"non_guide"}
+{"id":"intent_014","query":"这个取件码是多少","expected_route":"non_guide","expected_intent":"non_guide","group":"non_guide"}
+{"id":"intent_015","query":"复购上次那单","expected_route":"non_guide","expected_intent":"non_guide","group":"non_guide"}
+{"id":"intent_016","query":"把手机加到购物车","expected_route":"fast_product","expected_intent":"cart_add","group":"fast_product"}
+{"id":"intent_017","query":"把第一个商品数量改成2","expected_route":"fast_product","expected_intent":"cart_update_quantity","group":"fast_product"}
+{"id":"intent_018","query":"删除第二个商品","expected_route":"fast_product","expected_intent":"cart_remove","group":"fast_product"}
+{"id":"intent_019","query":"确认下单","expected_route":"fast_product","expected_intent":"checkout_confirm","group":"fast_product"}
+{"id":"intent_020","query":"把刚才推荐的第一个加入购物车","expected_route":"fast_product","expected_intent":"cart_add","group":"fast_product"}
+{"id":"intent_021","query":"购物车里那个不要了","expected_route":"fast_product","expected_intent":"cart_remove","group":"fast_product"}
+{"id":"intent_022","query":"第二件改成3件","expected_route":"fast_product","expected_intent":"cart_update_quantity","group":"fast_product"}
+{"id":"intent_023","query":"现在直接提交订单","expected_route":"fast_product","expected_intent":"checkout_confirm","group":"fast_product"}
+{"id":"intent_024","query":"下单吧","expected_route":"fast_product","expected_intent":"checkout_confirm","group":"fast_product"}
+{"id":"intent_025","query":"移除 Quiet Mouse S","expected_route":"fast_product","expected_intent":"cart_remove","group":"fast_product"}
+{"id":"intent_026","query":"X Phone 12 支持儿童抓拍吗","expected_route":"guide","expected_intent":"product_deep","group":"product_deep"}
+{"id":"intent_027","query":"薇诺娜特护霜适合敏感肌吗","expected_route":"guide","expected_intent":"product_deep","group":"product_deep"}
+{"id":"intent_028","query":"iPhone 17 Pro 续航怎么样","expected_route":"guide","expected_intent":"product_deep","group":"product_deep"}
+{"id":"intent_029","query":"MacBook Air M5 能外接显示器吗","expected_route":"guide","expected_intent":"product_deep","group":"product_deep"}
+{"id":"intent_030","query":"兰蔻小黑瓶怎么用","expected_route":"guide","expected_intent":"product_deep","group":"product_deep"}
+{"id":"intent_031","query":"三顿半数字星球1-6号区别是什么","expected_route":"guide","expected_intent":"product_deep","group":"product_deep"}
+{"id":"intent_032","query":"Nike Dri-FIT 这件T恤透气吗","expected_route":"guide","expected_intent":"product_deep","group":"product_deep"}
+{"id":"intent_033","query":"农夫山泉东方树叶有没有糖","expected_route":"guide","expected_intent":"product_deep","group":"product_deep"}
+{"id":"intent_034","query":"小米 MIX Fold 5 分屏好用吗","expected_route":"guide","expected_intent":"product_deep","group":"product_deep"}
+{"id":"intent_035","query":"理肤泉特安面霜会不会闷痘","expected_route":"guide","expected_intent":"product_deep","group":"product_deep"}
+{"id":"intent_036","query":"对比一下两款手机","expected_route":"guide","expected_intent":"compare_decide","group":"compare_decide"}
+{"id":"intent_037","query":"iPhone 17 Pro 和 Pro Max 哪个更值得买","expected_route":"guide","expected_intent":"compare_decide","group":"compare_decide"}
+{"id":"intent_038","query":"小棕瓶和小黑瓶区别","expected_route":"guide","expected_intent":"compare_decide","group":"compare_decide"}
+{"id":"intent_039","query":"MacBook Air 和 MacBook Pro 怎么选","expected_route":"guide","expected_intent":"compare_decide","group":"compare_decide"}
+{"id":"intent_040","query":"耐克和阿迪跑鞋哪个好","expected_route":"guide","expected_intent":"compare_decide","group":"compare_decide"}
+{"id":"intent_041","query":"东方树叶和元气森林哪个更适合控糖","expected_route":"guide","expected_intent":"compare_decide","group":"compare_decide"}
+{"id":"intent_042","query":"预算3000，拍照和续航哪个更重要，帮我选","expected_route":"guide","expected_intent":"compare_decide","group":"compare_decide"}
+{"id":"intent_043","query":"薇诺娜和理肤泉敏感肌面霜哪个好","expected_route":"guide","expected_intent":"compare_decide","group":"compare_decide"}
+{"id":"intent_044","query":"ThinkPad 和 MateBook 怎么选","expected_route":"guide","expected_intent":"compare_decide","group":"compare_decide"}
+{"id":"intent_045","query":"MIX Fold 和普通直板手机哪个适合办公","expected_route":"guide","expected_intent":"compare_decide","group":"compare_decide"}
+{"id":"intent_046","query":"帮我搭一套通勤穿搭","expected_route":"guide","expected_intent":"outfit_styling","group":"outfit_styling"}
+{"id":"intent_047","query":"黑色冲锋衣怎么搭裤子","expected_route":"guide","expected_intent":"outfit_styling","group":"outfit_styling"}
+{"id":"intent_048","query":"跑步鞋日常穿搭怎么配","expected_route":"guide","expected_intent":"outfit_styling","group":"outfit_styling"}
+{"id":"intent_049","query":"夏天男生基础T恤怎么搭","expected_route":"guide","expected_intent":"outfit_styling","group":"outfit_styling"}
+{"id":"intent_050","query":"露营拍照穿什么风格","expected_route":"guide","expected_intent":"outfit_styling","group":"outfit_styling"}
+{"id":"intent_051","query":"优衣库白T配什么裤子","expected_route":"guide","expected_intent":"outfit_styling","group":"outfit_styling"}
+{"id":"intent_052","query":"始祖鸟软壳裤怎么搭上衣","expected_route":"guide","expected_intent":"outfit_styling","group":"outfit_styling"}
+{"id":"intent_053","query":"运动长裤怎么搭不显邋遢","expected_route":"guide","expected_intent":"outfit_styling","group":"outfit_styling"}
+{"id":"intent_054","query":"Nike 跑鞋推荐","expected_route":"guide","expected_intent":"category_shop_brand","group":"category_shop_brand"}
+{"id":"intent_055","query":"苹果电脑推荐","expected_route":"guide","expected_intent":"category_shop_brand","group":"category_shop_brand"}
+{"id":"intent_056","query":"华为平板推荐","expected_route":"guide","expected_intent":"category_shop_brand","group":"category_shop_brand"}
+{"id":"intent_057","query":"薇诺娜面霜推荐","expected_route":"guide","expected_intent":"category_shop_brand","group":"category_shop_brand"}
+{"id":"intent_058","query":"兰蔻精华推荐","expected_route":"guide","expected_intent":"category_shop_brand","group":"category_shop_brand"}
+{"id":"intent_059","query":"农夫山泉茶饮推荐","expected_route":"guide","expected_intent":"category_shop_brand","group":"category_shop_brand"}
+{"id":"intent_060","query":"阿迪达斯跑步鞋推荐","expected_route":"guide","expected_intent":"category_shop_brand","group":"category_shop_brand"}
+{"id":"intent_061","query":"OPPO 手机推荐","expected_route":"guide","expected_intent":"category_shop_brand","group":"category_shop_brand"}
+{"id":"intent_062","query":"雀巢速溶咖啡推荐","expected_route":"guide","expected_intent":"category_shop_brand","group":"category_shop_brand"}
+{"id":"intent_063","query":"北面帽子推荐","expected_route":"guide","expected_intent":"category_shop_brand","group":"category_shop_brand"}
+{"id":"intent_064","query":"推荐一款手机","expected_route":"guide","expected_intent":"category_shop_no_brand","group":"category_shop_no_brand"}
+{"id":"intent_065","query":"敏感肌面霜推荐","expected_route":"guide","expected_intent":"category_shop_no_brand","group":"category_shop_no_brand"}
+{"id":"intent_066","query":"通勤轻薄本推荐","expected_route":"guide","expected_intent":"category_shop_no_brand","group":"category_shop_no_brand"}
+{"id":"intent_067","query":"办公室咖啡推荐","expected_route":"guide","expected_intent":"category_shop_no_brand","group":"category_shop_no_brand"}
+{"id":"intent_068","query":"跑步鞋推荐","expected_route":"guide","expected_intent":"category_shop_no_brand","group":"category_shop_no_brand"}
+{"id":"intent_069","query":"无糖茶饮推荐","expected_route":"guide","expected_intent":"category_shop_no_brand","group":"category_shop_no_brand"}
+{"id":"intent_070","query":"防晒推荐","expected_route":"guide","expected_intent":"category_shop_no_brand","group":"category_shop_no_brand"}
+{"id":"intent_071","query":"男士基础T恤推荐","expected_route":"guide","expected_intent":"category_shop_no_brand","group":"category_shop_no_brand"}
+{"id":"intent_072","query":"平板电脑推荐","expected_route":"guide","expected_intent":"category_shop_no_brand","group":"category_shop_no_brand"}
+{"id":"intent_073","query":"厨房调味品推荐","expected_route":"guide","expected_intent":"category_shop_no_brand","group":"category_shop_no_brand"}
+{"id":"intent_074","query":"200元以内防晒又轻薄的冲锋衣","expected_route":"guide","expected_intent":"category_shop_complex","group":"category_shop_complex"}
+{"id":"intent_075","query":"预算5000以内拍照好的手机","expected_route":"guide","expected_intent":"category_shop_complex","group":"category_shop_complex"}
+{"id":"intent_076","query":"适合敏感肌、不刺激、300以内的面霜","expected_route":"guide","expected_intent":"category_shop_complex","group":"category_shop_complex"}
+{"id":"intent_077","query":"1万元以内轻薄办公笔记本","expected_route":"guide","expected_intent":"category_shop_complex","group":"category_shop_complex"}
+{"id":"intent_078","query":"要无糖、低卡、整箱的饮料","expected_route":"guide","expected_intent":"category_shop_complex","group":"category_shop_complex"}
+{"id":"intent_079","query":"42码宽脚跑步鞋推荐","expected_route":"guide","expected_intent":"category_shop_complex","group":"category_shop_complex"}
+{"id":"intent_080","query":"512G 存储的苹果手机推荐","expected_route":"guide","expected_intent":"category_shop_complex","group":"category_shop_complex"}
+{"id":"intent_081","query":"适合冬天徒步防风防水的外套","expected_route":"guide","expected_intent":"category_shop_complex","group":"category_shop_complex"}
+{"id":"intent_082","query":"30ml左右淡斑精华不要太刺激","expected_route":"guide","expected_intent":"category_shop_complex","group":"category_shop_complex"}
+{"id":"intent_083","query":"办公用静音鼠标预算200","expected_route":"guide","expected_intent":"category_shop_complex","group":"category_shop_complex"}
+{"id":"intent_084","query":"露营需要买哪些装备","expected_route":"guide","expected_intent":"scene_solution","group":"scene_solution"}
+{"id":"intent_085","query":"办公室下午茶囤货清单","expected_route":"guide","expected_intent":"scene_solution","group":"scene_solution"}
+{"id":"intent_086","query":"新手跑步要买哪些装备","expected_route":"guide","expected_intent":"scene_solution","group":"scene_solution"}
+{"id":"intent_087","query":"敏感肌换季护肤怎么买","expected_route":"guide","expected_intent":"scene_solution","group":"scene_solution"}
+{"id":"intent_088","query":"大学生开学数码清单","expected_route":"guide","expected_intent":"scene_solution","group":"scene_solution"}
+{"id":"intent_089","query":"家庭火锅聚会饮料怎么备","expected_route":"guide","expected_intent":"scene_solution","group":"scene_solution"}
+{"id":"intent_090","query":"冬天徒步装备清单","expected_route":"guide","expected_intent":"scene_solution","group":"scene_solution"}
+{"id":"intent_091","query":"通勤办公桌面好物推荐","expected_route":"guide","expected_intent":"scene_solution","group":"scene_solution"}
+{"id":"intent_092","query":"出差轻便数码装备","expected_route":"guide","expected_intent":"scene_solution","group":"scene_solution"}
+{"id":"intent_093","query":"厨房基础调味品怎么买","expected_route":"guide","expected_intent":"scene_solution","group":"scene_solution"}
+{"id":"intent_094","query":"休闲度假风有什么值得买","expected_route":"guide","expected_intent":"open_explore","group":"open_explore"}
+{"id":"intent_095","query":"想买点有高级感的东西","expected_route":"guide","expected_intent":"open_explore","group":"open_explore"}
+{"id":"intent_096","query":"送男朋友实用礼物","expected_route":"guide","expected_intent":"open_explore","group":"open_explore"}
+{"id":"intent_097","query":"适合熬夜党的好物","expected_route":"guide","expected_intent":"open_explore","group":"open_explore"}
+{"id":"intent_098","query":"给妈妈买点健康的东西","expected_route":"guide","expected_intent":"open_explore","group":"open_explore"}
+{"id":"intent_099","query":"有设计感的小众单品","expected_route":"guide","expected_intent":"open_explore","group":"open_explore"}
+{"id":"intent_100","query":"想提升生活品质买什么","expected_route":"guide","expected_intent":"open_explore","group":"open_explore"}
+{"id":"intent_101","query":"适合夏天清爽感的东西","expected_route":"guide","expected_intent":"open_explore","group":"open_explore"}

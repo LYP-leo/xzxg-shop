@@ -21,14 +21,19 @@ type nacosDocument struct {
 	Configs []domain.AppConfig `json:"configs"`
 }
 
+type nacosPromptDocument struct {
+	Prompts []domain.AgentPrompt `json:"prompts"`
+}
+
 type NacosCenter struct {
-	baseURL   string
-	namespace string
-	group     string
-	dataID    string
-	client    *http.Client
-	mu        sync.RWMutex
-	fallback  *MemoryCenter
+	baseURL      string
+	namespace    string
+	group        string
+	legacyDataID string
+	dataIDs      map[string]string
+	client       *http.Client
+	mu           sync.RWMutex
+	fallback     *MemoryCenter
 }
 
 func NewNacosCenter(baseURL string, namespace string, group string, dataID string, defaults []domain.AppConfig) *NacosCenter {
@@ -39,12 +44,18 @@ func NewNacosCenter(baseURL string, namespace string, group string, dataID strin
 		dataID = "xzxg-shop-app-config.json"
 	}
 	return &NacosCenter{
-		baseURL:   strings.TrimRight(baseURL, "/"),
-		namespace: strings.TrimSpace(namespace),
-		group:     strings.TrimSpace(group),
-		dataID:    strings.TrimSpace(dataID),
-		client:    &http.Client{Timeout: 3 * time.Second},
-		fallback:  NewMemoryCenter(defaults),
+		baseURL:      strings.TrimRight(baseURL, "/"),
+		namespace:    strings.TrimSpace(namespace),
+		group:        strings.TrimSpace(group),
+		legacyDataID: strings.TrimSpace(dataID),
+		dataIDs: map[string]string{
+			"app":    "xzxg-shop-app-config.json",
+			"rag":    "xzxg-shop-rag-config.json",
+			"infra":  "xzxg-shop-infra-config.json",
+			"prompt": "xzxg-shop-agent-prompts.json",
+		},
+		client:   &http.Client{Timeout: 3 * time.Second},
+		fallback: NewMemoryCenter(defaults),
 	}
 }
 
@@ -52,14 +63,14 @@ func (c *NacosCenter) Seed(ctx context.Context) error {
 	items, err := c.readAll(ctx)
 	if err == nil && len(items) > 0 {
 		items = mergeDefaults(items, c.fallbackList(ctx, true))
-		if err := c.publish(ctx, items); err != nil {
+		if err := c.publishAll(ctx, items); err != nil {
 			return err
 		}
 		c.replaceFallback(ctx, items)
 		return nil
 	}
 	items = c.fallbackList(ctx, true)
-	return c.publish(ctx, items)
+	return c.publishAll(ctx, items)
 }
 
 func (c *NacosCenter) List(ctx context.Context, includeSecrets bool) []domain.AppConfig {
@@ -113,7 +124,7 @@ func (c *NacosCenter) Upsert(ctx context.Context, input domain.AppConfigInput) (
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].ConfigKey < items[j].ConfigKey })
 
-	if err := c.publish(ctx, items); err != nil {
+	if err := c.publishAll(ctx, items); err != nil {
 		return domain.AppConfig{}, err
 	}
 	c.upsertFallback(ctx, input)
@@ -121,12 +132,39 @@ func (c *NacosCenter) Upsert(ctx context.Context, input domain.AppConfigInput) (
 }
 
 func (c *NacosCenter) readAll(ctx context.Context) ([]domain.AppConfig, error) {
+	merged := map[string]domain.AppConfig{}
+	readAny := false
+	for _, dataID := range c.readDataIDs() {
+		items, err := c.readDocument(ctx, dataID)
+		if err != nil {
+			continue
+		}
+		readAny = true
+		for _, item := range items {
+			if item.Domain == "" {
+				item.Domain = DomainForKey(item.ConfigKey)
+			}
+			merged[item.ConfigKey] = item
+		}
+	}
+	if !readAny {
+		return nil, errors.New("nacos config not found")
+	}
+	items := make([]domain.AppConfig, 0, len(merged))
+	for _, item := range merged {
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].ConfigKey < items[j].ConfigKey })
+	return items, nil
+}
+
+func (c *NacosCenter) readDocument(ctx context.Context, dataID string) ([]domain.AppConfig, error) {
 	endpoint, err := c.configURL("/nacos/v1/cs/configs")
 	if err != nil {
 		return nil, err
 	}
 	query := endpoint.Query()
-	query.Set("dataId", c.dataID)
+	query.Set("dataId", dataID)
 	query.Set("group", c.group)
 	if c.namespace != "" {
 		query.Set("tenant", c.namespace)
@@ -157,27 +195,62 @@ func (c *NacosCenter) readAll(ctx context.Context) ([]domain.AppConfig, error) {
 	if err := json.Unmarshal(body, &doc); err != nil {
 		return nil, err
 	}
+	if len(doc.Configs) == 0 {
+		var promptDoc nacosPromptDocument
+		if err := json.Unmarshal(body, &promptDoc); err == nil {
+			for _, prompt := range promptDoc.Prompts {
+				doc.Configs = append(doc.Configs, domain.AppConfig{
+					ConfigKey:   prompt.PromptKey,
+					ConfigValue: prompt.Content,
+					ValueType:   "text",
+					Description: prompt.Description,
+					Domain:      "prompt",
+					UpdatedAt:   prompt.UpdatedAt,
+				})
+			}
+		}
+	}
 	for index := range doc.Configs {
 		if doc.Configs[index].UpdatedAt.IsZero() {
 			doc.Configs[index].UpdatedAt = time.Now()
+		}
+		if doc.Configs[index].Domain == "" {
+			doc.Configs[index].Domain = DomainForKey(doc.Configs[index].ConfigKey)
 		}
 	}
 	sort.Slice(doc.Configs, func(i, j int) bool { return doc.Configs[i].ConfigKey < doc.Configs[j].ConfigKey })
 	return doc.Configs, nil
 }
 
-func (c *NacosCenter) publish(ctx context.Context, items []domain.AppConfig) error {
+func (c *NacosCenter) publishAll(ctx context.Context, items []domain.AppConfig) error {
+	byDomain := map[string][]domain.AppConfig{}
+	for _, item := range items {
+		if item.Domain == "" {
+			item.Domain = DomainForKey(item.ConfigKey)
+		}
+		byDomain[item.Domain] = append(byDomain[item.Domain], item)
+	}
+	for domainName, domainItems := range byDomain {
+		if err := c.publish(ctx, c.dataIDForDomain(domainName), domainItems); err != nil {
+			return err
+		}
+	}
+	c.replaceFallback(ctx, items)
+	return nil
+}
+
+func (c *NacosCenter) publish(ctx context.Context, dataID string, items []domain.AppConfig) error {
 	endpoint, err := c.configURL("/nacos/v1/cs/configs")
 	if err != nil {
 		return err
 	}
-	payload, err := json.MarshalIndent(nacosDocument{Configs: items}, "", "  ")
+	payload, err := c.marshalDocument(dataID, items)
 	if err != nil {
 		return err
 	}
 
 	form := url.Values{}
-	form.Set("dataId", c.dataID)
+	form.Set("dataId", dataID)
 	form.Set("group", c.group)
 	form.Set("content", string(payload))
 	form.Set("type", "json")
@@ -202,8 +275,45 @@ func (c *NacosCenter) publish(ctx context.Context, items []domain.AppConfig) err
 	if strings.TrimSpace(string(body)) != "true" {
 		return fmt.Errorf("nacos publish config rejected: %s", strings.TrimSpace(string(body)))
 	}
-	c.replaceFallback(ctx, items)
 	return nil
+}
+
+func (c *NacosCenter) marshalDocument(dataID string, items []domain.AppConfig) ([]byte, error) {
+	sort.Slice(items, func(i, j int) bool { return items[i].ConfigKey < items[j].ConfigKey })
+	if dataID == c.dataIDForDomain("prompt") {
+		prompts := make([]domain.AgentPrompt, 0, len(items))
+		for _, item := range items {
+			prompts = append(prompts, domain.AgentPrompt{
+				PromptKey:   item.ConfigKey,
+				Title:       item.Description,
+				Content:     item.ConfigValue,
+				Status:      "active",
+				Description: item.Description,
+				UpdatedAt:   item.UpdatedAt,
+			})
+		}
+		return json.MarshalIndent(nacosPromptDocument{Prompts: prompts}, "", "  ")
+	}
+	return json.MarshalIndent(nacosDocument{Configs: items}, "", "  ")
+}
+
+func (c *NacosCenter) readDataIDs() []string {
+	ids := []string{c.legacyDataID}
+	for _, domainName := range []string{"app", "infra", "rag", "prompt"} {
+		dataID := c.dataIDForDomain(domainName)
+		if dataID == "" || containsString(ids, dataID) {
+			continue
+		}
+		ids = append(ids, dataID)
+	}
+	return ids
+}
+
+func (c *NacosCenter) dataIDForDomain(domainName string) string {
+	if dataID := c.dataIDs[domainName]; dataID != "" {
+		return dataID
+	}
+	return c.dataIDs["app"]
 }
 
 func (c *NacosCenter) configURL(path string) (*url.URL, error) {
@@ -247,8 +357,20 @@ func mergeDefaults(items []domain.AppConfig, defaults []domain.AppConfig) []doma
 		if exists[item.ConfigKey] {
 			continue
 		}
+		if item.Domain == "" {
+			item.Domain = DomainForKey(item.ConfigKey)
+		}
 		items = append(items, item)
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].ConfigKey < items[j].ConfigKey })
 	return items
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }

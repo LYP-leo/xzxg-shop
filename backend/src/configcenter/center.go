@@ -197,19 +197,38 @@ func NewMemoryCenter(defaults []domain.AppConfig) *MemoryCenter {
 
 func DefaultConfigs(envAPIKey string) []domain.AppConfig {
 	configs := []domain.AppConfig{
-		{ConfigKey: "ai.base_url", ConfigValue: "https://dashscope.aliyuncs.com/compatible-mode/v1", ValueType: "string", Description: "OpenAI 兼容模型服务 Base URL"},
-		{ConfigKey: "ai.small_model", ConfigValue: "qwen3.5-flash", ValueType: "string", Description: "低成本小模型，用于意图识别和轻量回答"},
-		{ConfigKey: "ai.large_model", ConfigValue: "qwen3.6-plus", ValueType: "string", Description: "复杂导购决策模型"},
-		{ConfigKey: "ai.api_key", ConfigValue: envAPIKey, ValueType: "string", Description: "模型服务 API Key，列表接口脱敏", IsSecret: true},
-		{ConfigKey: "ai.enabled", ConfigValue: "true", ValueType: "bool", Description: "是否启用真实模型调用"},
-		{ConfigKey: "ai.enable_thinking", ConfigValue: "false", ValueType: "bool", Description: "是否启用模型思考模式，默认关闭以降低首 token 延迟"},
-		{ConfigKey: "agent.followups_enabled", ConfigValue: "true", ValueType: "bool", Description: "是否生成追问"},
-		{ConfigKey: "agent.config_refresh_seconds", ConfigValue: "15", ValueType: "int", Description: "运行时动态配置刷新间隔秒数"},
-		{ConfigKey: "agent.prompt.route", ConfigValue: DefaultRoutePrompt, ValueType: "text", Description: "一级路由 Prompt：guide/non_guide/fast_product"},
-		{ConfigKey: "agent.prompt.guide_intent", ConfigValue: DefaultGuideIntentPrompt, ValueType: "text", Description: "导购细分 Prompt：P1-P6"},
-		{ConfigKey: "agent.prompt.answer_base", ConfigValue: DefaultAnswerBasePrompt, ValueType: "text", Description: "主导购 Agent 基础系统 Prompt"},
-		{ConfigKey: "agent.prompt.tool_protocol", ConfigValue: DefaultToolProtocolPrompt, ValueType: "text", Description: "主 Agent ReAct 工具协议 Prompt"},
-		{ConfigKey: "agent.prompt.followups", ConfigValue: DefaultFollowupsPrompt, ValueType: "text", Description: "追问生成 Agent 系统 Prompt"},
+		{ConfigKey: "ai.base_url", ConfigValue: "https://dashscope.aliyuncs.com/compatible-mode/v1", ValueType: "string", Description: "OpenAI 兼容模型服务 Base URL", Domain: "app"},
+		{ConfigKey: "ai.small_model", ConfigValue: "qwen3.5-flash", ValueType: "string", Description: "低成本小模型，用于意图识别和轻量回答", Domain: "app"},
+		{ConfigKey: "ai.large_model", ConfigValue: "qwen3.6-plus", ValueType: "string", Description: "复杂导购决策模型", Domain: "app"},
+		{ConfigKey: "ai.api_key", ConfigValue: envAPIKey, ValueType: "string", Description: "模型服务 API Key，列表接口脱敏", Domain: "app", IsSecret: true},
+		{ConfigKey: "ai.enabled", ConfigValue: "true", ValueType: "bool", Description: "是否启用真实模型调用", Domain: "app"},
+		{ConfigKey: "ai.enable_thinking", ConfigValue: "false", ValueType: "bool", Description: "是否启用模型思考模式，默认关闭以降低首 token 延迟", Domain: "app"},
+		{ConfigKey: "vector.enabled", ConfigValue: "true", ValueType: "bool", Description: "是否启用 Milvus 向量召回；不可用时自动降级关键词检索", Domain: "infra"},
+		{ConfigKey: "milvus.address", ConfigValue: "http://127.0.0.1:19530", ValueType: "string", Description: "Milvus REST 地址", Domain: "infra"},
+		{ConfigKey: "milvus.token", ConfigValue: "root:Milvus", ValueType: "string", Description: "Milvus Token，本地 standalone 默认 root:Milvus", Domain: "infra", IsSecret: true},
+		{ConfigKey: "milvus.database", ConfigValue: "", ValueType: "string", Description: "Milvus 数据库，空表示 default", Domain: "infra"},
+		{ConfigKey: "milvus.collection.products", ConfigValue: "product_text_vectors", ValueType: "string", Description: "商品文本向量 collection", Domain: "infra"},
+		{ConfigKey: "milvus.collection.knowledge", ConfigValue: "knowledge_text_chunks", ValueType: "string", Description: "知识片段文本向量 collection", Domain: "infra"},
+		{ConfigKey: "embedding.base_url", ConfigValue: "https://dashscope.aliyuncs.com/compatible-mode/v1", ValueType: "string", Description: "Embedding OpenAI 兼容 Base URL", Domain: "infra"},
+		{ConfigKey: "embedding.model", ConfigValue: "text-embedding-v4", ValueType: "string", Description: "文本 Embedding 模型", Domain: "infra"},
+		{ConfigKey: "embedding.batch_size", ConfigValue: "10", ValueType: "int", Description: "Embedding 批量大小", Domain: "infra"},
+		{ConfigKey: "retrieval.keyword.top_n", ConfigValue: "200", ValueType: "int", Description: "关键词召回候选数，宽 query 需要更大的候选池再重排", Domain: "rag"},
+		{ConfigKey: "retrieval.vector.top_n", ConfigValue: "80", ValueType: "int", Description: "向量召回候选数", Domain: "rag"},
+		{ConfigKey: "retrieval.rerank.weight.title_match", ConfigValue: "0.30", ValueType: "float", Description: "RAG 重排：标题命中基础权重", Domain: "rag"},
+		{ConfigKey: "retrieval.rerank.weight.term_match", ConfigValue: "0.35", ValueType: "float", Description: "RAG 重排：query term 命中比例权重", Domain: "rag"},
+		{ConfigKey: "retrieval.rerank.weight.required_match", ConfigValue: "0.15", ValueType: "float", Description: "RAG 重排：强约束 term 命中权重", Domain: "rag"},
+		{ConfigKey: "retrieval.rerank.weight.brand_boost", ConfigValue: "0.45", ValueType: "float", Description: "RAG 重排：品牌精确命中加权", Domain: "rag"},
+		{ConfigKey: "retrieval.rerank.weight.model_boost", ConfigValue: "0.35", ValueType: "float", Description: "RAG 重排：型号/系列命中加权", Domain: "rag"},
+		{ConfigKey: "retrieval.rerank.weight.category_boost", ConfigValue: "0.20", ValueType: "float", Description: "RAG 重排：品类命中加权", Domain: "rag"},
+		{ConfigKey: "retrieval.rerank.weight.generic_penalty", ConfigValue: "0.50", ValueType: "float", Description: "RAG 重排：只命中推荐/怎么选等泛词时降权", Domain: "rag"},
+		{ConfigKey: "retrieval.rerank.generic_terms", ConfigValue: "推荐,怎么选,同类,区别,性价比,通勤,办公,好喝,不腻,续航,性能,修护", ValueType: "string", Description: "RAG 重排泛意图词，命中这些词不应主导召回", Domain: "rag"},
+		{ConfigKey: "agent.followups_enabled", ConfigValue: "true", ValueType: "bool", Description: "是否生成追问", Domain: "app"},
+		{ConfigKey: "agent.config_refresh_seconds", ConfigValue: "15", ValueType: "int", Description: "运行时动态配置刷新间隔秒数", Domain: "app"},
+		{ConfigKey: "agent.prompt.route", ConfigValue: DefaultRoutePrompt, ValueType: "text", Description: "一级路由 Prompt：guide/non_guide/fast_product", Domain: "prompt"},
+		{ConfigKey: "agent.prompt.guide_intent", ConfigValue: DefaultGuideIntentPrompt, ValueType: "text", Description: "导购细分 Prompt：P1-P6", Domain: "prompt"},
+		{ConfigKey: "agent.prompt.answer_base", ConfigValue: DefaultAnswerBasePrompt, ValueType: "text", Description: "主导购 Agent 基础系统 Prompt", Domain: "prompt"},
+		{ConfigKey: "agent.prompt.tool_protocol", ConfigValue: DefaultToolProtocolPrompt, ValueType: "text", Description: "主 Agent ReAct 工具协议 Prompt", Domain: "prompt"},
+		{ConfigKey: "agent.prompt.followups", ConfigValue: DefaultFollowupsPrompt, ValueType: "text", Description: "追问生成 Agent 系统 Prompt", Domain: "prompt"},
 	}
 	for _, intent := range DefaultIntentKeys() {
 		configs = append(configs, domain.AppConfig{
@@ -217,9 +236,29 @@ func DefaultConfigs(envAPIKey string) []domain.AppConfig {
 			ConfigValue: defaultIntentPrompts[intent],
 			ValueType:   "text",
 			Description: "主导购 Agent 意图 Prompt：" + intent,
+			Domain:      "prompt",
 		})
 	}
 	return configs
+}
+
+func PromptDefaults() []domain.AgentPromptInput {
+	defaults := []domain.AgentPromptInput{
+		{PromptKey: "agent.prompt.route", Title: "一级路由 Prompt", Content: DefaultRoutePrompt, Description: "guide/non_guide/fast_product 路由"},
+		{PromptKey: "agent.prompt.guide_intent", Title: "导购细分 Prompt", Content: DefaultGuideIntentPrompt, Description: "P1-P6 导购意图识别"},
+		{PromptKey: "agent.prompt.answer_base", Title: "主 Agent 基础 Prompt", Content: DefaultAnswerBasePrompt, Description: "主导购 Agent 系统提示词"},
+		{PromptKey: "agent.prompt.tool_protocol", Title: "工具协议 Prompt", Content: DefaultToolProtocolPrompt, Description: "ReAct 工具调用协议"},
+		{PromptKey: "agent.prompt.followups", Title: "追问生成 Prompt", Content: DefaultFollowupsPrompt, Description: "导购追问生成"},
+	}
+	for _, intent := range DefaultIntentKeys() {
+		defaults = append(defaults, domain.AgentPromptInput{
+			PromptKey:   "agent.prompt.intent." + intent,
+			Title:       "意图 Prompt：" + intent,
+			Content:     defaultIntentPrompts[intent],
+			Description: "主导购 Agent 意图 Prompt：" + intent,
+		})
+	}
+	return defaults
 }
 
 func DefaultIntentKeys() []string {
@@ -273,11 +312,28 @@ func normalizeInput(input domain.AppConfigInput) domain.AppConfig {
 		ConfigValue: input.ConfigValue,
 		ValueType:   input.ValueType,
 		Description: input.Description,
+		Domain:      input.Domain,
 		IsSecret:    input.IsSecret,
 		UpdatedAt:   time.Now(),
+	}
+	if item.Domain == "" {
+		item.Domain = DomainForKey(item.ConfigKey)
 	}
 	if item.ValueType == "" {
 		item.ValueType = "string"
 	}
 	return item
+}
+
+func DomainForKey(key string) string {
+	switch {
+	case strings.HasPrefix(key, "agent.prompt."):
+		return "prompt"
+	case strings.HasPrefix(key, "retrieval."):
+		return "rag"
+	case strings.HasPrefix(key, "vector."), strings.HasPrefix(key, "milvus."), strings.HasPrefix(key, "embedding."):
+		return "infra"
+	default:
+		return "app"
+	}
 }

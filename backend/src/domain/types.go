@@ -95,6 +95,7 @@ type AppConfig struct {
 	ConfigValue string    `json:"config_value"`
 	ValueType   string    `json:"value_type"`
 	Description string    `json:"description"`
+	Domain      string    `json:"domain,omitempty"`
 	IsSecret    bool      `json:"is_secret"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
@@ -104,7 +105,60 @@ type AppConfigInput struct {
 	ConfigValue string
 	ValueType   string
 	Description string
+	Domain      string
 	IsSecret    bool
+}
+
+type AgentPrompt struct {
+	PromptID    string    `json:"prompt_id"`
+	PromptKey   string    `json:"prompt_key"`
+	Title       string    `json:"title"`
+	Content     string    `json:"content"`
+	Status      string    `json:"status"`
+	Version     int       `json:"version"`
+	Description string    `json:"description"`
+	CreatedBy   string    `json:"created_by,omitempty"`
+	PublishedAt time.Time `json:"published_at,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type AgentPromptInput struct {
+	PromptKey   string
+	Title       string
+	Content     string
+	Description string
+	CreatedBy   string
+}
+
+type AgentPromptPublishRecord struct {
+	RecordID    string    `json:"record_id"`
+	PromptKey   string    `json:"prompt_key"`
+	PromptID    string    `json:"prompt_id"`
+	Version     int       `json:"version"`
+	PublishedBy string    `json:"published_by,omitempty"`
+	NacosDataID string    `json:"nacos_data_id"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type VectorIndexStatus struct {
+	Enabled     bool                     `json:"enabled"`
+	Ready       bool                     `json:"ready"`
+	Address     string                   `json:"address"`
+	Collections []VectorCollectionStatus `json:"collections"`
+	Error       string                   `json:"error,omitempty"`
+	UpdatedAt   time.Time                `json:"updated_at"`
+}
+
+type VectorCollectionStatus struct {
+	Name       string `json:"name"`
+	Kind       string `json:"kind"`
+	PrimaryKey string `json:"primary_key"`
+	VectorKey  string `json:"vector_key"`
+	MetricType string `json:"metric_type"`
+	Dimension  int    `json:"dimension"`
+	RowCount   int64  `json:"row_count"`
+	LoadState  string `json:"load_state"`
 }
 
 type RunStatus string

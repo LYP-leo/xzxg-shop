@@ -182,6 +182,35 @@ CREATE TABLE IF NOT EXISTS agent_trace_events (
   INDEX idx_agent_trace_created_at (created_at)
 );
 
+CREATE TABLE IF NOT EXISTS agent_prompts (
+  prompt_id VARCHAR(64) PRIMARY KEY,
+  prompt_key VARCHAR(128) NOT NULL,
+  title VARCHAR(128) NOT NULL,
+  content MEDIUMTEXT NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  version INT NOT NULL,
+  description TEXT,
+  created_by VARCHAR(64) NOT NULL DEFAULT '',
+  published_at DATETIME NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_agent_prompts_key_version (prompt_key, version),
+  INDEX idx_agent_prompts_key_status (prompt_key, status),
+  INDEX idx_agent_prompts_updated_at (updated_at)
+);
+
+CREATE TABLE IF NOT EXISTS agent_prompt_publish_records (
+  record_id VARCHAR(64) PRIMARY KEY,
+  prompt_key VARCHAR(128) NOT NULL,
+  prompt_id VARCHAR(64) NOT NULL,
+  version INT NOT NULL,
+  published_by VARCHAR(64) NOT NULL DEFAULT '',
+  nacos_data_id VARCHAR(128) NOT NULL,
+  created_at DATETIME NOT NULL,
+  INDEX idx_prompt_publish_key (prompt_key),
+  INDEX idx_prompt_publish_created_at (created_at)
+);
+
 CREATE TABLE IF NOT EXISTS orders (
   order_id VARCHAR(64) PRIMARY KEY,
   order_no VARCHAR(64) NOT NULL DEFAULT '',

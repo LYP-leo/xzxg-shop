@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,7 +18,8 @@ import (
 )
 
 type MySQLStore struct {
-	db *sql.DB
+	db     *sql.DB
+	vector *rag.Client
 }
 
 func NewMySQLStore(db *sql.DB) *MySQLStore {
@@ -43,6 +45,10 @@ func (s *MySQLStore) Close() error {
 	return s.db.Close()
 }
 
+func (s *MySQLStore) SetVectorClient(client *rag.Client) {
+	s.vector = client
+}
+
 // Migrate 先执行基础 SQL，再执行兼容迁移。
 // 兼容迁移用于老库平滑升级，避免每次加字段都要求手动清库。
 func (s *MySQLStore) Migrate(ctx context.Context) error {
@@ -62,6 +68,20 @@ func (s *MySQLStore) Migrate(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (s *MySQLStore) BootstrapVectorIndex(ctx context.Context) error {
+	if s.vector == nil {
+		return nil
+	}
+	return s.vector.Bootstrap(ctx, s.productVectorRows(ctx), s.knowledgeVectorRows(ctx))
+}
+
+func (s *MySQLStore) VectorIndexStatus(ctx context.Context) domain.VectorIndexStatus {
+	if s.vector == nil {
+		return domain.VectorIndexStatus{Enabled: false, UpdatedAt: time.Now()}
+	}
+	return s.vector.Status(ctx)
 }
 
 // ensureAccessSchema 补齐历史版本缺少的字段、索引和种子数据。
@@ -733,9 +753,208 @@ func (s *MySQLStore) ListAgentTraceByRun(ctx context.Context, runID string) []do
 	return scanAgentTraceEvents(rows)
 }
 
+func (s *MySQLStore) SeedAgentPrompts(ctx context.Context, defaults []domain.AgentPromptInput) error {
+	for _, input := range defaults {
+		key := strings.TrimSpace(input.PromptKey)
+		if key == "" || strings.TrimSpace(input.Content) == "" {
+			continue
+		}
+		var count int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_prompts WHERE prompt_key = ?`, key).Scan(&count); err != nil {
+			return fmt.Errorf("count prompt %s: %w", key, err)
+		}
+		if count > 0 {
+			continue
+		}
+		now := time.Now()
+		_, err := s.db.ExecContext(ctx, `
+			INSERT INTO agent_prompts (
+				prompt_id, prompt_key, title, content, status, version, description,
+				created_by, published_at, created_at, updated_at
+			)
+			VALUES (?, ?, ?, ?, 'active', 1, ?, 'system', ?, ?, ?)
+		`, nextID("prm"), key, emptyFallback(input.Title, key), input.Content, input.Description, now, now, now)
+		if err != nil {
+			return fmt.Errorf("seed prompt %s: %w", key, err)
+		}
+	}
+	return nil
+}
+
+func (s *MySQLStore) ListAgentPromptsPage(ctx context.Context, page int, pageSize int) ([]domain.AgentPrompt, int) {
+	page, pageSize = normalizePage(page, pageSize)
+	total := 0
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM agent_prompts p
+		JOIN (
+			SELECT prompt_key, MAX(version) AS version
+			FROM agent_prompts
+			GROUP BY prompt_key
+		) latest ON latest.prompt_key = p.prompt_key AND latest.version = p.version
+	`).Scan(&total); err != nil {
+		return nil, 0
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT p.prompt_id, p.prompt_key, p.title, p.content, p.status, p.version,
+			COALESCE(p.description, ''), p.created_by, p.published_at, p.created_at, p.updated_at
+		FROM agent_prompts p
+		JOIN (
+			SELECT prompt_key, MAX(version) AS version
+			FROM agent_prompts
+			GROUP BY prompt_key
+		) latest ON latest.prompt_key = p.prompt_key AND latest.version = p.version
+		ORDER BY p.prompt_key
+		LIMIT ? OFFSET ?
+	`, pageSize, pageOffset(page, pageSize))
+	if err != nil {
+		return nil, 0
+	}
+	defer rows.Close()
+	return scanAgentPrompts(rows), total
+}
+
+func (s *MySQLStore) SaveAgentPromptDraft(ctx context.Context, input domain.AgentPromptInput) (domain.AgentPrompt, error) {
+	key := strings.TrimSpace(input.PromptKey)
+	content := strings.TrimSpace(input.Content)
+	if key == "" {
+		return domain.AgentPrompt{}, errors.New("prompt key is empty")
+	}
+	if content == "" {
+		return domain.AgentPrompt{}, errors.New("prompt content is empty")
+	}
+	var latestVersion int
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM agent_prompts WHERE prompt_key = ?`, key).Scan(&latestVersion); err != nil {
+		return domain.AgentPrompt{}, fmt.Errorf("read latest prompt version: %w", err)
+	}
+	now := time.Now()
+	item := domain.AgentPrompt{
+		PromptID:    nextID("prm"),
+		PromptKey:   key,
+		Title:       emptyFallback(input.Title, key),
+		Content:     input.Content,
+		Status:      "draft",
+		Version:     latestVersion + 1,
+		Description: input.Description,
+		CreatedBy:   input.CreatedBy,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO agent_prompts (
+			prompt_id, prompt_key, title, content, status, version, description,
+			created_by, created_at, updated_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, item.PromptID, item.PromptKey, item.Title, item.Content, item.Status, item.Version, item.Description, item.CreatedBy, item.CreatedAt, item.UpdatedAt)
+	if err != nil {
+		return domain.AgentPrompt{}, fmt.Errorf("insert prompt draft: %w", err)
+	}
+	return item, nil
+}
+
+func (s *MySQLStore) PublishAgentPrompt(ctx context.Context, promptKey string, publishedBy string, nacosDataID string) (domain.AgentPrompt, domain.AgentPromptPublishRecord, error) {
+	promptKey = strings.TrimSpace(promptKey)
+	if promptKey == "" {
+		return domain.AgentPrompt{}, domain.AgentPromptPublishRecord{}, errors.New("prompt key is empty")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.AgentPrompt{}, domain.AgentPromptPublishRecord{}, err
+	}
+	defer tx.Rollback()
+
+	var prompt domain.AgentPrompt
+	var publishedAt sql.NullTime
+	err = tx.QueryRowContext(ctx, `
+		SELECT prompt_id, prompt_key, title, content, status, version,
+			COALESCE(description, ''), created_by, published_at, created_at, updated_at
+		FROM agent_prompts
+		WHERE prompt_key = ?
+		ORDER BY version DESC
+		LIMIT 1
+	`, promptKey).Scan(
+		&prompt.PromptID, &prompt.PromptKey, &prompt.Title, &prompt.Content, &prompt.Status, &prompt.Version,
+		&prompt.Description, &prompt.CreatedBy, &publishedAt, &prompt.CreatedAt, &prompt.UpdatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.AgentPrompt{}, domain.AgentPromptPublishRecord{}, errors.New("prompt not found")
+	}
+	if err != nil {
+		return domain.AgentPrompt{}, domain.AgentPromptPublishRecord{}, fmt.Errorf("read prompt: %w", err)
+	}
+	now := time.Now()
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_prompts SET status = 'archived', updated_at = ? WHERE prompt_key = ? AND status = 'active'`, now, promptKey); err != nil {
+		return domain.AgentPrompt{}, domain.AgentPromptPublishRecord{}, fmt.Errorf("archive active prompt: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_prompts SET status = 'active', published_at = ?, updated_at = ? WHERE prompt_id = ?`, now, now, prompt.PromptID); err != nil {
+		return domain.AgentPrompt{}, domain.AgentPromptPublishRecord{}, fmt.Errorf("activate prompt: %w", err)
+	}
+	record := domain.AgentPromptPublishRecord{
+		RecordID:    nextID("prmpub"),
+		PromptKey:   promptKey,
+		PromptID:    prompt.PromptID,
+		Version:     prompt.Version,
+		PublishedBy: publishedBy,
+		NacosDataID: emptyFallback(nacosDataID, "xzxg-shop-agent-prompts.json"),
+		CreatedAt:   now,
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO agent_prompt_publish_records (
+			record_id, prompt_key, prompt_id, version, published_by, nacos_data_id, created_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, record.RecordID, record.PromptKey, record.PromptID, record.Version, record.PublishedBy, record.NacosDataID, record.CreatedAt); err != nil {
+		return domain.AgentPrompt{}, domain.AgentPromptPublishRecord{}, fmt.Errorf("insert prompt publish record: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.AgentPrompt{}, domain.AgentPromptPublishRecord{}, err
+	}
+	prompt.Status = "active"
+	prompt.PublishedAt = now
+	prompt.UpdatedAt = now
+	return prompt, record, nil
+}
+
+func (s *MySQLStore) ListAgentPromptPublishRecords(ctx context.Context, promptKey string, limit int) []domain.AgentPromptPublishRecord {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	query := `
+		SELECT record_id, prompt_key, prompt_id, version, published_by, nacos_data_id, created_at
+		FROM agent_prompt_publish_records
+	`
+	args := []any{}
+	if strings.TrimSpace(promptKey) != "" {
+		query += " WHERE prompt_key = ?"
+		args = append(args, strings.TrimSpace(promptKey))
+	}
+	query += " ORDER BY created_at DESC, record_id DESC LIMIT ?"
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	items := make([]domain.AgentPromptPublishRecord, 0)
+	for rows.Next() {
+		var item domain.AgentPromptPublishRecord
+		if err := rows.Scan(&item.RecordID, &item.PromptKey, &item.PromptID, &item.Version, &item.PublishedBy, &item.NacosDataID, &item.CreatedAt); err != nil {
+			return nil
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
 func (s *MySQLStore) SearchProducts(ctx context.Context, query string) []domain.ProductCard {
 	items := s.ListProducts(ctx, query, "")
-	return items
+	if s.vector != nil && s.vector.Enabled() {
+		if hits, err := s.vector.SearchProducts(ctx, query, 40); err == nil {
+			items = mergeProductCards(items, s.productCardsByIDs(ctx, hitIDs(hits)))
+		}
+	}
+	return rankProductSearchResults(query, items)
 }
 
 func (s *MySQLStore) ListCategories(ctx context.Context) []domain.Category {
@@ -1865,8 +2084,19 @@ func (s *MySQLStore) SearchKnowledgeByPlan(ctx context.Context, plan rag.Retriev
 			Source:  item.Source,
 		})
 	}
+	if s.vector != nil && s.vector.Enabled() && plan.Recall.Vector.Enabled {
+		if hits, err := s.vector.SearchKnowledge(ctx, plan.Query, plan.Recall.Vector.TopN); err == nil {
+			candidates = mergeCandidates(candidates, citationsToCandidates(s.knowledgeChunksByIDs(ctx, hitIDs(hits))))
+		}
+	}
 	// 召回后交给 rag 包做统一排序和摘要截断，避免存储层承载过多策略逻辑。
-	ranked := rag.RankCandidates(plan, candidates)
+	rankPlan := plan
+	rankPlan.Rerank.TopK = len(candidates)
+	ranked := rag.RankCandidates(rankPlan, candidates)
+	ranked = s.filterKnowledgeCandidatesByProductFacets(ctx, plan.Query, ranked)
+	if len(ranked) > plan.Rerank.TopK {
+		ranked = ranked[:plan.Rerank.TopK]
+	}
 	items := make([]domain.Citation, 0, len(ranked))
 	for _, item := range ranked {
 		items = append(items, domain.Citation{
@@ -1877,6 +2107,51 @@ func (s *MySQLStore) SearchKnowledgeByPlan(ctx context.Context, plan rag.Retriev
 		})
 	}
 	return items
+}
+
+func (s *MySQLStore) filterKnowledgeCandidatesByProductFacets(ctx context.Context, query string, candidates []rag.Candidate) []rag.Candidate {
+	if query == "" || len(candidates) == 0 {
+		return candidates
+	}
+	products := make(map[string]domain.ProductCard)
+	for _, candidate := range candidates {
+		if !strings.HasPrefix(candidate.Source, "p_") {
+			continue
+		}
+		if _, ok := products[candidate.Source]; ok {
+			continue
+		}
+		product, ok := s.GetProduct(ctx, candidate.Source)
+		if ok {
+			products[candidate.Source] = product.ProductCard
+		}
+	}
+	if len(products) == 0 {
+		return candidates
+	}
+	items := make([]domain.ProductCard, 0, len(products))
+	for _, product := range products {
+		items = append(items, product)
+	}
+	constraint := parseProductSearchConstraint(query, items)
+	if len(constraint.brands) == 0 && len(constraint.categories) == 0 {
+		return candidates
+	}
+	filtered := make([]rag.Candidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		product, ok := products[candidate.Source]
+		if !ok {
+			filtered = append(filtered, candidate)
+			continue
+		}
+		if _, ok := scoreProductSearchCandidate(product, constraint); ok {
+			filtered = append(filtered, candidate)
+		}
+	}
+	if len(filtered) == 0 {
+		return candidates
+	}
+	return filtered
 }
 
 func (s *MySQLStore) ListMerchantDocuments(ctx context.Context, merchantID string) []domain.KnowledgeDocument {
@@ -2039,6 +2314,34 @@ func scanAgentTraceEvents(rows *sql.Rows) []domain.AgentTraceEvent {
 	return items
 }
 
+func scanAgentPrompts(rows *sql.Rows) []domain.AgentPrompt {
+	items := make([]domain.AgentPrompt, 0)
+	for rows.Next() {
+		var item domain.AgentPrompt
+		var publishedAt sql.NullTime
+		if err := rows.Scan(
+			&item.PromptID,
+			&item.PromptKey,
+			&item.Title,
+			&item.Content,
+			&item.Status,
+			&item.Version,
+			&item.Description,
+			&item.CreatedBy,
+			&publishedAt,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil
+		}
+		if publishedAt.Valid {
+			item.PublishedAt = publishedAt.Time
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
 func normalizePage(page int, pageSize int) (int, int) {
 	if page < 1 {
 		page = 1
@@ -2054,6 +2357,13 @@ func normalizePage(page int, pageSize int) (int, int) {
 
 func pageOffset(page int, pageSize int) int {
 	return (page - 1) * pageSize
+}
+
+func emptyFallback(value string, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func paginateSlice[T any](items []T, page int, pageSize int) []T {
@@ -2093,6 +2403,136 @@ func (s *MySQLStore) queryProductCards(ctx context.Context, query string, args .
 		items = append(items, item)
 	}
 	return items
+}
+
+func (s *MySQLStore) productCardsByIDs(ctx context.Context, productIDs []string) []domain.ProductCard {
+	productIDs = uniqueTerms(productIDs, 100)
+	if len(productIDs) == 0 {
+		return nil
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(productIDs)), ",")
+	args := make([]any, 0, len(productIDs))
+	for _, id := range productIDs {
+		args = append(args, id)
+	}
+	items := s.queryProductCards(ctx, productCardSelect()+` WHERE p.product_id IN (`+placeholders+`)`, args...)
+	byID := make(map[string]domain.ProductCard, len(items))
+	for _, item := range items {
+		byID[item.ProductID] = item
+	}
+	ordered := make([]domain.ProductCard, 0, len(items))
+	for _, id := range productIDs {
+		if item, ok := byID[id]; ok {
+			ordered = append(ordered, item)
+		}
+	}
+	return ordered
+}
+
+func (s *MySQLStore) knowledgeChunksByIDs(ctx context.Context, chunkIDs []string) []domain.Citation {
+	chunkIDs = uniqueTerms(chunkIDs, 100)
+	if len(chunkIDs) == 0 {
+		return nil
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(chunkIDs)), ",")
+	args := make([]any, 0, len(chunkIDs))
+	for _, id := range chunkIDs {
+		args = append(args, id)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT chunk_id, title, snippet, source
+		FROM knowledge_chunks
+		WHERE chunk_id IN (`+placeholders+`)
+	`, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	items := make([]domain.Citation, 0)
+	for rows.Next() {
+		var item domain.Citation
+		if err := rows.Scan(&item.ChunkID, &item.Title, &item.Snippet, &item.Source); err != nil {
+			return nil
+		}
+		items = append(items, item)
+	}
+	byID := make(map[string]domain.Citation, len(items))
+	for _, item := range items {
+		byID[item.ChunkID] = item
+	}
+	ordered := make([]domain.Citation, 0, len(items))
+	for _, id := range chunkIDs {
+		if item, ok := byID[id]; ok {
+			ordered = append(ordered, item)
+		}
+	}
+	return ordered
+}
+
+func (s *MySQLStore) productVectorRows(ctx context.Context) []map[string]any {
+	rows, err := s.db.QueryContext(ctx, productDetailSelect()+` WHERE p.status = 'active' ORDER BY p.product_id`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]map[string]any, 0)
+	for rows.Next() {
+		product, err := scanProductDetail(rows)
+		if err != nil {
+			return nil
+		}
+		out = append(out, map[string]any{
+			"product_id":    product.ProductID,
+			"merchant_id":   product.MerchantID,
+			"category_id":   product.CategoryID,
+			"brand":         product.Brand,
+			"status":        "active",
+			"stock_status":  product.StockStatus,
+			"price":         parseFloat(product.Price),
+			"updated_at_ts": time.Now().Unix(),
+			"search_text":   productSearchText(product),
+		})
+	}
+	return out
+}
+
+func (s *MySQLStore) knowledgeVectorRows(ctx context.Context) []map[string]any {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT chunk_id, title, snippet, source, sort_order
+		FROM knowledge_chunks
+		ORDER BY sort_order, chunk_id
+	`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]map[string]any, 0)
+	for rows.Next() {
+		var chunkID, title, snippet, source string
+		var sortOrder int
+		if err := rows.Scan(&chunkID, &title, &snippet, &source, &sortOrder); err != nil {
+			return nil
+		}
+		row := map[string]any{
+			"chunk_id":      chunkID,
+			"source":        source,
+			"source_type":   sourceTypeForKnowledge(source),
+			"doc_type":      docTypeForChunk(chunkID),
+			"quality_score": 0.8,
+			"created_at_ts": time.Now().Unix(),
+			"search_text":   strings.Join([]string{title, snippet}, "\n"),
+		}
+		if strings.HasPrefix(source, "p_") {
+			if product, ok := s.GetProduct(ctx, source); ok {
+				row["product_id"] = product.ProductID
+				row["merchant_id"] = product.MerchantID
+				row["category_id"] = product.CategoryID
+				row["brand"] = product.Brand
+			}
+		}
+		out = append(out, row)
+	}
+	return out
 }
 
 func (s *MySQLStore) firstSKU(ctx context.Context, productID string) string {
@@ -2273,6 +2713,52 @@ func parseAmount(input string) (float64, error) {
 	var value float64
 	_, err := fmt.Sscanf(input, "%f", &value)
 	return value, err
+}
+
+func parseFloat(input string) float64 {
+	value, _ := parseAmount(input)
+	return value
+}
+
+func productSearchText(product domain.ProductDetail) string {
+	attributes := make([]string, 0, len(product.Attributes))
+	for _, item := range product.Attributes {
+		attributes = append(attributes, item.Key+"："+item.Value)
+	}
+	return strings.Join([]string{
+		product.Name,
+		product.Brand,
+		product.CategoryID,
+		strings.Join(product.Tags, " "),
+		strings.Join(product.SellingPoints, " "),
+		strings.Join(attributes, " "),
+		strings.Join(product.SuitableFor, " "),
+		product.RecommendReason,
+		product.Description,
+	}, "\n")
+}
+
+func sourceTypeForKnowledge(source string) string {
+	if strings.HasPrefix(source, "p_") {
+		return "product"
+	}
+	if strings.HasPrefix(source, "doc_") {
+		return "merchant_doc"
+	}
+	return "platform_doc"
+}
+
+func docTypeForChunk(chunkID string) string {
+	switch {
+	case strings.Contains(chunkID, "_faq_"):
+		return "faq"
+	case strings.Contains(chunkID, "_review_"):
+		return "review"
+	case strings.Contains(chunkID, "_marketing"):
+		return "product_desc"
+	default:
+		return "document"
+	}
 }
 
 func nextOrderNo(now time.Time) string {
@@ -2473,6 +2959,247 @@ func uniqueTerms(input []string, limit int) []string {
 		}
 	}
 	return terms
+}
+
+func rankProductSearchResults(query string, items []domain.ProductCard) []domain.ProductCard {
+	if len(items) == 0 {
+		return items
+	}
+	constraint := parseProductSearchConstraint(query, items)
+	ranked := make([]productSearchCandidate, 0, len(items))
+	for index, item := range items {
+		score, ok := scoreProductSearchCandidate(item, constraint)
+		if !ok {
+			continue
+		}
+		ranked = append(ranked, productSearchCandidate{item: item, score: score, index: index})
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].score == ranked[j].score {
+			return ranked[i].index < ranked[j].index
+		}
+		return ranked[i].score > ranked[j].score
+	})
+	out := make([]domain.ProductCard, 0, len(ranked))
+	for _, candidate := range ranked {
+		out = append(out, candidate.item)
+	}
+	return out
+}
+
+type productSearchCandidate struct {
+	item  domain.ProductCard
+	score int
+	index int
+}
+
+type productSearchConstraint struct {
+	terms      []string
+	brands     []string
+	categories []string
+}
+
+func parseProductSearchConstraint(query string, items []domain.ProductCard) productSearchConstraint {
+	lower := strings.ToLower(query)
+	constraint := productSearchConstraint{
+		terms: uniqueTerms(append([]string{query}, rag.QueryTerms(query)...), 12),
+	}
+	brandTerms := make([]string, 0)
+	categoryTerms := make([]string, 0)
+	for _, item := range items {
+		brandTerms = append(brandTerms, productSearchBrandTerms(item.Brand)...)
+		categoryTerms = append(categoryTerms, productSearchCategoryTerms(item)...)
+	}
+	for _, term := range uniqueTerms(brandTerms, 80) {
+		if productSearchQueryMatchesFacet(lower, term) {
+			constraint.brands = append(constraint.brands, term)
+		}
+	}
+	for _, term := range uniqueTerms(append(categoryTerms, productSearchCategoryAliases(lower)...), 120) {
+		if containsAny(lower, term) {
+			constraint.categories = append(constraint.categories, term)
+		}
+	}
+	return constraint
+}
+
+func scoreProductSearchCandidate(item domain.ProductCard, constraint productSearchConstraint) (int, bool) {
+	text := strings.ToLower(strings.Join([]string{
+		item.Name,
+		item.Brand,
+		item.CategoryID,
+		strings.Join(item.Tags, " "),
+		strings.Join(item.SellingPoints, " "),
+		item.RecommendReason,
+	}, " "))
+	facetText := strings.ToLower(strings.Join(append([]string{
+		item.Brand,
+		item.CategoryID,
+	}, productSearchCategoryTerms(item)...), " "))
+
+	if len(constraint.brands) > 0 && !containsAny(text, constraint.brands...) {
+		return 0, false
+	}
+	if len(constraint.categories) > 0 && !containsAny(facetText, constraint.categories...) {
+		return 0, false
+	}
+
+	score := 0
+	for _, term := range constraint.terms {
+		if strings.Contains(text, strings.ToLower(term)) {
+			score++
+		}
+	}
+	firstTerm := ""
+	if len(constraint.terms) > 0 {
+		firstTerm = strings.TrimSpace(constraint.terms[0])
+	}
+	if firstTerm != "" && strings.Contains(strings.ToLower(item.Name), strings.ToLower(firstTerm)) {
+		score += 4
+	}
+	if len(constraint.brands) > 0 && containsAny(strings.ToLower(item.Brand), constraint.brands...) {
+		score += 10
+	}
+	if len(constraint.categories) > 0 && containsAny(facetText, constraint.categories...) {
+		score += 8
+	}
+	return score, true
+}
+
+func productSearchBrandTerms(brand string) []string {
+	terms := rag.QueryTerms(brand)
+	brand = strings.TrimSpace(strings.ToLower(brand))
+	if brand != "" {
+		terms = append(terms, brand)
+	}
+	return terms
+}
+
+func productSearchCategoryTerms(item domain.ProductCard) []string {
+	terms := make([]string, 0)
+	brandTerms := productSearchBrandTerms(item.Brand)
+	add := func(term string) {
+		term = strings.TrimSpace(term)
+		if term == "" || containsAny(strings.ToLower(term), brandTerms...) || isBroadProductCategoryTerm(term) {
+			return
+		}
+		terms = append(terms, term)
+	}
+	for _, tag := range item.Tags {
+		add(tag)
+	}
+	for _, point := range item.SellingPoints {
+		if strings.Contains(point, "：") || strings.Contains(point, ":") {
+			continue
+		}
+		add(point)
+	}
+	add(strings.TrimPrefix(item.CategoryID, "c_dataset_"))
+	return terms
+}
+
+func isBroadProductCategoryTerm(term string) bool {
+	switch strings.TrimSpace(strings.ToLower(term)) {
+	case "数码电子", "美妆护肤", "服饰运动", "食品饮料", "digital", "beauty", "clothes", "food":
+		return true
+	default:
+		return false
+	}
+}
+
+func productSearchCategoryAliases(query string) []string {
+	aliases := map[string][]string{
+		"电脑":        {"笔记本电脑", "笔记本", "轻薄本", "laptop"},
+		"笔记本":       {"笔记本电脑", "笔记本", "轻薄本", "laptop"},
+		"matebook":  {"笔记本电脑", "笔记本", "轻薄本", "laptop"},
+		"macbook":   {"笔记本电脑", "笔记本", "轻薄本", "laptop"},
+		"thinkbook": {"笔记本电脑", "笔记本", "轻薄本", "laptop"},
+		"thinkpad":  {"笔记本电脑", "笔记本", "轻薄本", "laptop"},
+		"手机":        {"智能手机", "手机", "iphone"},
+		"平板":        {"平板电脑", "平板", "ipad", "matepad", "pad"},
+		"耳机":        {"真无线耳机", "耳机", "freebuds"},
+	}
+	out := make([]string, 0)
+	for trigger, terms := range aliases {
+		if strings.Contains(query, trigger) {
+			out = append(out, terms...)
+		}
+	}
+	return out
+}
+
+func productSearchQueryMatchesFacet(query string, facet string) bool {
+	facet = strings.TrimSpace(strings.ToLower(facet))
+	if facet == "" {
+		return false
+	}
+	if strings.Contains(query, facet) {
+		return true
+	}
+	for _, term := range rag.QueryTerms(facet) {
+		if strings.Contains(query, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAny(text string, terms ...string) bool {
+	for _, term := range terms {
+		if strings.Contains(text, strings.ToLower(term)) {
+			return true
+		}
+	}
+	return false
+}
+
+func hitIDs(hits []rag.SearchHit) []string {
+	ids := make([]string, 0, len(hits))
+	for _, hit := range hits {
+		if strings.TrimSpace(hit.ID) != "" {
+			ids = append(ids, hit.ID)
+		}
+	}
+	return ids
+}
+
+func mergeProductCards(primary []domain.ProductCard, extra []domain.ProductCard) []domain.ProductCard {
+	seen := make(map[string]bool, len(primary)+len(extra))
+	out := make([]domain.ProductCard, 0, len(primary)+len(extra))
+	for _, item := range append(primary, extra...) {
+		if item.ProductID == "" || seen[item.ProductID] {
+			continue
+		}
+		seen[item.ProductID] = true
+		out = append(out, item)
+	}
+	return out
+}
+
+func mergeCandidates(primary []rag.Candidate, extra []rag.Candidate) []rag.Candidate {
+	seen := make(map[string]bool, len(primary)+len(extra))
+	out := make([]rag.Candidate, 0, len(primary)+len(extra))
+	for _, item := range append(primary, extra...) {
+		if item.ChunkID == "" || seen[item.ChunkID] {
+			continue
+		}
+		seen[item.ChunkID] = true
+		out = append(out, item)
+	}
+	return out
+}
+
+func citationsToCandidates(items []domain.Citation) []rag.Candidate {
+	out := make([]rag.Candidate, 0, len(items))
+	for _, item := range items {
+		out = append(out, rag.Candidate{
+			ChunkID: item.ChunkID,
+			Title:   item.Title,
+			Snippet: item.Snippet,
+			Source:  item.Source,
+		})
+	}
+	return out
 }
 
 func decodeJSON(input string, output any) {

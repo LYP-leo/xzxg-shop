@@ -4,7 +4,7 @@ import "time"
 
 const (
 	DefaultTopK          = 5
-	DefaultKeywordTopN   = 40
+	DefaultKeywordTopN   = 200
 	DefaultMinScore      = 0
 	DefaultChunkMaxRunes = 800
 	DefaultChunkMinRunes = 120
@@ -57,6 +57,14 @@ type RerankPlan struct {
 	TopK     int
 	MinScore float64
 	Weights  map[string]float64
+	Terms    RerankTerms
+}
+
+type RerankTerms struct {
+	GenericTerms       []string
+	BrandBoostTerms    []string
+	ModelBoostTerms    []string
+	CategoryBoostTerms []string
 }
 
 type CompressPlan struct {
@@ -90,6 +98,10 @@ func DefaultRetrievalPlan(query string) RetrievalPlan {
 	return RetrievalPlan{
 		Query: query,
 		Recall: RecallPlan{
+			Vector: VectorRecallPlan{
+				Enabled: true,
+				TopN:    DefaultKeywordTopN,
+			},
 			Keyword: KeywordRecallPlan{
 				Enabled: true,
 				TopN:    DefaultKeywordTopN,
@@ -117,6 +129,13 @@ func DefaultWeights() map[string]float64 {
 		"freshness_score":  0.03,
 		"quality_score":    0.05,
 		"evidence_density": 0.07,
+		"title_match":      0.35,
+		"term_match":       0.45,
+		"required_match":   0.20,
+		"brand_boost":      0.35,
+		"model_boost":      0.30,
+		"category_boost":   0.15,
+		"generic_penalty":  0.45,
 	}
 }
 
