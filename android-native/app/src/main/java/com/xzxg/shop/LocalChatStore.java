@@ -120,7 +120,11 @@ public class LocalChatStore extends SQLiteOpenHelper {
 
     public List<SessionSummary> recentSessions() {
         ArrayList<SessionSummary> items = new ArrayList<>();
-        Cursor cursor = getReadableDatabase().query("sessions", new String[]{"local_session_id", "server_session_id", "title", "summary", "sync_state"}, null, null, null, null, "updated_at DESC", "100");
+        String sql = "SELECT s.local_session_id, s.server_session_id, s.title, s.summary, s.sync_state " +
+                "FROM sessions s " +
+                "WHERE s.server_session_id IS NOT NULL AND s.server_session_id != '' OR EXISTS (SELECT 1 FROM messages m WHERE m.local_session_id = s.local_session_id AND m.role = 'user') " +
+                "ORDER BY s.updated_at DESC LIMIT 100";
+        Cursor cursor = getReadableDatabase().rawQuery(sql, null);
         try {
             while (cursor.moveToNext()) {
                 items.add(new SessionSummary(cursor.getString(0), cursor.getString(1), cursor.getString(2), cursor.getString(3), cursor.getString(4)));
@@ -144,7 +148,7 @@ public class LocalChatStore extends SQLiteOpenHelper {
         ArrayList<SessionSummary> items = new ArrayList<>();
         String sql = "SELECT s.local_session_id, s.server_session_id, s.title, s.summary, s.sync_state " +
                 "FROM sessions s " +
-                "WHERE EXISTS (SELECT 1 FROM messages m WHERE m.local_session_id = s.local_session_id) " +
+                "WHERE s.server_session_id IS NOT NULL AND s.server_session_id != '' OR EXISTS (SELECT 1 FROM messages m WHERE m.local_session_id = s.local_session_id AND m.role = 'user') " +
                 "ORDER BY s.updated_at DESC LIMIT 50";
         Cursor cursor = getReadableDatabase().rawQuery(sql, null);
         try {

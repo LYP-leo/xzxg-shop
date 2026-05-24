@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -42,7 +43,14 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
 	mux.HandleFunc("POST /api/v1/auth/register", s.handleRegister)
+	mux.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/v1/auth/me", s.handleMe)
+	mux.HandleFunc("GET /api/v1/account/profile", s.handleAccountProfile)
+	mux.HandleFunc("PATCH /api/v1/account/profile", s.handleAccountProfile)
+	mux.HandleFunc("PATCH /api/v1/account/contact", s.handleAccountContact)
+	mux.HandleFunc("DELETE /api/v1/account", s.handleDeleteAccount)
+	mux.HandleFunc("POST /api/v1/uploads/avatar", s.handleUploadAvatar)
+	mux.Handle("GET /api/v1/uploads/avatar/", http.StripPrefix("/api/v1/uploads/avatar/", http.FileServer(http.Dir(avatarUploadRoot()))))
 	mux.Handle("GET /api/v1/assets/ecommerce_agent_dataset/", http.StripPrefix("/api/v1/assets/ecommerce_agent_dataset/", http.FileServer(http.Dir(datasetAssetRoot()))))
 	mux.HandleFunc("GET /api/v1/categories/tree", s.handleListCategories)
 	mux.HandleFunc("GET /api/v1/merchants", s.handleListMerchants)
@@ -97,6 +105,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/orders/", s.handleUserOrderAction)
 	mux.HandleFunc("POST /api/v1/orders/", s.handleUserOrderAction)
 	mux.HandleFunc("GET /api/v1/agent/sessions", s.handleListAgentSessions)
+	mux.HandleFunc("GET /api/v1/agent/sessions/search", s.handleSearchAgentSessions)
 	mux.HandleFunc("POST /api/v1/agent/sessions", s.handleCreateAgentSession)
 	mux.HandleFunc("GET /api/v1/agent/sessions/", s.handleAgentSessionAction)
 	mux.HandleFunc("PATCH /api/v1/agent/sessions/", s.handleAgentSessionAction)
@@ -189,6 +198,154 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, account)
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	token := bearerToken(r)
+	if token != "" {
+		s.store.DeleteAuthToken(r.Context(), token)
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleAccountProfile(w http.ResponseWriter, r *http.Request) {
+	account, ok := accountFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "请先登录")
+		return
+	}
+	if r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, account)
+		return
+	}
+	var request struct {
+		DisplayName string `json:"display_name"`
+		Nickname    string `json:"nickname"`
+		AvatarURL   string `json:"avatar_url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	displayName := strings.TrimSpace(request.DisplayName)
+	if displayName == "" {
+		displayName = strings.TrimSpace(request.Nickname)
+	}
+	if displayName == "" && strings.TrimSpace(request.AvatarURL) == "" {
+		writeError(w, http.StatusBadRequest, "empty_profile", "昵称或头像不能为空")
+		return
+	}
+	if displayName != "" && len([]rune(displayName)) > 24 {
+		writeError(w, http.StatusBadRequest, "bad_display_name", "昵称最多 24 个字符")
+		return
+	}
+	updated, ok := s.store.UpdateAccountProfile(r.Context(), account.AccountID, displayName, request.AvatarURL)
+	if !ok {
+		writeError(w, http.StatusNotFound, "account_not_found", "账号不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *Server) handleAccountContact(w http.ResponseWriter, r *http.Request) {
+	account, ok := accountFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "请先登录")
+		return
+	}
+	var request struct {
+		Phone string `json:"phone"`
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	phone := strings.TrimSpace(request.Phone)
+	email := strings.TrimSpace(request.Email)
+	if len([]rune(phone)) > 32 || len([]rune(email)) > 128 {
+		writeError(w, http.StatusBadRequest, "bad_contact", "手机号或邮箱过长")
+		return
+	}
+	if email != "" && (!strings.Contains(email, "@") || strings.Contains(email, " ")) {
+		writeError(w, http.StatusBadRequest, "bad_email", "邮箱格式不正确")
+		return
+	}
+	updated, ok := s.store.UpdateAccountContact(r.Context(), account.AccountID, phone, email)
+	if !ok {
+		writeError(w, http.StatusNotFound, "account_not_found", "账号不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
+	account, ok := accountFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "请先登录")
+		return
+	}
+	if !s.store.DeleteAccount(r.Context(), account.AccountID) {
+		writeError(w, http.StatusInternalServerError, "delete_account_failed", "删除账号失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleUploadAvatar(w http.ResponseWriter, r *http.Request) {
+	account, ok := accountFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "请先登录")
+		return
+	}
+	if err := r.ParseMultipartForm(3 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_upload", "头像上传请求不合法")
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "missing_file", "请选择头像文件")
+		return
+	}
+	defer file.Close()
+	if header.Size > 2<<20 {
+		writeError(w, http.StatusBadRequest, "file_too_large", "头像不能超过 2MB")
+		return
+	}
+	buffer, err := io.ReadAll(io.LimitReader(file, 2<<20+1))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "read_file_failed", "读取头像失败")
+		return
+	}
+	mimeType := http.DetectContentType(buffer)
+	ext := ".jpg"
+	switch mimeType {
+	case "image/jpeg":
+		ext = ".jpg"
+	case "image/png":
+		ext = ".png"
+	case "image/webp":
+		ext = ".webp"
+	default:
+		writeError(w, http.StatusBadRequest, "bad_image_type", "头像仅支持 JPG、PNG 或 WebP")
+		return
+	}
+	root := avatarUploadRoot()
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		writeError(w, http.StatusInternalServerError, "mkdir_failed", "保存头像失败")
+		return
+	}
+	filename := account.AccountID + "_" + time.Now().Format("20060102150405") + ext
+	if err := os.WriteFile(filepath.Join(root, filename), buffer, 0o644); err != nil {
+		writeError(w, http.StatusInternalServerError, "save_file_failed", "保存头像失败")
+		return
+	}
+	url := "/api/v1/uploads/avatar/" + filename
+	writeJSON(w, http.StatusOK, map[string]any{
+		"url":       url,
+		"mime_type": mimeType,
+		"size":      len(buffer),
+	})
 }
 
 func (s *Server) handleCreateAgentSession(w http.ResponseWriter, r *http.Request) {
@@ -1460,9 +1617,39 @@ func (s *Server) handleListAgentSessions(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
+func (s *Server) handleSearchAgentSessions(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	page, pageSize := readPagination(r)
+	items, total := s.store.SearchUserSessions(r.Context(), account.AccountID, r.URL.Query().Get("q"), page, pageSize)
+	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
+}
+
 func (s *Server) handleAgentSessionAction(w http.ResponseWriter, r *http.Request) {
 	account, ok := s.requireUser(w, r)
 	if !ok {
+		return
+	}
+	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, ":summarize") {
+		sessionID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/agent/sessions/"), ":summarize")
+		if sessionID == "" || strings.Contains(sessionID, "/") {
+			writeError(w, http.StatusNotFound, "not_found", "接口不存在")
+			return
+		}
+		detail, ok := s.store.GetSessionDetail(r.Context(), account.AccountID, sessionID)
+		if !ok {
+			writeError(w, http.StatusNotFound, "session_not_found", "会话不存在")
+			return
+		}
+		title, summary := summarizeSessionDetail(detail)
+		session, ok := s.store.UpdateSessionSummary(r.Context(), account.AccountID, sessionID, title, summary)
+		if !ok {
+			writeError(w, http.StatusNotFound, "session_not_found", "会话不存在")
+			return
+		}
+		writeJSON(w, http.StatusOK, session)
 		return
 	}
 	if r.Method == http.MethodGet {
@@ -1629,12 +1816,20 @@ func (s *Server) accountFromRequest(r *http.Request) (domain.Account, bool) {
 	if account, ok := accountFromContext(r.Context()); ok {
 		return account, true
 	}
-	header := r.Header.Get("Authorization")
-	token := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
-	if token == "" || token == header {
+	token := bearerToken(r)
+	if token == "" {
 		return domain.Account{}, false
 	}
 	return s.store.GetAccountByToken(r.Context(), token)
+}
+
+func bearerToken(r *http.Request) string {
+	header := r.Header.Get("Authorization")
+	token := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+	if token == "" || token == header {
+		return ""
+	}
+	return token
 }
 
 func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (domain.Account, bool) {
@@ -1747,6 +1942,13 @@ func readPositiveIntQuery(r *http.Request, key string, fallback int, min int, ma
 	return parsed
 }
 
+func avatarUploadRoot() string {
+	if root := strings.TrimSpace(os.Getenv("AVATAR_UPLOAD_ROOT")); root != "" {
+		return root
+	}
+	return filepath.Join(".", "uploads", "avatar")
+}
+
 func readPagination(r *http.Request) (int, int) {
 	page := readPositiveIntQuery(r, "page", 1, 1, 100000)
 	pageSize := readPositiveIntQuery(r, "page_size", 10, 1, 100)
@@ -1801,6 +2003,55 @@ func splitOrderItemReviewPath(path string) (string, string, bool) {
 		return "", "", false
 	}
 	return parts[0], itemParts[0], true
+}
+
+func summarizeSessionDetail(detail domain.ChatSessionDetail) (string, string) {
+	parts := make([]string, 0, len(detail.Messages))
+	for _, message := range detail.Messages {
+		content := strings.TrimSpace(message.Content)
+		if content != "" {
+			parts = append(parts, content)
+		}
+		if len(parts) >= 3 {
+			break
+		}
+	}
+	summary := strings.TrimSpace(strings.Join(parts, "；"))
+	if summary == "" {
+		summary = strings.TrimSpace(detail.Session.Summary)
+	}
+	title := deriveShortSessionTitle(summary)
+	if summary != "" {
+		summary = truncateText(summary, 500)
+	}
+	return title, summary
+}
+
+func deriveShortSessionTitle(content string) string {
+	content = strings.TrimSpace(strings.Join(strings.Fields(content), ""))
+	replacer := strings.NewReplacer("帮我", "", "我想", "", "请你", "", "推荐", "", "一下", "", "？", "", "！", "", "。", "", "，", "", ",", "", ".", "", "?", "", "!", "", "：", "", ":", "", "；", "")
+	content = strings.TrimSpace(replacer.Replace(content))
+	if content == "" {
+		return "导购咨询"
+	}
+	categoryHints := []string{"手机", "电脑", "耳机", "鼠标", "键盘", "洁面", "护肤", "面霜", "运动鞋", "衣服", "食品", "订单", "优惠券", "购物车"}
+	for _, hint := range categoryHints {
+		if strings.Contains(content, hint) {
+			if len([]rune(hint)) >= 4 {
+				return truncateText(hint, 8)
+			}
+			return truncateText(hint+"咨询", 8)
+		}
+	}
+	return truncateText(content, 8)
+}
+
+func truncateText(input string, limit int) string {
+	runes := []rune(strings.TrimSpace(input))
+	if len(runes) <= limit {
+		return string(runes)
+	}
+	return string(runes[:limit])
 }
 
 func splitCouponAction(path string) (string, string, bool) {

@@ -27,6 +27,22 @@ public class SessionStore {
         return prefs.getString("avatar_url", "");
     }
 
+    public String accountId() {
+        return prefs.getString("account_id", "");
+    }
+
+    public String username() {
+        return prefs.getString("username", "");
+    }
+
+    public String phone() {
+        return prefs.getString("phone", "");
+    }
+
+    public String email() {
+        return prefs.getString("email", "");
+    }
+
     public String apiBase() {
         if (!BuildConfig.SHOW_TEST_SERVER_SETTINGS) {
             return BuildConfig.DEFAULT_API_BASE;
@@ -39,12 +55,24 @@ public class SessionStore {
     }
 
     public void saveAuth(String token, String role, String nickname, String avatarUrl) {
+        saveAuth(token, role, nickname, avatarUrl, accountId(), username(), phone(), email());
+    }
+
+    public void saveAuth(String token, String role, String nickname, String avatarUrl, String accountId, String username, String phone, String email) {
         prefs.edit()
                 .putString("token", token == null ? "" : token)
                 .putString("role", role == null || role.isEmpty() ? "user" : role)
                 .putString("nickname", nickname == null ? "" : nickname)
                 .putString("avatar_url", avatarUrl == null ? "" : avatarUrl)
+                .putString("account_id", accountId == null ? "" : accountId)
+                .putString("username", username == null ? "" : username)
+                .putString("phone", phone == null ? "" : phone)
+                .putString("email", email == null ? "" : email)
                 .apply();
+    }
+
+    public void saveProfile(String role, String nickname, String avatarUrl, String accountId, String username, String phone, String email) {
+        saveAuth(token(), role, nickname, avatarUrl, accountId, username, phone, email);
     }
 
     public void saveApiBase(String apiBase) {
@@ -52,6 +80,15 @@ public class SessionStore {
     }
 
     public void clearAuth() {
-        prefs.edit().remove("token").remove("role").remove("nickname").remove("avatar_url").apply();
+        prefs.edit()
+                .remove("token")
+                .remove("role")
+                .remove("nickname")
+                .remove("avatar_url")
+                .remove("account_id")
+                .remove("username")
+                .remove("phone")
+                .remove("email")
+                .apply();
     }
 }

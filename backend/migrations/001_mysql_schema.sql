@@ -91,12 +91,17 @@ CREATE TABLE IF NOT EXISTS accounts (
   username VARCHAR(64) NOT NULL,
   password_hash VARCHAR(64) NOT NULL,
   display_name VARCHAR(128) NOT NULL,
+  avatar_url VARCHAR(512) NOT NULL DEFAULT '',
+  phone VARCHAR(32) NOT NULL DEFAULT '',
+  email VARCHAR(128) NOT NULL DEFAULT '',
   role VARCHAR(32) NOT NULL,
   merchant_id VARCHAR(64) NOT NULL DEFAULT '',
   status VARCHAR(32) NOT NULL DEFAULT 'active',
+  deleted_at DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uk_accounts_username (username),
+  INDEX idx_accounts_status (status),
   INDEX idx_accounts_role (role)
 );
 

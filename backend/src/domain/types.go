@@ -14,6 +14,9 @@ type Account struct {
 	AccountID   string      `json:"account_id"`
 	Username    string      `json:"username"`
 	DisplayName string      `json:"display_name"`
+	AvatarURL   string      `json:"avatar_url,omitempty"`
+	Phone       string      `json:"phone,omitempty"`
+	Email       string      `json:"email,omitempty"`
 	Role        AccountRole `json:"role"`
 	MerchantID  string      `json:"merchant_id,omitempty"`
 	Status      string      `json:"status,omitempty"`
@@ -24,6 +27,9 @@ type AccountCreateInput struct {
 	Username     string
 	PasswordHash string
 	DisplayName  string
+	AvatarURL    string
+	Phone        string
+	Email        string
 	Role         AccountRole
 	MerchantID   string
 }

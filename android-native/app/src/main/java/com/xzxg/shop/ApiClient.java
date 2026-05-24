@@ -58,6 +58,10 @@ public class ApiClient {
         return post("/auth/password:change", body);
     }
 
+    public JSONObject logout() throws Exception {
+        return post("/auth/logout", new JSONObject());
+    }
+
     public JSONObject profile() throws Exception {
         return get("/account/profile");
     }
@@ -71,6 +75,32 @@ public class ApiClient {
         body.put("nickname", nickname);
         body.put("avatar_url", avatarUrl == null ? "" : avatarUrl);
         return patch("/account/profile", body);
+    }
+
+    public JSONObject updateContact(String phone, String email) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("phone", phone == null ? "" : phone);
+        body.put("email", email == null ? "" : email);
+        return patch("/account/contact", body);
+    }
+
+    public JSONObject deleteAccount() throws Exception {
+        HttpURLConnection conn = open("/account", "DELETE");
+        return readJSON(conn);
+    }
+
+    public JSONObject uploadAvatar(String name, String mimeType, byte[] data) throws Exception {
+        String boundary = "----xzxgAvatar" + System.currentTimeMillis();
+        HttpURLConnection conn = openRaw("/uploads/avatar", "POST");
+        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+        try (OutputStream out = conn.getOutputStream()) {
+            out.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
+            out.write(("Content-Disposition: form-data; name=\"file\"; filename=\"" + safeFileName(name) + "\"\r\n").getBytes(StandardCharsets.UTF_8));
+            out.write(("Content-Type: " + (mimeType == null || mimeType.isEmpty() ? "image/jpeg" : mimeType) + "\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+            out.write(data);
+            out.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+        }
+        return readJSON(conn);
     }
 
     public JSONArray categoriesTree() throws Exception {
@@ -237,6 +267,11 @@ public class ApiClient {
         return response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
     }
 
+    public JSONArray searchSessions(String keyword) throws Exception {
+        JSONObject response = get("/agent/sessions/search?q=" + urlEncode(keyword == null ? "" : keyword.trim()));
+        return response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
+    }
+
     public JSONObject sessionDetail(String sessionId) throws Exception {
         return get("/agent/sessions/" + urlEncode(sessionId));
     }
@@ -246,6 +281,10 @@ public class ApiClient {
         body.put("title", title == null ? "" : title);
         body.put("summary", summary == null ? "" : summary);
         return patch("/agent/sessions/" + urlEncode(sessionId), body);
+    }
+
+    public JSONObject summarizeSession(String sessionId) throws Exception {
+        return post("/agent/sessions/" + urlEncode(sessionId) + ":summarize", new JSONObject());
     }
 
     public JSONObject cancelAgentRun(String runId) throws Exception {

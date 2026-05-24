@@ -6,12 +6,15 @@ import android.Manifest;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
@@ -26,6 +29,7 @@ import android.view.WindowManager;
 import android.view.animation.Animation;
 import android.view.animation.TranslateAnimation;
 import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
@@ -45,6 +49,9 @@ import org.json.JSONObject;
 
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.net.URL;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Date;
@@ -63,6 +70,7 @@ public class MainActivity extends Activity {
     private static final int REQUEST_PICK_IMAGE = 3101;
     private static final int REQUEST_PICK_FILE = 3102;
     private static final int REQUEST_RECORD_AUDIO = 3103;
+    private static final int REQUEST_PICK_AVATAR = 3104;
     private static final int PRODUCT_PAGE_SIZE = 20;
     private SessionStore sessionStore;
     private LocalChatStore chatStore;
@@ -119,6 +127,9 @@ public class MainActivity extends Activity {
     private boolean stopRequested;
     private final Deque<Runnable> backStack = new ArrayDeque<>();
     private Toast activeToast;
+    private byte[] pendingAvatarBytes;
+    private String pendingAvatarMime = "image/jpeg";
+    private Runnable pendingAvatarChanged;
 
     private static class PendingAttachment {
         Uri uri;
@@ -244,7 +255,14 @@ public class MainActivity extends Activity {
 
         Button menu = transparentIconButton("☰");
         menu.setTextSize(22);
-        menu.setOnClickListener(v -> showDrawer());
+        menu.setOnClickListener(v -> {
+            hideKeyboard();
+            if (sessionStore.token().isEmpty()) {
+                renderLoginPage();
+            } else {
+                showDrawer();
+            }
+        });
         toolbar.addView(menu, new LinearLayout.LayoutParams(dp(40), dp(40)));
 
         TextView title = new TextView(this);
@@ -271,7 +289,7 @@ public class MainActivity extends Activity {
             status.setTextSize(15);
             status.setTextColor(Color.rgb(75, 85, 99));
             status.setPadding(dp(12), 0, dp(12), 0);
-            status.setOnClickListener(v -> renderProfile());
+            status.setOnClickListener(v -> renderSettings());
             status.setGravity(Gravity.CENTER);
             return status;
         }
@@ -283,13 +301,13 @@ public class MainActivity extends Activity {
             login.setTextColor(Color.rgb(20, 24, 30));
             login.setGravity(Gravity.CENTER);
             login.setPadding(dp(12), 0, dp(12), 0);
-            login.setOnClickListener(v -> renderProfile());
+            login.setOnClickListener(v -> renderLoginPage());
             return login;
         }
         LinearLayout user = new LinearLayout(this);
         user.setGravity(Gravity.CENTER_VERTICAL);
         user.setPadding(dp(6), 0, 0, 0);
-        user.setOnClickListener(v -> renderProfile());
+        user.setOnClickListener(v -> renderSettings());
         ImageView avatarImage = new ImageView(this);
         avatarImage.setScaleType(ImageView.ScaleType.CENTER_CROP);
         avatarImage.setBackground(rounded(Color.rgb(236, 244, 255), dp(16)));
@@ -403,7 +421,7 @@ public class MainActivity extends Activity {
             @Override
             public void onTextChanged(CharSequence s, int start, int before, int count) {
                 if (!streaming && !voiceMode) {
-                    setActionButtonText(s.toString().trim().isEmpty() ? "mic" : "➤");
+                    setActionButtonText(s.toString().trim().isEmpty() ? "🎙" : "➤");
                 }
             }
 
@@ -413,7 +431,7 @@ public class MainActivity extends Activity {
         });
         bar.addView(input, new LinearLayout.LayoutParams(0, dp(52), 1));
 
-        actionButton = roundActionButton("mic");
+        actionButton = roundActionButton("🎙");
         actionButton.setOnClickListener(v -> {
             if (streaming) {
                 stopActiveStream();
@@ -441,7 +459,7 @@ public class MainActivity extends Activity {
     private TextView roundActionButton(String text) {
         TextView button = new TextView(this);
         button.setText(text);
-        button.setTextSize("mic".equals(text) ? 11 : 19);
+        button.setTextSize(19);
         button.setTextColor(Color.WHITE);
         button.setGravity(Gravity.CENTER);
         button.setIncludeFontPadding(false);
@@ -455,7 +473,7 @@ public class MainActivity extends Activity {
             return;
         }
         actionButton.setText(text);
-        actionButton.setTextSize("mic".equals(text) ? 11 : 19);
+        actionButton.setTextSize(19);
     }
 
     private void sendCurrentInput() {
@@ -495,7 +513,7 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     if (actionButton != null) {
                         actionButton.setEnabled(true);
-                        setActionButtonText(input.getText().toString().trim().isEmpty() ? "mic" : "➤");
+                        setActionButtonText(input.getText().toString().trim().isEmpty() ? "🎙" : "➤");
                     }
                     toastLine("附件上传失败：" + error.getMessage());
                 });
@@ -627,6 +645,18 @@ public class MainActivity extends Activity {
             getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
         } catch (Exception ignored) {
         }
+        if (requestCode == REQUEST_PICK_AVATAR) {
+            try {
+                pendingAvatarBytes = squareAvatarBytes(uri);
+                pendingAvatarMime = "image/jpeg";
+                if (pendingAvatarChanged != null) {
+                    pendingAvatarChanged.run();
+                }
+            } catch (Exception error) {
+                toastLine("头像处理失败：" + error.getMessage());
+            }
+            return;
+        }
         PendingAttachment attachment = attachmentFromUri(uri, requestCode == REQUEST_PICK_IMAGE);
         pendingAttachments.add(attachment);
         renderAttachmentBuffer();
@@ -724,7 +754,7 @@ public class MainActivity extends Activity {
         input.setFocusable(true);
         input.setGravity(Gravity.CENTER_VERTICAL);
         input.setHint("输入问题或直接发送...");
-        setActionButtonText(input.getText().toString().trim().isEmpty() ? "mic" : "➤");
+        setActionButtonText(input.getText().toString().trim().isEmpty() ? "🎙" : "➤");
     }
 
     private void startSpeechRecognition() {
@@ -850,6 +880,11 @@ public class MainActivity extends Activity {
     }
 
     private void showDrawer() {
+        hideKeyboard();
+        if (sessionStore.token().isEmpty()) {
+            renderLoginPage();
+            return;
+        }
         if (drawerLayer != null) {
             return;
         }
@@ -868,10 +903,12 @@ public class MainActivity extends Activity {
 
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        TextView search = new TextView(this);
-        search.setText("⌕  搜索");
+        EditText search = new EditText(this);
+        search.setHint("历史会话搜索");
         search.setTextSize(15);
         search.setTextColor(Color.rgb(156, 163, 175));
+        search.setHintTextColor(Color.rgb(156, 163, 175));
+        search.setSingleLine(true);
         search.setGravity(Gravity.CENTER_VERTICAL);
         search.setPadding(dp(16), 0, dp(16), 0);
         search.setBackground(rounded(Color.rgb(246, 247, 249), dp(12)));
@@ -907,16 +944,48 @@ public class MainActivity extends Activity {
         LinearLayout historyList = new LinearLayout(this);
         historyList.setOrientation(LinearLayout.VERTICAL);
         historyList.setPadding(0, dp(12), 0, dp(72));
-        List<LocalChatStore.SessionSummary> histories = sessionStore.token().isEmpty() ? chatStore.recentSessionsWithMessages() : chatStore.recentSessions();
-        histories = ensureActiveSessionVisible(histories);
-        if (histories.isEmpty()) {
-            TextView empty = muted("暂无历史聊天");
-            empty.setGravity(Gravity.CENTER);
-            historyList.addView(empty, new LinearLayout.LayoutParams(-1, dp(56)));
-        }
-        for (LocalChatStore.SessionSummary item : histories) {
-            historyList.addView(historyButton(item));
-        }
+        renderHistoryList(historyList, chatStore.recentSessionsWithMessages());
+        final int[] searchVersion = {0};
+        search.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(Editable editable) {
+                String query = editable.toString().trim();
+                int version = ++searchVersion[0];
+                if (query.isEmpty()) {
+                    renderHistoryList(historyList, chatStore.recentSessionsWithMessages());
+                    return;
+                }
+                new Thread(() -> {
+                    try {
+                        Thread.sleep(300);
+                        if (version != searchVersion[0]) {
+                            return;
+                        }
+                        JSONArray sessions = api.searchSessions(query);
+                        ArrayList<LocalChatStore.SessionSummary> results = new ArrayList<>();
+                        for (int i = 0; i < sessions.length(); i++) {
+                            JSONObject item = sessions.optJSONObject(i);
+                            if (item == null) {
+                                continue;
+                            }
+                            String localId = chatStore.upsertRemoteSession(item.optString("session_id", ""), item.optString("title", "导购会话"), item.optString("summary", ""), remoteSessionTime(item));
+                            LocalChatStore.SessionSummary summary = chatStore.sessionSummary(localId);
+                            if (summary != null) {
+                                results.add(summary);
+                            }
+                        }
+                        runOnUiThread(() -> {
+                            if (version == searchVersion[0]) {
+                                renderHistoryList(historyList, results);
+                            }
+                        });
+                    } catch (Exception error) {
+                        runOnUiThread(() -> renderHistoryList(historyList, new ArrayList<>()));
+                    }
+                }).start();
+            }
+        });
         historyScroll.addView(historyList);
         historyFrame.addView(historyScroll, new FrameLayout.LayoutParams(-1, -1));
 
@@ -967,6 +1036,53 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) {
             }
         }).start();
+    }
+
+    private void renderHistoryList(LinearLayout historyList, List<LocalChatStore.SessionSummary> histories) {
+        historyList.removeAllViews();
+        if (histories == null || histories.isEmpty()) {
+            TextView empty = muted("暂无历史聊天");
+            empty.setGravity(Gravity.CENTER);
+            historyList.addView(empty, new LinearLayout.LayoutParams(-1, dp(56)));
+            return;
+        }
+        for (LocalChatStore.SessionSummary item : histories) {
+            if (item != null) {
+                historyList.addView(historyButton(item));
+            }
+        }
+    }
+
+    private void pickAvatar() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        intent.setType("image/*");
+        startActivityForResult(intent, REQUEST_PICK_AVATAR);
+    }
+
+    private byte[] squareAvatarBytes(Uri uri) throws Exception {
+        try (InputStream inputStream = getContentResolver().openInputStream(uri)) {
+            Bitmap source = BitmapFactory.decodeStream(inputStream);
+            if (source == null) {
+                throw new IllegalArgumentException("无法读取图片");
+            }
+            int side = Math.min(source.getWidth(), source.getHeight());
+            int left = (source.getWidth() - side) / 2;
+            int top = (source.getHeight() - side) / 2;
+            Bitmap square = Bitmap.createBitmap(source, left, top, side, side);
+            Bitmap scaled = Bitmap.createScaledBitmap(square, 512, 512, true);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            scaled.compress(Bitmap.CompressFormat.JPEG, 88, out);
+            if (scaled != square) {
+                scaled.recycle();
+            }
+            if (square != source) {
+                square.recycle();
+            }
+            source.recycle();
+            return out.toByteArray();
+        }
     }
 
     private List<LocalChatStore.SessionSummary> ensureActiveSessionVisible(List<LocalChatStore.SessionSummary> histories) {
@@ -1276,7 +1392,7 @@ public class MainActivity extends Activity {
         removeLoadingBubbleIfNeeded();
         streaming = false;
         if (actionButton != null && input != null) {
-            setActionButtonText(voiceMode ? "⌨" : (input.getText().toString().trim().isEmpty() ? "mic" : "➤"));
+            setActionButtonText(voiceMode ? "⌨" : (input.getText().toString().trim().isEmpty() ? "🎙" : "➤"));
         }
     }
 
@@ -1298,7 +1414,7 @@ public class MainActivity extends Activity {
         activeStreamTitle = "";
         stopRequested = false;
         if (actionButton != null && input != null) {
-            setActionButtonText(voiceMode ? "⌨" : (input.getText().toString().trim().isEmpty() ? "mic" : "➤"));
+            setActionButtonText(voiceMode ? "⌨" : (input.getText().toString().trim().isEmpty() ? "🎙" : "➤"));
         }
     }
 
@@ -1359,7 +1475,7 @@ public class MainActivity extends Activity {
             actionButton.setEnabled(true);
         }
         if (actionButton != null && input != null) {
-            setActionButtonText(voiceMode ? "⌨" : (input.getText().toString().trim().isEmpty() ? "mic" : "➤"));
+            setActionButtonText(voiceMode ? "⌨" : (input.getText().toString().trim().isEmpty() ? "🎙" : "➤"));
         }
     }
 
@@ -1744,6 +1860,21 @@ public class MainActivity extends Activity {
         input.requestFocus();
     }
 
+    private void hideKeyboard() {
+        View view = getCurrentFocus();
+        if (view == null) {
+            view = input;
+        }
+        if (view == null) {
+            return;
+        }
+        InputMethodManager manager = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        if (manager != null) {
+            manager.hideSoftInputFromWindow(view.getWindowToken(), 0);
+        }
+        view.clearFocus();
+    }
+
     private RenderedMarkdown sanitizeAgentMarkdown(String raw) {
         String value = raw == null ? "" : raw;
         JSONArray toolCalls = new JSONArray();
@@ -1907,15 +2038,53 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void renderLoginPage() {
+        closeDrawer();
+        activePage = "login";
+        backStack.clear();
+        baseScreen();
+        addPageHeader("登录", "账号登录和注册");
+        LinearLayout page = pageBody();
+        LinearLayout loginPanel = panel();
+        loginPanel.addView(strong("账号登录"));
+        EditText username = inputField("账号", "user");
+        EditText password = inputField("密码", "user123456");
+        password.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        loginPanel.addView(username);
+        loginPanel.addView(password);
+        Button login = primaryButton("登录");
+        login.setOnClickListener(v -> login(username.getText().toString(), password.getText().toString()));
+        addFormButton(loginPanel, login);
+        Button register = secondaryButton("注册账号");
+        register.setOnClickListener(v -> register(username.getText().toString(), password.getText().toString(), "user"));
+        addFormButton(loginPanel, register);
+        page.addView(loginPanel);
+        if (BuildConfig.SHOW_TEST_SERVER_SETTINGS) {
+            LinearLayout dev = panel();
+            dev.addView(strong("测试后端"));
+            EditText apiBase = inputField("后端地址", sessionStore.apiBase());
+            dev.addView(apiBase);
+            Button save = secondaryButton("保存测试地址");
+            save.setOnClickListener(v -> {
+                sessionStore.saveApiBase(apiBase.getText().toString().trim());
+                api = new ApiClient(sessionStore);
+                toastLine("已保存测试后端地址");
+            });
+            addFormButton(dev, save);
+            page.addView(dev);
+        }
+    }
+
     private void register(String username, String password, String role) {
         new Thread(() -> {
             try {
                 String displayName = role.equals("merchant") ? "新商家" : username;
                 JSONObject result = api.register(username, password, displayName, role, displayName, "123456");
                 JSONObject account = result.optJSONObject("account");
-                sessionStore.saveAuth(result.optString("token"), account == null ? role : account.optString("role", role), account == null ? displayName : account.optString("display_name", displayName), account == null ? "" : account.optString("avatar_url", ""));
+                saveAccountSession(result.optString("token"), account, role, displayName);
                 runOnUiThread(() -> {
                     toastLine("注册成功");
+                    createFreshLocalSession();
                     renderChatHome();
                     loadHomeCopy();
                 });
@@ -1930,9 +2099,10 @@ public class MainActivity extends Activity {
             try {
                 JSONObject result = api.login(username, password);
                 JSONObject account = result.optJSONObject("account");
-                sessionStore.saveAuth(result.optString("token"), account == null ? "user" : account.optString("role", "user"), account == null ? username : account.optString("display_name", username), account == null ? "" : account.optString("avatar_url", ""));
+                saveAccountSession(result.optString("token"), account, "user", username);
                 runOnUiThread(() -> {
                     toastLine("登录成功");
+                    createFreshLocalSession();
                     renderChatHome();
                     loadHomeCopy();
                 });
@@ -1940,6 +2110,23 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> toastLine("登录失败：" + error.getMessage()));
             }
         }).start();
+    }
+
+    private void saveAccountSession(String token, JSONObject account, String fallbackRole, String fallbackName) {
+        if (account == null) {
+            sessionStore.saveAuth(token, fallbackRole, fallbackName, "");
+            return;
+        }
+        sessionStore.saveAuth(
+                token,
+                account.optString("role", fallbackRole),
+                account.optString("display_name", fallbackName),
+                account.optString("avatar_url", ""),
+                account.optString("account_id", ""),
+                account.optString("username", fallbackName),
+                account.optString("phone", ""),
+                account.optString("email", "")
+        );
     }
 
     private void changePassword(String oldPassword, String newPassword) {
@@ -1971,7 +2158,7 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             try {
                 JSONObject profile = api.updateProfile(value, image);
-                sessionStore.saveAuth(sessionStore.token(), sessionStore.role(), profile.optString("nickname", value), profile.optString("avatar_url", image));
+                sessionStore.saveAuth(sessionStore.token(), sessionStore.role(), profile.optString("display_name", value), profile.optString("avatar_url", image), profile.optString("account_id", sessionStore.accountId()), profile.optString("username", sessionStore.username()), profile.optString("phone", sessionStore.phone()), profile.optString("email", sessionStore.email()));
                 runOnUiThread(() -> {
                     toastLine("资料已保存");
                     renderProfile();
@@ -2540,7 +2727,7 @@ public class MainActivity extends Activity {
     private void addProductToCart(JSONObject item) {
         if (sessionStore.token().isEmpty()) {
             toastLine("请先登录后再加入购物车");
-            renderProfile();
+            renderLoginPage();
             return;
         }
         new Thread(() -> {
@@ -3568,6 +3755,27 @@ public class MainActivity extends Activity {
         return value.length() > 6 ? value.substring(0, 6) + "…" : value;
     }
 
+    private String emptyFallback(String value, String fallback) {
+        return value == null || value.trim().isEmpty() ? fallback : value.trim();
+    }
+
+    private String maskPhone(String phone) {
+        String value = phone == null ? "" : phone.trim();
+        if (value.length() < 7) {
+            return value;
+        }
+        return value.substring(0, 3) + "******" + value.substring(value.length() - 2);
+    }
+
+    private String maskEmail(String email) {
+        String value = email == null ? "" : email.trim();
+        int at = value.indexOf("@");
+        if (at <= 1) {
+            return value;
+        }
+        return value.substring(0, 1) + "***" + value.substring(at);
+    }
+
     private View historyButton(LocalChatStore.SessionSummary item) {
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -3592,7 +3800,7 @@ public class MainActivity extends Activity {
         titleParams.leftMargin = dp(14);
         row.addView(title, titleParams);
         row.setOnClickListener(v -> {
-            chatStore.touchSession(item.localSessionId);
+            hideKeyboard();
             localSessionId = item.localSessionId;
             serverSessionId = item.serverSessionId == null ? "" : item.serverSessionId;
             closeDrawerAnimated();
@@ -3640,7 +3848,7 @@ public class MainActivity extends Activity {
 
         LinearLayout user = new LinearLayout(this);
         user.setGravity(Gravity.CENTER_VERTICAL);
-        user.setOnClickListener(v -> renderProfile());
+        user.setOnClickListener(v -> renderSettings());
         user.addView(accountAvatarView(dp(42), 17), new LinearLayout.LayoutParams(dp(42), dp(42)));
         TextView name = new TextView(this);
         name.setText(sessionStore.token().isEmpty() ? "未登录" : (sessionStore.nickname().isEmpty() ? "用户名" : sessionStore.nickname()));
@@ -3660,25 +3868,400 @@ public class MainActivity extends Activity {
 
     private void renderSettings() {
         closeDrawer();
+        if (sessionStore.token().isEmpty()) {
+            renderLoginPage();
+            return;
+        }
         activePage = "settings";
         backStack.clear();
         backStack.push(() -> renderChatHome());
         baseScreen();
-        addPageHeader("设置", "调试地址和应用偏好");
+        content.addView(createTopBar("设置", null), new LinearLayout.LayoutParams(-1, dp(56)));
         LinearLayout page = pageBody();
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.VERTICAL);
+        header.setGravity(Gravity.CENTER_HORIZONTAL);
+        header.setPadding(0, dp(36), 0, dp(24));
+        View avatar = accountAvatarView(dp(118), 36);
+        avatar.setOnClickListener(v -> renderAvatarPreviewPage());
+        header.addView(avatar, new LinearLayout.LayoutParams(dp(118), dp(118)));
+        TextView name = title(sessionStore.nickname().isEmpty() ? "用户名" : sessionStore.nickname());
+        name.setGravity(Gravity.CENTER);
+        name.setOnClickListener(v -> renderEditProfilePage());
+        header.addView(name, new LinearLayout.LayoutParams(-1, -2));
+        TextView id = muted("用户id：" + emptyFallback(sessionStore.accountId(), "-"));
+        id.setGravity(Gravity.CENTER);
+        header.addView(id, new LinearLayout.LayoutParams(-1, -2));
+        Button account = secondaryButton("账号管理");
+        account.setTextSize(18);
+        account.setOnClickListener(v -> renderAccountPage());
+        LinearLayout.LayoutParams accountParams = new LinearLayout.LayoutParams(dp(168), dp(52));
+        accountParams.topMargin = dp(16);
+        header.addView(account, accountParams);
+        page.addView(header);
+
+        LinearLayout group = panel();
+        group.addView(settingsRow("?", "帮助", v -> renderHelpPage(), Color.rgb(124, 58, 237)));
+        group.addView(settingsRow("i", "关于", v -> renderAboutPage(), Color.rgb(59, 130, 246)));
+        group.addView(settingsRow("→", "退出登录", v -> confirmLogout(), Color.rgb(239, 68, 68)));
+        page.addView(group);
+
         if (BuildConfig.SHOW_TEST_SERVER_SETTINGS) {
+            LinearLayout dev = panel();
             EditText apiBase = inputField("后端地址", sessionStore.apiBase());
-            page.addView(apiBase);
+            dev.addView(strong("测试后端"));
+            dev.addView(apiBase);
             Button saveApi = primaryButton("保存测试地址");
             saveApi.setOnClickListener(v -> {
                 sessionStore.saveApiBase(apiBase.getText().toString().trim());
                 api = new ApiClient(sessionStore);
                 toastLine("已保存测试后端地址");
             });
-            page.addView(saveApi, new LinearLayout.LayoutParams(-1, dp(52)));
-        } else {
-            page.addView(card("当前版本", "正式版不展示测试后端地址设置。"));
+            addFormButton(dev, saveApi);
+            page.addView(dev);
         }
+        TextView version = muted("Version: " + BuildConfig.VERSION_NAME + "\n由 AI 大模型提供支持");
+        version.setGravity(Gravity.CENTER);
+        page.addView(version, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    private View settingsRow(String iconText, String label, View.OnClickListener listener, int iconColor) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(4), dp(8), dp(4), dp(8));
+        TextView icon = new TextView(this);
+        icon.setText(iconText);
+        icon.setTextSize(20);
+        icon.setTypeface(Typeface.DEFAULT_BOLD);
+        icon.setTextColor(Color.WHITE);
+        icon.setGravity(Gravity.CENTER);
+        icon.setBackground(rounded(iconColor, dp(12)));
+        row.addView(icon, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        TextView text = strong(label);
+        LinearLayout.LayoutParams textParams = new LinearLayout.LayoutParams(0, -2, 1);
+        textParams.leftMargin = dp(18);
+        row.addView(text, textParams);
+        TextView arrow = muted("›");
+        arrow.setTextSize(30);
+        arrow.setGravity(Gravity.CENTER);
+        row.addView(arrow, new LinearLayout.LayoutParams(dp(30), -1));
+        row.setOnClickListener(listener);
+        return row;
+    }
+
+    private void renderAvatarPreviewPage() {
+        closeDrawer();
+        activePage = "avatar";
+        backStack.push(() -> renderSettings());
+        baseScreen();
+        root.setBackgroundColor(Color.BLACK);
+        ImageView image = new ImageView(this);
+        image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        String url = api.absoluteUrl(sessionStore.avatarUrl());
+        if (!url.isEmpty()) {
+            imageLoader.load(image, url);
+        }
+        root.addView(image, new FrameLayout.LayoutParams(-1, -1));
+        Button edit = secondaryButton("编辑个人资料");
+        edit.setTextSize(18);
+        edit.setOnClickListener(v -> renderEditProfilePage());
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(-1, dp(56), Gravity.BOTTOM);
+        params.leftMargin = dp(20);
+        params.rightMargin = dp(20);
+        params.bottomMargin = dp(36);
+        root.addView(edit, params);
+        image.setOnLongClickListener(v -> {
+            saveAvatarToGallery(url);
+            return true;
+        });
+    }
+
+    private void saveAvatarToGallery(String url) {
+        if (url == null || url.trim().isEmpty()) {
+            toastLine("当前没有可保存的头像");
+            return;
+        }
+        new Thread(() -> {
+            try (InputStream inputStream = new URL(url).openStream()) {
+                Bitmap bitmap = BitmapFactory.decodeStream(inputStream);
+                if (bitmap == null) {
+                    throw new IllegalArgumentException("头像图片不可用");
+                }
+                String saved = MediaStore.Images.Media.insertImage(getContentResolver(), bitmap, "xzxg_avatar_" + System.currentTimeMillis(), "小猪小狗导购头像");
+                bitmap.recycle();
+                runOnUiThread(() -> toastLine(saved == null ? "保存失败" : "已保存到相册"));
+            } catch (Exception error) {
+                runOnUiThread(() -> toastLine("保存失败：" + error.getMessage()));
+            }
+        }).start();
+    }
+
+    private void renderEditProfilePage() {
+        closeDrawer();
+        if (sessionStore.token().isEmpty()) {
+            renderLoginPage();
+            return;
+        }
+        activePage = "edit_profile";
+        baseScreen();
+        LinearLayout bar = new LinearLayout(this);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setPadding(dp(18), 0, dp(18), 0);
+        TextView cancel = muted("取消");
+        cancel.setTextSize(17);
+        cancel.setTextColor(Color.BLACK);
+        cancel.setOnClickListener(v -> renderSettings());
+        bar.addView(cancel, new LinearLayout.LayoutParams(0, -1, 1));
+        TextView heading = title("个人资料");
+        heading.setGravity(Gravity.CENTER);
+        bar.addView(heading, new LinearLayout.LayoutParams(0, -1, 1));
+        TextView done = muted("完成");
+        done.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+        done.setTextSize(17);
+        done.setEnabled(false);
+        done.setTextColor(Color.rgb(180, 198, 230));
+        bar.addView(done, new LinearLayout.LayoutParams(0, -1, 1));
+        content.addView(bar, new LinearLayout.LayoutParams(-1, dp(64)));
+        LinearLayout page = pageBody();
+        page.setGravity(Gravity.CENTER_HORIZONTAL);
+        FrameLayout avatarWrap = new FrameLayout(this);
+        View avatar = accountAvatarView(dp(128), 38);
+        avatarWrap.addView(avatar, new FrameLayout.LayoutParams(dp(128), dp(128), Gravity.CENTER));
+        TextView plus = new TextView(this);
+        plus.setText("+");
+        plus.setTextSize(30);
+        plus.setTextColor(Color.WHITE);
+        plus.setGravity(Gravity.CENTER);
+        plus.setBackground(rounded(Color.rgb(37, 99, 235), dp(22)));
+        FrameLayout.LayoutParams plusParams = new FrameLayout.LayoutParams(dp(44), dp(44), Gravity.RIGHT | Gravity.BOTTOM);
+        avatarWrap.addView(plus, plusParams);
+        avatarWrap.setOnClickListener(v -> pickAvatar());
+        page.addView(avatarWrap, new LinearLayout.LayoutParams(dp(150), dp(150)));
+        TextView label = strong("昵称");
+        label.setGravity(Gravity.LEFT);
+        page.addView(label, new LinearLayout.LayoutParams(-1, -2));
+        EditText nickname = inputField("昵称", sessionStore.nickname());
+        page.addView(nickname);
+        final boolean[] changed = {false};
+        pendingAvatarBytes = null;
+        pendingAvatarChanged = () -> {
+            changed[0] = true;
+            done.setEnabled(true);
+            done.setTextColor(Color.rgb(37, 99, 235));
+            toastLine("头像已裁剪为正方形");
+        };
+        nickname.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                changed[0] = true;
+                done.setEnabled(true);
+                done.setTextColor(Color.rgb(37, 99, 235));
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+        done.setOnClickListener(v -> {
+            if (!changed[0]) {
+                return;
+            }
+            saveProfileChanges(nickname.getText().toString());
+        });
+    }
+
+    private void saveProfileChanges(String nickname) {
+        String name = nickname == null ? "" : nickname.trim();
+        if (name.isEmpty()) {
+            toastLine("昵称不能为空");
+            return;
+        }
+        new Thread(() -> {
+            try {
+                String avatarUrl = "";
+                if (pendingAvatarBytes != null) {
+                    JSONObject upload = api.uploadAvatar("avatar.jpg", pendingAvatarMime, pendingAvatarBytes);
+                    avatarUrl = upload.optString("url", "");
+                }
+                JSONObject profile = api.updateProfile(name, avatarUrl);
+                saveAccountSession(sessionStore.token(), profile, sessionStore.role(), name);
+                pendingAvatarBytes = null;
+                pendingAvatarChanged = null;
+                runOnUiThread(() -> {
+                    toastLine("资料已保存");
+                    renderSettings();
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> toastLine("保存失败：" + error.getMessage()));
+            }
+        }).start();
+    }
+
+    private void renderAccountPage() {
+        closeDrawer();
+        if (sessionStore.token().isEmpty()) {
+            renderLoginPage();
+            return;
+        }
+        activePage = "account";
+        backStack.push(() -> renderSettings());
+        baseScreen();
+        LinearLayout toolbar = new LinearLayout(this);
+        toolbar.setGravity(Gravity.CENTER_VERTICAL);
+        toolbar.setPadding(dp(20), 0, dp(20), 0);
+        SpaceView left = new SpaceView(this);
+        toolbar.addView(left, new LinearLayout.LayoutParams(dp(48), -1));
+        TextView heading = title("账号管理");
+        heading.setGravity(Gravity.CENTER);
+        toolbar.addView(heading, new LinearLayout.LayoutParams(0, -1, 1));
+        Button close = transparentIconButton("×");
+        close.setTextSize(28);
+        close.setOnClickListener(v -> onBackPressed());
+        toolbar.addView(close, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        content.addView(toolbar, new LinearLayout.LayoutParams(-1, dp(64)));
+        LinearLayout page = pageBody();
+        LinearLayout user = panel();
+        LinearLayout userRow = new LinearLayout(this);
+        userRow.setGravity(Gravity.CENTER_VERTICAL);
+        userRow.addView(accountAvatarView(dp(78), 28), new LinearLayout.LayoutParams(dp(78), dp(78)));
+        LinearLayout info = new LinearLayout(this);
+        info.setOrientation(LinearLayout.VERTICAL);
+        info.addView(title(sessionStore.nickname().isEmpty() ? "用户名" : sessionStore.nickname()));
+        info.addView(muted("用户id：" + emptyFallback(sessionStore.accountId(), "-")));
+        LinearLayout.LayoutParams infoParams = new LinearLayout.LayoutParams(0, -2, 1);
+        infoParams.leftMargin = dp(18);
+        userRow.addView(info, infoParams);
+        user.addView(userRow);
+        page.addView(user);
+        LinearLayout group1 = panel();
+        group1.addView(settingsRow("▦", "个人资料", v -> renderEditProfilePage(), Color.rgb(124, 58, 237)));
+        page.addView(group1);
+        LinearLayout group2 = panel();
+        group2.addView(accountInfoRow("☎", "手机号", maskPhone(sessionStore.phone()), v -> editContact(true)));
+        group2.addView(accountInfoRow("@", "邮箱", maskEmail(sessionStore.email()), v -> editContact(false)));
+        page.addView(group2);
+        LinearLayout group3 = panel();
+        group3.addView(settingsRow("×", "删除账号", v -> confirmDeleteAccount(), Color.rgb(239, 68, 68)));
+        group3.addView(settingsRow("→", "退出登录", v -> confirmLogout(), Color.rgb(239, 68, 68)));
+        page.addView(group3);
+    }
+
+    private View accountInfoRow(String iconText, String label, String value, View.OnClickListener listener) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(4), dp(8), dp(4), dp(8));
+        TextView icon = new TextView(this);
+        icon.setText(iconText);
+        icon.setTextSize(18);
+        icon.setTextColor(Color.WHITE);
+        icon.setGravity(Gravity.CENTER);
+        icon.setBackground(rounded(Color.rgb(107, 114, 128), dp(12)));
+        row.addView(icon, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        TextView text = strong(label);
+        LinearLayout.LayoutParams textParams = new LinearLayout.LayoutParams(0, -2, 1);
+        textParams.leftMargin = dp(18);
+        row.addView(text, textParams);
+        TextView right = muted(value == null || value.isEmpty() ? "未设置  ›" : value + "  ›");
+        right.setTextSize(17);
+        row.addView(right, new LinearLayout.LayoutParams(-2, -2));
+        row.setOnClickListener(listener);
+        return row;
+    }
+
+    private void editContact(boolean phone) {
+        EditText edit = inputField(phone ? "手机号" : "邮箱", phone ? sessionStore.phone() : sessionStore.email());
+        new AlertDialog.Builder(this)
+                .setTitle(phone ? "修改手机号" : "修改邮箱")
+                .setView(edit)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("保存", (dialog, which) -> updateContact(phone ? edit.getText().toString() : sessionStore.phone(), phone ? sessionStore.email() : edit.getText().toString()))
+                .show();
+    }
+
+    private void updateContact(String phone, String email) {
+        new Thread(() -> {
+            try {
+                JSONObject profile = api.updateContact(phone, email);
+                saveAccountSession(sessionStore.token(), profile, sessionStore.role(), sessionStore.nickname());
+                runOnUiThread(() -> {
+                    toastLine("账号信息已更新");
+                    renderAccountPage();
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> toastLine("保存失败：" + error.getMessage()));
+            }
+        }).start();
+    }
+
+    private void confirmLogout() {
+        new AlertDialog.Builder(this)
+                .setTitle("退出登录")
+                .setMessage("是否退出当前账号？")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("退出", (dialog, which) -> logoutAccount())
+                .show();
+    }
+
+    private void logoutAccount() {
+        new Thread(() -> {
+            try {
+                api.logout();
+            } catch (Exception ignored) {
+            }
+            sessionStore.clearAuth();
+            runOnUiThread(() -> {
+                toastLine("已退出登录");
+                createFreshLocalSession();
+                renderChatHome();
+                loadHomeCopy();
+            });
+        }).start();
+    }
+
+    private void confirmDeleteAccount() {
+        new AlertDialog.Builder(this)
+                .setTitle("删除账号")
+                .setMessage("删除后将无法继续使用当前账号登录。是否继续？")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("继续", (dialog, which) -> new AlertDialog.Builder(this)
+                        .setTitle("确认删除")
+                        .setMessage("请再次确认删除账号。")
+                        .setNegativeButton("取消", null)
+                        .setPositiveButton("删除", (d, w) -> deleteAccount())
+                        .show())
+                .show();
+    }
+
+    private void deleteAccount() {
+        new Thread(() -> {
+            try {
+                api.deleteAccount();
+                sessionStore.clearAuth();
+                runOnUiThread(() -> {
+                    toastLine("账号已删除");
+                    createFreshLocalSession();
+                    renderChatHome();
+                    loadHomeCopy();
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> toastLine("删除失败：" + error.getMessage()));
+            }
+        }).start();
+    }
+
+    private void renderHelpPage() {
+        activePage = "help";
+        baseScreen();
+        addPageHeader("帮助", "常见问题");
+        LinearLayout page = pageBody();
+        page.addView(card("AI导购", "在聊天页输入需求，AI 会结合商品、购物车和订单能力给出建议。"));
+        page.addView(card("商品与购物车", "商品页可以搜索、筛选、查看详情并加入购物车。"));
+        page.addView(card("账号与资料", "在设置页可以编辑头像、昵称、手机号和邮箱。"));
+    }
+
+    private void renderAboutPage() {
+        activePage = "about";
+        baseScreen();
+        addPageHeader("关于", "应用信息");
+        LinearLayout page = pageBody();
+        page.addView(card("小猪小狗导购", "Version: " + BuildConfig.VERSION_NAME + "\n由 AI 大模型提供支持"));
     }
 
     private TextView title(String text) {

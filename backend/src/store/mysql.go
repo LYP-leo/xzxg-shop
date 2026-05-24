@@ -108,6 +108,10 @@ func (s *MySQLStore) ensureAccessSchema(ctx context.Context) error {
 		{"orders", "closed_at", "ALTER TABLE orders ADD COLUMN closed_at DATETIME NULL AFTER paid_at"},
 		{"orders", "completed_at", "ALTER TABLE orders ADD COLUMN completed_at DATETIME NULL AFTER closed_at"},
 		{"orders", "cancel_reason", "ALTER TABLE orders ADD COLUMN cancel_reason VARCHAR(256) NOT NULL DEFAULT '' AFTER completed_at"},
+		{"accounts", "avatar_url", "ALTER TABLE accounts ADD COLUMN avatar_url VARCHAR(512) NOT NULL DEFAULT '' AFTER display_name"},
+		{"accounts", "phone", "ALTER TABLE accounts ADD COLUMN phone VARCHAR(32) NOT NULL DEFAULT '' AFTER avatar_url"},
+		{"accounts", "email", "ALTER TABLE accounts ADD COLUMN email VARCHAR(128) NOT NULL DEFAULT '' AFTER phone"},
+		{"accounts", "deleted_at", "ALTER TABLE accounts ADD COLUMN deleted_at DATETIME NULL AFTER status"},
 	}
 	for _, column := range columns {
 		exists, err := s.columnExists(ctx, column.table, column.name)
@@ -165,6 +169,7 @@ func (s *MySQLStore) ensureAccessSchema(ctx context.Context) error {
 		{"agent_runs", "idx_agent_runs_account_id", "CREATE INDEX idx_agent_runs_account_id ON agent_runs (account_id)"},
 		{"orders", "uk_orders_order_no", "CREATE UNIQUE INDEX uk_orders_order_no ON orders (order_no)"},
 		{"orders", "idx_orders_payment_deadline_at", "CREATE INDEX idx_orders_payment_deadline_at ON orders (payment_deadline_at)"},
+		{"accounts", "idx_accounts_status", "CREATE INDEX idx_accounts_status ON accounts (status)"},
 	}
 	for _, index := range indexes {
 		exists, err := s.indexExists(ctx, index.table, index.name)
@@ -282,7 +287,7 @@ func (s *MySQLStore) GetAccountByUsername(ctx context.Context, username string) 
 	var role string
 	var passwordHash string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT account_id, username, password_hash, display_name, role, merchant_id, created_at
+		SELECT account_id, username, password_hash, display_name, avatar_url, phone, email, role, merchant_id, status, created_at
 		FROM accounts
 		WHERE username = ? AND status = 'active'
 	`, username).Scan(
@@ -290,8 +295,12 @@ func (s *MySQLStore) GetAccountByUsername(ctx context.Context, username string) 
 		&account.Username,
 		&passwordHash,
 		&account.DisplayName,
+		&account.AvatarURL,
+		&account.Phone,
+		&account.Email,
 		&role,
 		&account.MerchantID,
+		&account.Status,
 		&account.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -305,7 +314,7 @@ func (s *MySQLStore) GetAccountByToken(ctx context.Context, token string) (domai
 	var account domain.Account
 	var role string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT a.account_id, a.username, a.display_name, a.role, a.merchant_id, a.created_at
+		SELECT a.account_id, a.username, a.display_name, a.avatar_url, a.phone, a.email, a.role, a.merchant_id, a.status, a.created_at
 		FROM auth_tokens t
 		JOIN accounts a ON a.account_id = t.account_id
 		WHERE t.token = ? AND t.expires_at > ? AND a.status = 'active'
@@ -313,8 +322,12 @@ func (s *MySQLStore) GetAccountByToken(ctx context.Context, token string) (domai
 		&account.AccountID,
 		&account.Username,
 		&account.DisplayName,
+		&account.AvatarURL,
+		&account.Phone,
+		&account.Email,
 		&role,
 		&account.MerchantID,
+		&account.Status,
 		&account.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -385,15 +398,18 @@ func (s *MySQLStore) CreateAccount(ctx context.Context, input domain.AccountCrea
 		AccountID:   nextID("acct"),
 		Username:    strings.TrimSpace(input.Username),
 		DisplayName: strings.TrimSpace(input.DisplayName),
+		AvatarURL:   strings.TrimSpace(input.AvatarURL),
+		Phone:       strings.TrimSpace(input.Phone),
+		Email:       strings.TrimSpace(input.Email),
 		Role:        domain.AccountRole(role),
 		MerchantID:  strings.TrimSpace(input.MerchantID),
 		Status:      "active",
 		CreatedAt:   now,
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO accounts (account_id, username, password_hash, display_name, role, merchant_id, status, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
-	`, account.AccountID, account.Username, input.PasswordHash, account.DisplayName, role, account.MerchantID, now, now)
+		INSERT INTO accounts (account_id, username, password_hash, display_name, avatar_url, phone, email, role, merchant_id, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+	`, account.AccountID, account.Username, input.PasswordHash, account.DisplayName, account.AvatarURL, account.Phone, account.Email, role, account.MerchantID, now, now)
 	if err != nil {
 		return domain.Account{}, fmt.Errorf("insert account: %w", err)
 	}
@@ -412,15 +428,106 @@ func (s *MySQLStore) UpdateAccountStatus(ctx context.Context, accountID string, 
 	var account domain.Account
 	var role string
 	err = s.db.QueryRowContext(ctx, `
-		SELECT account_id, username, display_name, role, merchant_id, status, created_at
+		SELECT account_id, username, display_name, avatar_url, phone, email, role, merchant_id, status, created_at
 		FROM accounts
 		WHERE account_id = ?
-	`, accountID).Scan(&account.AccountID, &account.Username, &account.DisplayName, &role, &account.MerchantID, &account.Status, &account.CreatedAt)
+	`, accountID).Scan(&account.AccountID, &account.Username, &account.DisplayName, &account.AvatarURL, &account.Phone, &account.Email, &role, &account.MerchantID, &account.Status, &account.CreatedAt)
 	if err != nil {
 		return domain.Account{}, false
 	}
 	account.Role = domain.AccountRole(role)
 	return account, true
+}
+
+func (s *MySQLStore) UpdateAccountProfile(ctx context.Context, accountID string, displayName string, avatarURL string) (domain.Account, bool) {
+	sets := []string{"updated_at = ?"}
+	args := []any{time.Now()}
+	if strings.TrimSpace(displayName) != "" {
+		sets = append(sets, "display_name = ?")
+		args = append(args, truncateRunes(strings.TrimSpace(displayName), 24))
+	}
+	if strings.TrimSpace(avatarURL) != "" {
+		sets = append(sets, "avatar_url = ?")
+		args = append(args, truncateRunes(strings.TrimSpace(avatarURL), 512))
+	}
+	args = append(args, accountID)
+	result, err := s.db.ExecContext(ctx, `UPDATE accounts SET `+strings.Join(sets, ", ")+` WHERE account_id = ? AND status = 'active'`, args...)
+	if err != nil {
+		return domain.Account{}, false
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return domain.Account{}, false
+	}
+	return s.getAccountByID(ctx, accountID)
+}
+
+func (s *MySQLStore) UpdateAccountContact(ctx context.Context, accountID string, phone string, email string) (domain.Account, bool) {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE accounts
+		SET phone = ?, email = ?, updated_at = ?
+		WHERE account_id = ? AND status = 'active'
+	`, truncateRunes(strings.TrimSpace(phone), 32), truncateRunes(strings.TrimSpace(email), 128), time.Now(), accountID)
+	if err != nil {
+		return domain.Account{}, false
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return domain.Account{}, false
+	}
+	return s.getAccountByID(ctx, accountID)
+}
+
+func (s *MySQLStore) DeleteAuthToken(ctx context.Context, token string) bool {
+	if strings.TrimSpace(token) == "" {
+		return false
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM auth_tokens WHERE token = ?`, strings.TrimSpace(token))
+	return err == nil
+}
+
+func (s *MySQLStore) DeleteAuthTokensByAccount(ctx context.Context, accountID string) bool {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM auth_tokens WHERE account_id = ?`, accountID)
+	return err == nil
+}
+
+func (s *MySQLStore) DeleteAccount(ctx context.Context, accountID string) bool {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `
+		UPDATE accounts
+		SET status = 'deleted', deleted_at = ?, updated_at = ?
+		WHERE account_id = ? AND status = 'active'
+	`, time.Now(), time.Now(), accountID)
+	if err != nil {
+		return false
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return false
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM auth_tokens WHERE account_id = ?`, accountID); err != nil {
+		return false
+	}
+	return tx.Commit() == nil
+}
+
+func (s *MySQLStore) getAccountByID(ctx context.Context, accountID string) (domain.Account, bool) {
+	var account domain.Account
+	var role string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT account_id, username, display_name, avatar_url, phone, email, role, merchant_id, status, created_at
+		FROM accounts
+		WHERE account_id = ?
+	`, accountID).Scan(&account.AccountID, &account.Username, &account.DisplayName, &account.AvatarURL, &account.Phone, &account.Email, &role, &account.MerchantID, &account.Status, &account.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Account{}, false
+	}
+	account.Role = domain.AccountRole(role)
+	return account, err == nil
 }
 
 func (s *MySQLStore) CreateAuthToken(ctx context.Context, accountID string) (string, error) {
@@ -482,7 +589,7 @@ func (s *MySQLStore) ListUserSessions(ctx context.Context, accountID string) []d
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT session_id, account_id, title, summary, message_count, last_message_at, created_at, updated_at
 		FROM chat_sessions
-		WHERE account_id = ?
+		WHERE account_id = ? AND message_count > 0
 		ORDER BY COALESCE(last_message_at, created_at) DESC, created_at DESC
 	`, accountID)
 	if err != nil {
@@ -507,6 +614,69 @@ func (s *MySQLStore) ListUserSessions(ctx context.Context, accountID string) []d
 		items = append(items, item)
 	}
 	return items
+}
+
+func (s *MySQLStore) SearchUserSessions(ctx context.Context, accountID string, keyword string, page int, pageSize int) ([]domain.ChatSession, int) {
+	page, pageSize = normalizePage(page, pageSize)
+	keyword = strings.TrimSpace(keyword)
+	if keyword == "" {
+		items := s.ListUserSessions(ctx, accountID)
+		total := len(items)
+		start := pageOffset(page, pageSize)
+		if start >= total {
+			return []domain.ChatSession{}, total
+		}
+		end := start + pageSize
+		if end > total {
+			end = total
+		}
+		return items[start:end], total
+	}
+	like := "%" + keyword + "%"
+	var total int
+	_ = s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM (
+			SELECT DISTINCT s.session_id
+			FROM chat_sessions s
+			LEFT JOIN user_messages m ON m.session_id = s.session_id AND m.account_id = s.account_id
+			WHERE s.account_id = ?
+			  AND s.message_count > 0
+			  AND (s.title LIKE ? OR s.summary LIKE ? OR m.content LIKE ?)
+		) hits
+	`, accountID, like, like, like).Scan(&total)
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT s.session_id, s.account_id, s.title, s.summary, s.message_count, s.last_message_at, s.created_at, s.updated_at
+		FROM chat_sessions s
+		LEFT JOIN user_messages m ON m.session_id = s.session_id AND m.account_id = s.account_id
+		WHERE s.account_id = ?
+		  AND s.message_count > 0
+		  AND (s.title LIKE ? OR s.summary LIKE ? OR m.content LIKE ?)
+		ORDER BY COALESCE(s.last_message_at, s.updated_at, s.created_at) DESC, s.created_at DESC
+		LIMIT ? OFFSET ?
+	`, accountID, like, like, like, pageSize, pageOffset(page, pageSize))
+	if err != nil {
+		return nil, 0
+	}
+	defer rows.Close()
+
+	items := make([]domain.ChatSession, 0)
+	for rows.Next() {
+		var item domain.ChatSession
+		var summary sql.NullString
+		var lastMessageAt sql.NullTime
+		if err := rows.Scan(&item.SessionID, &item.AccountID, &item.Title, &summary, &item.MessageCount, &lastMessageAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, 0
+		}
+		if summary.Valid {
+			item.Summary = summary.String
+		}
+		if lastMessageAt.Valid {
+			item.LastMessageAt = lastMessageAt.Time
+		}
+		items = append(items, item)
+	}
+	return items, total
 }
 
 func (s *MySQLStore) UpdateSessionSummary(ctx context.Context, accountID string, sessionID string, title string, summary string) (domain.ChatSession, bool) {
@@ -2795,7 +2965,12 @@ func deriveSessionTitle(content string) string {
 	if content == "" {
 		return "AI 导购"
 	}
-	return truncateRunes(content, 20)
+	cleaner := strings.NewReplacer("，", "", "。", "", "？", "", "！", "", ",", "", ".", "", "?", "", "!", "", "我想", "", "帮我", "", "推荐", "")
+	content = strings.TrimSpace(cleaner.Replace(content))
+	if content == "" {
+		return "导购咨询"
+	}
+	return truncateRunes(content, 8)
 }
 
 func deriveSessionSummary(content string) string {

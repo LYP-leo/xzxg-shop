@@ -16,11 +16,17 @@ type Store interface {
 	ListAccounts(ctx context.Context) []domain.Account
 	ListAccountsPage(ctx context.Context, page int, pageSize int) ([]domain.Account, int)
 	CreateAccount(ctx context.Context, input domain.AccountCreateInput) (domain.Account, error)
+	UpdateAccountProfile(ctx context.Context, accountID string, displayName string, avatarURL string) (domain.Account, bool)
+	UpdateAccountContact(ctx context.Context, accountID string, phone string, email string) (domain.Account, bool)
 	UpdateAccountStatus(ctx context.Context, accountID string, status string) (domain.Account, bool)
 	CreateAuthToken(ctx context.Context, accountID string) (string, error)
+	DeleteAuthToken(ctx context.Context, token string) bool
+	DeleteAuthTokensByAccount(ctx context.Context, accountID string) bool
+	DeleteAccount(ctx context.Context, accountID string) bool
 
 	// Agent 会话、消息、run 和 trace。
 	ListUserSessions(ctx context.Context, accountID string) []domain.ChatSession
+	SearchUserSessions(ctx context.Context, accountID string, keyword string, page int, pageSize int) ([]domain.ChatSession, int)
 	CreateSession(ctx context.Context, accountID string, title string) (domain.ChatSession, error)
 	GetSession(ctx context.Context, accountID string, sessionID string) (domain.ChatSession, bool)
 	GetSessionDetail(ctx context.Context, accountID string, sessionID string) (domain.ChatSessionDetail, bool)

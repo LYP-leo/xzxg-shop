@@ -173,7 +173,10 @@ func routePolicy(method string, path string) (bool, []domain.AccountRole) {
 	if method == http.MethodGet && (path == "/api/v1/categories/tree" || path == "/api/v1/merchants" || path == "/api/v1/products" || strings.HasPrefix(path, "/api/v1/products/")) {
 		return false, nil
 	}
-	if path == "/api/v1/auth/me" {
+	if method == http.MethodGet && strings.HasPrefix(path, "/api/v1/uploads/avatar/") {
+		return false, nil
+	}
+	if path == "/api/v1/auth/me" || path == "/api/v1/auth/logout" || strings.HasPrefix(path, "/api/v1/account") || path == "/api/v1/uploads/avatar" {
 		return true, []domain.AccountRole{domain.AccountRoleUser, domain.AccountRoleMerchant, domain.AccountRoleAdmin}
 	}
 	// 三端路由按前缀划分：用户端、商家端、管理员端分别校验对应角色。
