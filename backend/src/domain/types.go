@@ -20,6 +20,14 @@ type Account struct {
 	CreatedAt   time.Time   `json:"created_at"`
 }
 
+type AccountCreateInput struct {
+	Username     string
+	PasswordHash string
+	DisplayName  string
+	Role         AccountRole
+	MerchantID   string
+}
+
 type ChatSession struct {
 	SessionID     string    `json:"session_id"`
 	AccountID     string    `json:"account_id,omitempty"`

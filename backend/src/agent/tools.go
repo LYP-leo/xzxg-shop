@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
+	"github.com/LYP-leo/xzxg-shop/backend/src/rag"
 )
 
 const (
@@ -20,6 +22,12 @@ const (
 	toolUpdateCartItem  = "update_cart_item"
 	toolDeleteCartItem  = "delete_cart_item"
 	toolCheckout        = "checkout"
+)
+
+const (
+	relevanceOK      = "ok"
+	relevanceWeak    = "weak"
+	relevanceNoMatch = "no_match"
 )
 
 type reactAction struct {
@@ -37,15 +45,19 @@ type reactBlock struct {
 }
 
 type toolObservation struct {
-	Tool       string         `json:"tool"`
-	OK         bool           `json:"ok"`
-	Message    string         `json:"message,omitempty"`
-	Result     map[string]any `json:"result,omitempty"`
-	ProductIDs []string       `json:"product_ids,omitempty"`
-	ChunkIDs   []string       `json:"chunk_ids,omitempty"`
-	Cart       *domain.Cart   `json:"-"`
-	Orders     []domain.Order `json:"-"`
-	DurationMS int64          `json:"duration_ms"`
+	Tool                string         `json:"tool"`
+	OK                  bool           `json:"ok"`
+	Message             string         `json:"message,omitempty"`
+	Result              map[string]any `json:"result,omitempty"`
+	ProductIDs          []string       `json:"product_ids,omitempty"`
+	CandidateProductIDs []string       `json:"candidate_product_ids,omitempty"`
+	DroppedProductIDs   []string       `json:"dropped_product_ids,omitempty"`
+	ChunkIDs            []string       `json:"chunk_ids,omitempty"`
+	RelevanceStatus     string         `json:"relevance_status,omitempty"`
+	RelevanceReason     string         `json:"relevance_reason,omitempty"`
+	Cart                *domain.Cart   `json:"-"`
+	Orders              []domain.Order `json:"-"`
+	DurationMS          int64          `json:"duration_ms"`
 }
 
 func (r *Runtime) executeTool(ctx context.Context, run domain.AgentRun, call reactAction) toolObservation {
@@ -100,8 +112,11 @@ func (r *Runtime) toolSearchProducts(ctx context.Context, raw json.RawMessage) t
 	}
 	limit := clampLimit(args.Limit, 5, 10)
 	products := r.store.SearchProducts(ctx, args.Query)
+	relevance := r.classifyProductSearchRelevance(ctx, args.Query, products)
+	products = relevance.AllowedProducts
 	if len(products) > limit {
 		products = products[:limit]
+		relevance.AllowedProductIDs = productCardIDs(products)
 	}
 	items := make([]map[string]any, 0, len(products))
 	productIDs := make([]string, 0, len(products))
@@ -120,12 +135,20 @@ func (r *Runtime) toolSearchProducts(ctx context.Context, raw json.RawMessage) t
 			"recommend_reason": truncateRunes(product.RecommendReason, 180),
 		})
 	}
+	if len(productIDs) == 0 && relevance.Status == relevanceOK {
+		relevance.Status = relevanceNoMatch
+		relevance.Reason = "检索成功但没有达到可挂品相关性要求的商品"
+	}
 	return toolObservation{
-		Tool:       toolSearchProducts,
-		OK:         true,
-		Message:    fmt.Sprintf("检索到 %d 个商品", len(items)),
-		Result:     map[string]any{"items": items},
-		ProductIDs: productIDs,
+		Tool:                toolSearchProducts,
+		OK:                  true,
+		Message:             productSearchMessage(relevance.Status, len(items)),
+		Result:              map[string]any{"items": items},
+		ProductIDs:          productIDs,
+		CandidateProductIDs: relevance.CandidateProductIDs,
+		DroppedProductIDs:   relevance.DroppedProductIDs,
+		RelevanceStatus:     relevance.Status,
+		RelevanceReason:     relevance.Reason,
 	}
 }
 
@@ -286,11 +309,16 @@ func parseReactAction(content string) (reactAction, error) {
 
 func observationForModel(observation toolObservation) string {
 	payload := map[string]any{
-		"tool":        observation.Tool,
-		"ok":          observation.OK,
-		"message":     observation.Message,
-		"result":      observation.Result,
-		"duration_ms": observation.DurationMS,
+		"tool":                  observation.Tool,
+		"ok":                    observation.OK,
+		"message":               observation.Message,
+		"result":                observation.Result,
+		"duration_ms":           observation.DurationMS,
+		"relevance_status":      observation.RelevanceStatus,
+		"relevance_reason":      observation.RelevanceReason,
+		"product_ids":           observation.ProductIDs,
+		"candidate_product_ids": observation.CandidateProductIDs,
+		"dropped_product_ids":   observation.DroppedProductIDs,
 	}
 	bytes, err := json.Marshal(payload)
 	if err != nil {
@@ -353,6 +381,222 @@ func truncateRunes(text string, limit int) string {
 		return string(runes)
 	}
 	return string(runes[:limit]) + "..."
+}
+
+type productRelevanceResult struct {
+	Status              string
+	Reason              string
+	AllowedProducts     []domain.ProductCard
+	AllowedProductIDs   []string
+	CandidateProductIDs []string
+	DroppedProductIDs   []string
+}
+
+func (r *Runtime) classifyProductSearchRelevance(ctx context.Context, query string, products []domain.ProductCard) productRelevanceResult {
+	result := productRelevanceResult{
+		Status:              relevanceNoMatch,
+		Reason:              "没有召回到商品",
+		CandidateProductIDs: productCardIDs(products),
+	}
+	if len(products) == 0 {
+		return result
+	}
+
+	values := r.configs.GetMap(ctx)
+	guardEnabled := boolFromMap(values, "retrieval.product.lexical_guard.enabled", true)
+	minEvidence := intFromMap(values, "retrieval.product.lexical_guard.min_evidence_count", 1)
+	minRatio := floatFromMap(values, "retrieval.product.lexical_guard.min_match_ratio", 0.35)
+	terms := productRelevanceTerms(query, values["retrieval.rerank.generic_terms"])
+	if len(terms) == 0 || !guardEnabled {
+		allowed := limitProductCards(products, intFromMap(values, "retrieval.product.ok.max_results", len(products)))
+		return productRelevanceResult{
+			Status:              relevanceOK,
+			Reason:              "未启用词面保护或 query 缺少有效词面证据，保留原始检索结果",
+			AllowedProducts:     allowed,
+			AllowedProductIDs:   productCardIDs(allowed),
+			CandidateProductIDs: productCardIDs(products),
+		}
+	}
+
+	type scoredProduct struct {
+		product domain.ProductCard
+		score   int
+		ratio   float64
+	}
+	scored := make([]scoredProduct, 0, len(products))
+	for _, product := range products {
+		score := productEvidenceCount(productSearchText(product), terms)
+		ratio := 0.0
+		if len(terms) > 0 {
+			ratio = float64(score) / float64(len(terms))
+		}
+		scored = append(scored, scoredProduct{product: product, score: score, ratio: ratio})
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].score == scored[j].score {
+			if scored[i].ratio == scored[j].ratio {
+				return scored[i].product.ProductID < scored[j].product.ProductID
+			}
+			return scored[i].ratio > scored[j].ratio
+		}
+		return scored[i].score > scored[j].score
+	})
+
+	allowed := make([]domain.ProductCard, 0, len(scored))
+	dropped := make([]string, 0, len(scored))
+	for _, item := range scored {
+		allowedByEvidence := item.score >= minEvidence && (item.ratio >= minRatio || (len(terms) <= 3 && item.score >= 1) || item.score >= 2)
+		if allowedByEvidence {
+			allowed = append(allowed, item.product)
+			continue
+		}
+		dropped = append(dropped, item.product.ProductID)
+	}
+
+	if len(allowed) == 0 {
+		return productRelevanceResult{
+			Status:              relevanceWeak,
+			Reason:              fmt.Sprintf("召回到 %d 个候选，但没有商品达到词面证据要求；有效词：%s", len(products), strings.Join(terms, ",")),
+			CandidateProductIDs: productCardIDs(products),
+			DroppedProductIDs:   dropped,
+		}
+	}
+	allowed = limitProductCards(allowed, intFromMap(values, "retrieval.product.ok.max_results", len(allowed)))
+	status := relevanceOK
+	reason := fmt.Sprintf("有 %d 个商品达到词面证据要求", len(allowed))
+	if len(dropped) > 0 {
+		reason += fmt.Sprintf("，剔除 %d 个弱相关候选", len(dropped))
+	}
+	return productRelevanceResult{
+		Status:              status,
+		Reason:              reason,
+		AllowedProducts:     allowed,
+		AllowedProductIDs:   productCardIDs(allowed),
+		CandidateProductIDs: productCardIDs(products),
+		DroppedProductIDs:   dropped,
+	}
+}
+
+func productRelevanceTerms(query string, genericConfig string) []string {
+	generic := map[string]bool{
+		"推荐": true, "怎么选": true, "好用": true, "商品": true, "产品": true, "一下": true, "几个": true, "一款": true, "适合": true,
+	}
+	for _, term := range strings.FieldsFunc(genericConfig, func(r rune) bool {
+		return r == ',' || r == '，' || r == ';' || r == '；' || r == '\n' || r == ' '
+	}) {
+		term = strings.TrimSpace(strings.ToLower(term))
+		if term != "" {
+			generic[term] = true
+		}
+	}
+	out := make([]string, 0)
+	seen := map[string]bool{}
+	for _, term := range append(strings.Fields(strings.ToLower(query)), rag.QueryTerms(query)...) {
+		term = strings.TrimSpace(strings.ToLower(term))
+		if term == "" || seen[term] || generic[term] {
+			continue
+		}
+		containsGeneric := false
+		for item := range generic {
+			if item != "" && strings.Contains(term, item) {
+				containsGeneric = true
+				break
+			}
+		}
+		if containsGeneric && len([]rune(term)) > 2 {
+			continue
+		}
+		seen[term] = true
+		out = append(out, term)
+	}
+	return out
+}
+
+func productEvidenceCount(text string, terms []string) int {
+	text = strings.ToLower(text)
+	count := 0
+	for _, term := range terms {
+		if strings.Contains(text, strings.ToLower(term)) {
+			count++
+		}
+	}
+	return count
+}
+
+func productSearchText(product domain.ProductCard) string {
+	parts := []string{
+		product.ProductID,
+		product.Name,
+		product.Brand,
+		product.CategoryID,
+		product.MerchantName,
+		product.RecommendReason,
+	}
+	parts = append(parts, product.Tags...)
+	parts = append(parts, product.SellingPoints...)
+	parts = append(parts, product.RiskNotes...)
+	return strings.ToLower(strings.Join(parts, "\n"))
+}
+
+func productCardIDs(products []domain.ProductCard) []string {
+	ids := make([]string, 0, len(products))
+	for _, product := range products {
+		if strings.TrimSpace(product.ProductID) != "" {
+			ids = append(ids, product.ProductID)
+		}
+	}
+	return ids
+}
+
+func limitProductCards(products []domain.ProductCard, limit int) []domain.ProductCard {
+	if limit <= 0 || limit >= len(products) {
+		return products
+	}
+	return products[:limit]
+}
+
+func productSearchMessage(status string, count int) string {
+	switch status {
+	case relevanceOK:
+		return fmt.Sprintf("检索到 %d 个相关商品", count)
+	case relevanceWeak:
+		return "检索到弱相关候选，但没有达到可推荐要求"
+	case relevanceNoMatch:
+		return "没有检索到匹配商品"
+	default:
+		return fmt.Sprintf("检索到 %d 个商品", count)
+	}
+}
+
+func boolFromMap(values map[string]string, key string, fallback bool) bool {
+	if value, ok := values[key]; ok {
+		return parseBool(value, fallback)
+	}
+	return fallback
+}
+
+func intFromMap(values map[string]string, key string, fallback int) int {
+	value := strings.TrimSpace(values[key])
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func floatFromMap(values map[string]string, key string, fallback float64) float64 {
+	value := strings.TrimSpace(values[key])
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 func rawArgs(values map[string]any) json.RawMessage {

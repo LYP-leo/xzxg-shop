@@ -41,6 +41,7 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
+	mux.HandleFunc("POST /api/v1/auth/register", s.handleRegister)
 	mux.HandleFunc("GET /api/v1/auth/me", s.handleMe)
 	mux.Handle("GET /api/v1/assets/ecommerce_agent_dataset/", http.StripPrefix("/api/v1/assets/ecommerce_agent_dataset/", http.FileServer(http.Dir(datasetAssetRoot()))))
 	mux.HandleFunc("GET /api/v1/categories/tree", s.handleListCategories)
@@ -134,6 +135,51 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"token": token, "account": account})
+}
+
+func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Username    string `json:"username"`
+		Password    string `json:"password"`
+		DisplayName string `json:"display_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	username := strings.TrimSpace(request.Username)
+	displayName := strings.TrimSpace(request.DisplayName)
+	if displayName == "" {
+		displayName = username
+	}
+	if err := validateRegisterInput(username, request.Password, displayName); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_register_input", err.Error())
+		return
+	}
+	if _, _, ok := s.store.GetAccountByUsername(r.Context(), username); ok {
+		writeError(w, http.StatusConflict, "username_exists", "账号已存在")
+		return
+	}
+	account, err := s.store.CreateAccount(r.Context(), domain.AccountCreateInput{
+		Username:     username,
+		PasswordHash: hashPassword(request.Password),
+		DisplayName:  displayName,
+		Role:         domain.AccountRoleUser,
+	})
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+			writeError(w, http.StatusConflict, "username_exists", "账号已存在")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "create_account_failed", "注册失败")
+		return
+	}
+	token, err := s.store.CreateAuthToken(r.Context(), account.AccountID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "create_token_failed", "注册成功但登录失败")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"token": token, "account": account})
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -990,6 +1036,7 @@ func evalToolSuites(datasets []adminEvalDataset, reports []adminEvalReport) []ad
 		{ID: "rag_retriever_eval", Name: "RAG 检索召回", Scope: "tool", DatasetID: "rag_recall_cases", Command: "node quality/evals/run_rag_recall_eval.mjs quality/data/eval/rag_recall_cases.jsonl"},
 		{ID: "intent", Name: "意图识别", Scope: "tool", DatasetID: "intent_cases", Command: "node quality/evals/run_intent_eval.mjs quality/data/eval/intent_cases.jsonl"},
 		{ID: "agent_e2e", Name: "导购 Agent 端到端", Scope: "agent", DatasetID: "agent_e2e_queries", Command: "node quality/evals/run_agent_e2e.mjs quality/data/eval/agent_e2e_queries.jsonl"},
+		{ID: "agent_no_inventory", Name: "Agent 无库存误挂品", Scope: "agent", DatasetID: "agent_no_inventory_cases", Command: "node quality/evals/run_agent_e2e.mjs quality/data/eval/agent_no_inventory_cases.jsonl"},
 	}
 	datasetSet := make(map[string]bool, len(datasets))
 	for _, item := range datasets {
@@ -1021,6 +1068,8 @@ func sameEvalFamily(reportType string, suiteID string) bool {
 
 func evalTypeFromDataset(id string) string {
 	switch {
+	case strings.Contains(id, "no_inventory"):
+		return "agent_no_inventory"
 	case strings.Contains(id, "rag"):
 		return "rag_recall"
 	case strings.Contains(id, "intent"):
@@ -1040,6 +1089,8 @@ func evalDatasetName(id string) string {
 		return "意图识别测试集"
 	case "agent_e2e_queries":
 		return "Agent 端到端测试集"
+	case "agent_no_inventory_cases":
+		return "Agent 无库存误挂品测试集"
 	default:
 		return id
 	}
@@ -1628,6 +1679,34 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (domain.Ac
 func hashPassword(password string) string {
 	sum := sha256.Sum256([]byte(password))
 	return hex.EncodeToString(sum[:])
+}
+
+func validateRegisterInput(username string, password string, displayName string) error {
+	if username == "" || password == "" {
+		return errText("账号和密码不能为空")
+	}
+	if len([]rune(username)) < 3 || len([]rune(username)) > 32 {
+		return errText("账号长度需要在 3 到 32 个字符之间")
+	}
+	for _, item := range username {
+		if (item >= 'a' && item <= 'z') || (item >= 'A' && item <= 'Z') || (item >= '0' && item <= '9') || item == '_' || item == '-' {
+			continue
+		}
+		return errText("账号只能包含字母、数字、下划线和短横线")
+	}
+	if len([]rune(password)) < 8 || len([]rune(password)) > 64 {
+		return errText("密码长度需要在 8 到 64 个字符之间")
+	}
+	if len([]rune(displayName)) > 32 {
+		return errText("昵称不能超过 32 个字符")
+	}
+	return nil
+}
+
+type errText string
+
+func (e errText) Error() string {
+	return string(e)
 }
 
 func datasetAssetRoot() string {

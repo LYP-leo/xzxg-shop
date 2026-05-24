@@ -93,20 +93,26 @@ func (r *Runtime) runReactAgent(ctx context.Context, run domain.AgentRun, plan r
 		}
 		observation := r.executeTool(ctx, run, action)
 		result.Observations = append(result.Observations, observation)
-		result.ProductIDs = appendUnique(result.ProductIDs, observation.ProductIDs...)
+		if observation.RelevanceStatus == "" || observation.RelevanceStatus == relevanceOK {
+			result.ProductIDs = appendUnique(result.ProductIDs, observation.ProductIDs...)
+		}
 		result.ChunkIDs = appendUnique(result.ChunkIDs, observation.ChunkIDs...)
 		r.trace(ctx, run, "tools", action.Tool, "", traceStatus(observation.OK), observation.DurationMS, "", map[string]any{
-			"ok":                 observation.OK,
-			"message":            observation.Message,
-			"arguments":          json.RawMessage(action.Arguments),
-			"result":             observation.Result,
-			"observation":        observation,
-			"observation_json":   observationForModel(observation),
-			"product_ids":        observation.ProductIDs,
-			"chunk_ids":          observation.ChunkIDs,
-			"result_item_count":  resultItemCount(observation.Result),
-			"result_truncated":   false,
-			"admin_visible_note": "工具结果完整写入 trace，管理员页面可直接排查检索片段和工具返回。",
+			"ok":                    observation.OK,
+			"message":               observation.Message,
+			"arguments":             json.RawMessage(action.Arguments),
+			"result":                observation.Result,
+			"observation":           observation,
+			"observation_json":      observationForModel(observation),
+			"product_ids":           observation.ProductIDs,
+			"candidate_product_ids": observation.CandidateProductIDs,
+			"dropped_product_ids":   observation.DroppedProductIDs,
+			"relevance_status":      observation.RelevanceStatus,
+			"relevance_reason":      observation.RelevanceReason,
+			"chunk_ids":             observation.ChunkIDs,
+			"result_item_count":     resultItemCount(observation.Result),
+			"result_truncated":      false,
+			"admin_visible_note":    "工具结果完整写入 trace，管理员页面可直接排查检索片段、弱相关候选、剔除原因和工具返回。",
 		})
 		if observation.Cart != nil {
 			if err := emitCartBlock(run.RunID, *observation.Cart, emit); err != nil {
@@ -138,20 +144,21 @@ func (r *Runtime) streamReactFinal(ctx context.Context, run domain.AgentRun, pla
 		return err
 	}
 	finalInstruction := map[string]any{
-		"user_query":   query,
-		"route":        plan.Route,
-		"intent":       plan.ReferenceIntent(),
-		"final_hint":   finalAction.Text,
-		"product_ids":  result.ProductIDs,
-		"chunk_ids":    result.ChunkIDs,
-		"observations": compactObservations(result.Observations),
+		"user_query":                query,
+		"route":                     plan.Route,
+		"intent":                    plan.ReferenceIntent(),
+		"final_hint":                finalAction.Text,
+		"final_allowed_product_ids": result.ProductIDs,
+		"product_ids":               result.ProductIDs,
+		"chunk_ids":                 result.ChunkIDs,
+		"observations":              compactObservations(result.Observations),
 	}
 	payload, _ := json.Marshal(finalInstruction)
 	streamMessages := append([]ChatMessage{}, messages...)
 	streamMessages = append(streamMessages,
 		ChatMessage{
 			Role:    "system",
-			Content: "最终回答阶段输出面向用户的中文回答。允许使用 Markdown 短标题、列表和加粗，禁止 Markdown 表格、Markdown 链接、JSON、Action、Observation 和隐藏推理。重点词、品牌词、系列词用 Markdown 加粗，不要输出 special_word 或 special word。若输出 <item> 标签，标签内容必须是已由工具返回的 product_id，例如 <item>p_001</item>，禁止在 <item> 内放商品名或自然语言挂品指令。",
+			Content: "最终回答阶段输出面向用户的中文回答。允许使用 Markdown 短标题、列表和加粗，禁止 Markdown 表格、Markdown 链接、JSON、Action、Observation 和隐藏推理。重点词、品牌词、系列词用 Markdown 加粗，不要输出 special_word 或 special word。若输出 <item> 标签，标签内容必须是 final_allowed_product_ids 中的 product_id，例如 <item>p_001</item>，禁止在 <item> 内放商品名或自然语言挂品指令。若 final_allowed_product_ids 为空，禁止输出任何 <item>，并说明当前商品库没有找到匹配商品；可以给通用选购建议，但不能编造商品、品牌或商品 ID。",
 		},
 		ChatMessage{
 			Role:    "user",
@@ -162,7 +169,7 @@ func (r *Runtime) streamReactFinal(ctx context.Context, run domain.AgentRun, pla
 	startedAt := time.Now()
 	var content strings.Builder
 	var rawContent strings.Builder
-	filter := newStreamTextFilter()
+	filter := newStreamTextFilter(result.ProductIDs)
 	err := r.llm.Stream(ctx, plan.AnswerModel, streamMessages, 0.4, func(delta string) error {
 		if r.store.IsRunCanceled(ctx, run.RunID) {
 			return emit(domain.SSEEvent{Type: "error", RunID: run.RunID, Code: "canceled", Message: "已停止生成"})
@@ -187,13 +194,14 @@ func (r *Runtime) streamReactFinal(ctx context.Context, run domain.AgentRun, pla
 		return r.emitFallbackAnswer(ctx, run, buildAnswer(query, plan, nil), emit)
 	}
 	r.traceLLM(ctx, run, "react.final", plan.AnswerModel, startedAt, nil, map[string]any{
-		"route":              plan.Route,
-		"intent":             plan.ReferenceIntent(),
-		"raw_length":         len([]rune(rawContent.String())),
-		"raw_output":         rawContent.String(),
-		"filtered_length":    len([]rune(content.String())),
-		"filtered_output":    content.String(),
-		"stream_filter_used": true,
+		"route":                     plan.Route,
+		"intent":                    plan.ReferenceIntent(),
+		"raw_length":                len([]rune(rawContent.String())),
+		"raw_output":                rawContent.String(),
+		"filtered_length":           len([]rune(content.String())),
+		"filtered_output":           content.String(),
+		"stream_filter_used":        true,
+		"final_allowed_product_ids": result.ProductIDs,
 	})
 	return nil
 }
@@ -277,11 +285,16 @@ func compactObservations(observations []toolObservation) []map[string]any {
 	items := make([]map[string]any, 0, len(observations))
 	for _, observation := range observations {
 		items = append(items, map[string]any{
-			"tool":        observation.Tool,
-			"ok":          observation.OK,
-			"message":     observation.Message,
-			"result":      observation.Result,
-			"duration_ms": observation.DurationMS,
+			"tool":                  observation.Tool,
+			"ok":                    observation.OK,
+			"message":               observation.Message,
+			"result":                observation.Result,
+			"duration_ms":           observation.DurationMS,
+			"relevance_status":      observation.RelevanceStatus,
+			"relevance_reason":      observation.RelevanceReason,
+			"product_ids":           observation.ProductIDs,
+			"candidate_product_ids": observation.CandidateProductIDs,
+			"dropped_product_ids":   observation.DroppedProductIDs,
 		})
 	}
 	return items
@@ -334,24 +347,58 @@ func traceStatus(ok bool) string {
 }
 
 type streamTextFilter struct {
-	inTag bool
+	inTag           bool
+	tagBuffer       strings.Builder
+	itemBuffer      strings.Builder
+	inItem          bool
+	allowedItemIDs  map[string]bool
+	pendingItemText string
 }
 
-func newStreamTextFilter() *streamTextFilter {
-	return &streamTextFilter{}
+func newStreamTextFilter(allowedProductIDs []string) *streamTextFilter {
+	allowed := make(map[string]bool, len(allowedProductIDs))
+	for _, id := range allowedProductIDs {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			allowed[id] = true
+		}
+	}
+	return &streamTextFilter{allowedItemIDs: allowed}
 }
 
 func (f *streamTextFilter) Clean(delta string) string {
 	var builder strings.Builder
+	if f.pendingItemText != "" {
+		builder.WriteString(f.pendingItemText)
+		f.pendingItemText = ""
+	}
 	for _, item := range delta {
 		switch {
 		case item == '<':
 			f.inTag = true
+			f.tagBuffer.Reset()
 			continue
 		case f.inTag && item == '>':
 			f.inTag = false
+			tag := strings.ToLower(strings.TrimSpace(f.tagBuffer.String()))
+			switch tag {
+			case "item":
+				f.inItem = true
+				f.itemBuffer.Reset()
+			case "/item":
+				id := strings.TrimSpace(f.itemBuffer.String())
+				if f.allowedItemIDs[id] {
+					// 合法挂品标签只用于前端协议，不把 product_id 作为正文吐给用户。
+				}
+				f.inItem = false
+				f.itemBuffer.Reset()
+			}
 			continue
 		case f.inTag:
+			f.tagBuffer.WriteRune(item)
+			continue
+		case f.inItem:
+			f.itemBuffer.WriteRune(item)
 			continue
 		default:
 			builder.WriteRune(item)

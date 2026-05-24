@@ -375,6 +375,31 @@ func (s *MySQLStore) ListAccountsPage(ctx context.Context, page int, pageSize in
 	return items, total
 }
 
+func (s *MySQLStore) CreateAccount(ctx context.Context, input domain.AccountCreateInput) (domain.Account, error) {
+	now := time.Now()
+	role := strings.TrimSpace(string(input.Role))
+	if role == "" {
+		role = string(domain.AccountRoleUser)
+	}
+	account := domain.Account{
+		AccountID:   nextID("acct"),
+		Username:    strings.TrimSpace(input.Username),
+		DisplayName: strings.TrimSpace(input.DisplayName),
+		Role:        domain.AccountRole(role),
+		MerchantID:  strings.TrimSpace(input.MerchantID),
+		Status:      "active",
+		CreatedAt:   now,
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO accounts (account_id, username, password_hash, display_name, role, merchant_id, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
+	`, account.AccountID, account.Username, input.PasswordHash, account.DisplayName, role, account.MerchantID, now, now)
+	if err != nil {
+		return domain.Account{}, fmt.Errorf("insert account: %w", err)
+	}
+	return account, nil
+}
+
 func (s *MySQLStore) UpdateAccountStatus(ctx context.Context, accountID string, status string) (domain.Account, bool) {
 	result, err := s.db.ExecContext(ctx, `UPDATE accounts SET status = ?, updated_at = ? WHERE account_id = ?`, status, time.Now(), accountID)
 	if err != nil {

@@ -2,6 +2,7 @@ package rag
 
 import (
 	"context"
+	"strconv"
 	"strings"
 )
 
@@ -15,6 +16,7 @@ const (
 	MaxEmbeddingBatchSize      = 10
 	DefaultMetricType          = "COSINE"
 	DefaultVectorTopN          = 40
+	DefaultVectorMinScore      = 0.58
 )
 
 type Config struct {
@@ -29,6 +31,7 @@ type Config struct {
 	EmbeddingModel      string
 	EmbeddingBatchSize  int
 	VectorTopN          int
+	VectorMinScore      float64
 }
 
 type Embedder interface {
@@ -54,6 +57,7 @@ func ConfigFromMap(values map[string]string, fallbackAPIKey string, fallbackBase
 		EmbeddingModel:      valueOr(values["embedding.model"], DefaultEmbeddingModel),
 		EmbeddingBatchSize:  parseInt(values["embedding.batch_size"], DefaultEmbeddingBatchSize),
 		VectorTopN:          parseInt(values["retrieval.vector.top_n"], DefaultVectorTopN),
+		VectorMinScore:      parseFloat(values["retrieval.vector.min_score"], DefaultVectorMinScore),
 	}
 	if cfg.EmbeddingBatchSize <= 0 {
 		cfg.EmbeddingBatchSize = DefaultEmbeddingBatchSize
@@ -99,4 +103,16 @@ func parseInt(value string, fallback int) int {
 		total = total*10 + int(r-'0')
 	}
 	return total
+}
+
+func parseFloat(value string, fallback float64) float64 {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }

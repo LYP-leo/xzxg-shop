@@ -61,6 +61,30 @@ button {
   gap: 12px;
 }
 
+.auth-tabs {
+  background: #f3f6fa;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  padding: 3px;
+}
+
+.auth-tabs button {
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: #526175;
+  min-height: 34px;
+}
+
+.auth-tabs button.active {
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgb(23 32 51 / 10%);
+  color: #172033;
+  font-weight: 700;
+}
+
 .login-form label {
   color: #465367;
   display: grid;

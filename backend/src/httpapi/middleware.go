@@ -167,7 +167,7 @@ func (r *statusRecorder) Flush() {
 
 func routePolicy(method string, path string) (bool, []domain.AccountRole) {
 	// 公开接口只保留健康检查、登录、商品浏览等无需身份的入口。
-	if path == "/api/v1/health" || path == "/api/v1/auth/login" {
+	if path == "/api/v1/health" || path == "/api/v1/auth/login" || path == "/api/v1/auth/register" {
 		return false, nil
 	}
 	if method == http.MethodGet && (path == "/api/v1/categories/tree" || path == "/api/v1/merchants" || path == "/api/v1/products" || strings.HasPrefix(path, "/api/v1/products/")) {

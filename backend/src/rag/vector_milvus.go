@@ -280,7 +280,11 @@ func (c *Client) search(ctx context.Context, collection string, idField string, 
 		if id == "" || id == "<nil>" {
 			continue
 		}
-		hits = append(hits, SearchHit{ID: id, Score: number(row["distance"]), Fields: row})
+		score := number(row["distance"])
+		if c.cfg.VectorMinScore > 0 && score < c.cfg.VectorMinScore {
+			continue
+		}
+		hits = append(hits, SearchHit{ID: id, Score: score, Fields: row})
 	}
 	return hits, nil
 }

@@ -12,6 +12,15 @@ export async function login(input: { username: string; password: string }): Prom
   return session;
 }
 
+export async function register(input: { username: string; password: string; display_name?: string }): Promise<AuthSession> {
+  const session = await requestJSON<AuthSession>('/auth/register', {
+    method: 'POST',
+    body: JSON.stringify(input)
+  });
+  saveSession(session);
+  return session;
+}
+
 export async function fetchMe(token: string): Promise<Account> {
   return requestJSON<Account>('/auth/me', {
     headers: {

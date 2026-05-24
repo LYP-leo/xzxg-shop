@@ -15,6 +15,7 @@ type Store interface {
 	GetAccountByToken(ctx context.Context, token string) (domain.Account, bool)
 	ListAccounts(ctx context.Context) []domain.Account
 	ListAccountsPage(ctx context.Context, page int, pageSize int) ([]domain.Account, int)
+	CreateAccount(ctx context.Context, input domain.AccountCreateInput) (domain.Account, error)
 	UpdateAccountStatus(ctx context.Context, accountID string, status string) (domain.Account, bool)
 	CreateAuthToken(ctx context.Context, accountID string) (string, error)
 

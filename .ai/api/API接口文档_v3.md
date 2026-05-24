@@ -93,6 +93,50 @@ page=1&page_size=10
 }
 ```
 
+### POST /auth/register
+
+权限：公开
+
+用途：注册普通用户账号。公开注册只创建 `role=user`，不允许通过该接口创建商家或管理员账号。
+
+请求：
+
+```json
+{
+  "username": "new_user",
+  "password": "newuser123456",
+  "display_name": "新用户"
+}
+```
+
+字段约束：
+
+- `username`：3-32 个字符，只允许字母、数字、下划线和短横线。
+- `password`：8-64 个字符。
+- `display_name`：可选，最长 32 个字符；为空时默认使用 `username`。
+
+响应：`201 Created`
+
+```json
+{
+  "token": "tok_xxx",
+  "account": {
+    "account_id": "acct_xxx",
+    "username": "new_user",
+    "display_name": "新用户",
+    "role": "user",
+    "merchant_id": "",
+    "status": "active",
+    "created_at": "2026-05-24T10:00:00+08:00"
+  }
+}
+```
+
+错误：
+
+- `400 invalid_register_input`：账号、密码或昵称格式不合法。
+- `409 username_exists`：账号已存在。
+
 ### GET /auth/me
 
 权限：登录用户
