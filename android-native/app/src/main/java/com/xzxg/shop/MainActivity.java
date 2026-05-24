@@ -43,8 +43,11 @@ import android.text.TextWatcher;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -906,6 +909,7 @@ public class MainActivity extends Activity {
         historyList.setOrientation(LinearLayout.VERTICAL);
         historyList.setPadding(0, dp(12), 0, dp(72));
         List<LocalChatStore.SessionSummary> histories = sessionStore.token().isEmpty() ? chatStore.recentSessionsWithMessages() : chatStore.recentSessions();
+        histories = ensureActiveSessionVisible(histories);
         if (histories.isEmpty()) {
             TextView empty = muted("暂无历史聊天");
             empty.setGravity(Gravity.CENTER);
@@ -959,11 +963,70 @@ public class MainActivity extends Activity {
                     if (item == null) {
                         continue;
                     }
-                    chatStore.upsertRemoteSession(item.optString("session_id", ""), item.optString("title", "导购会话"), item.optString("summary", ""), System.currentTimeMillis());
+                    chatStore.upsertRemoteSession(item.optString("session_id", ""), item.optString("title", "导购会话"), item.optString("summary", ""), remoteSessionTime(item));
                 }
             } catch (Exception ignored) {
             }
         }).start();
+    }
+
+    private List<LocalChatStore.SessionSummary> ensureActiveSessionVisible(List<LocalChatStore.SessionSummary> histories) {
+        ArrayList<LocalChatStore.SessionSummary> result = new ArrayList<>();
+        boolean found = false;
+        if (histories != null) {
+            for (LocalChatStore.SessionSummary item : histories) {
+                if (item == null) {
+                    continue;
+                }
+                if (localSessionId != null && localSessionId.equals(item.localSessionId)) {
+                    found = true;
+                }
+                result.add(item);
+            }
+        }
+        if (!found && localSessionId != null && !localSessionId.isEmpty()) {
+            LocalChatStore.SessionSummary active = chatStore.sessionSummary(localSessionId);
+            if (active != null) {
+                result.add(0, active);
+            }
+        }
+        return result;
+    }
+
+    private long remoteSessionTime(JSONObject item) {
+        long updated = parseRemoteTime(item.optString("updated_at", ""));
+        if (updated > 0) {
+            return updated;
+        }
+        long lastMessage = parseRemoteTime(item.optString("last_message_at", ""));
+        if (lastMessage > 0) {
+            return lastMessage;
+        }
+        long created = parseRemoteTime(item.optString("created_at", ""));
+        return created > 0 ? created : 1;
+    }
+
+    private long parseRemoteTime(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return 0;
+        }
+        String text = value.trim();
+        String[] patterns = {
+                "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+                "yyyy-MM-dd'T'HH:mm:ssXXX",
+                "yyyy-MM-dd'T'HH:mm:ss'Z'"
+        };
+        for (String pattern : patterns) {
+            try {
+                SimpleDateFormat format = new SimpleDateFormat(pattern, Locale.US);
+                Date date = format.parse(text);
+                if (date != null) {
+                    return date.getTime();
+                }
+            } catch (ParseException ignored) {
+            }
+        }
+        return 0;
     }
 
     private void enqueueSessionSync(String localId, String remoteId, String title, String summary) {

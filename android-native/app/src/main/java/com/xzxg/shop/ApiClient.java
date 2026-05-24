@@ -100,16 +100,59 @@ public class ApiClient {
         if (limit > 0) {
             path.append(separator).append("limit=").append(limit);
             separator = "&";
+            path.append(separator).append("page_size=").append(limit);
+            separator = "&";
+            int offset = intCursor(cursor);
+            int page = offset <= 0 ? 1 : (offset / limit) + 1;
+            path.append(separator).append("page=").append(page);
+            separator = "&";
             if (cursor != null && !cursor.trim().isEmpty()) {
                 path.append(separator).append("cursor=").append(urlEncode(cursor.trim()));
             }
         }
         JSONObject response = get(path.toString());
+        JSONArray rawItems = response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
+        boolean hasPaginationMeta = response.has("has_more") || response.has("next_cursor");
+        boolean responseLooksUnpaged = limit > 0 && !hasPaginationMeta && rawItems.length() > limit;
+        JSONArray items = limit > 0 ? pageItems(rawItems, limit, intCursor(cursor), responseLooksUnpaged) : rawItems;
+        boolean hasMore = response.optBoolean("has_more", false);
+        String nextCursor = response.optString("next_cursor", "");
+        if (limit > 0 && !hasPaginationMeta) {
+            int offset = intCursor(cursor);
+            hasMore = responseLooksUnpaged ? rawItems.length() > offset + limit : rawItems.length() >= limit;
+            nextCursor = hasMore ? String.valueOf(offset + limit) : "";
+        } else if (limit > 0 && rawItems.length() > limit) {
+            hasMore = true;
+            if (nextCursor.isEmpty()) {
+                nextCursor = String.valueOf(intCursor(cursor) + limit);
+            }
+        }
         return new ProductPage(
-                response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items"),
-                response.optString("next_cursor", ""),
-                response.optBoolean("has_more", false)
+                items,
+                nextCursor,
+                hasMore
         );
+    }
+
+    private JSONArray pageItems(JSONArray rawItems, int limit, int offset, boolean responseLooksUnpaged) {
+        JSONArray items = new JSONArray();
+        int start = responseLooksUnpaged ? Math.max(0, offset) : 0;
+        int end = Math.min(rawItems.length(), start + limit);
+        for (int i = start; i < end; i++) {
+            items.put(rawItems.opt(i));
+        }
+        return items;
+    }
+
+    private int intCursor(String cursor) {
+        if (cursor == null || cursor.trim().isEmpty()) {
+            return 0;
+        }
+        try {
+            return Math.max(0, Integer.parseInt(cursor.trim()));
+        } catch (NumberFormatException ignored) {
+            return 0;
+        }
     }
 
     public JSONArray productSkus(String productId) throws Exception {

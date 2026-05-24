@@ -113,7 +113,7 @@ public class LocalChatStore extends SQLiteOpenHelper {
 
     public List<SessionSummary> recentSessions() {
         ArrayList<SessionSummary> items = new ArrayList<>();
-        Cursor cursor = getReadableDatabase().query("sessions", new String[]{"local_session_id", "server_session_id", "title", "summary", "sync_state"}, null, null, null, null, "updated_at DESC", "30");
+        Cursor cursor = getReadableDatabase().query("sessions", new String[]{"local_session_id", "server_session_id", "title", "summary", "sync_state"}, null, null, null, null, "updated_at DESC", "100");
         try {
             while (cursor.moveToNext()) {
                 items.add(new SessionSummary(cursor.getString(0), cursor.getString(1), cursor.getString(2), cursor.getString(3), cursor.getString(4)));
@@ -122,6 +122,15 @@ public class LocalChatStore extends SQLiteOpenHelper {
             cursor.close();
         }
         return items;
+    }
+
+    public SessionSummary sessionSummary(String localSessionId) {
+        Cursor cursor = getReadableDatabase().query("sessions", new String[]{"local_session_id", "server_session_id", "title", "summary", "sync_state"}, "local_session_id = ?", new String[]{localSessionId}, null, null, null, "1");
+        try {
+            return cursor.moveToFirst() ? new SessionSummary(cursor.getString(0), cursor.getString(1), cursor.getString(2), cursor.getString(3), cursor.getString(4)) : null;
+        } finally {
+            cursor.close();
+        }
     }
 
     public List<SessionSummary> recentSessionsWithMessages() {
