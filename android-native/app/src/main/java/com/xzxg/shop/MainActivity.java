@@ -126,6 +126,7 @@ public class MainActivity extends Activity {
     private String activeStreamTitle = "";
     private boolean stopRequested;
     private final Deque<Runnable> backStack = new ArrayDeque<>();
+    private Runnable editProfileBackAction;
     private Toast activeToast;
     private byte[] pendingAvatarBytes;
     private String pendingAvatarMime = "image/jpeg";
@@ -195,7 +196,12 @@ public class MainActivity extends Activity {
             loadHomeCopy();
             return;
         }
-        if ("help".equals(activePage) || "about".equals(activePage) || "account".equals(activePage) || "avatar".equals(activePage) || "edit_profile".equals(activePage)) {
+        if ("edit_profile".equals(activePage)) {
+            Runnable action = editProfileBackAction == null ? () -> renderSettings() : editProfileBackAction;
+            action.run();
+            return;
+        }
+        if ("help".equals(activePage) || "about".equals(activePage) || "account".equals(activePage) || "avatar".equals(activePage)) {
             renderSettings();
             return;
         }
@@ -299,8 +305,14 @@ public class MainActivity extends Activity {
         toolbar.setClickable(true);
         toolbar.setElevation(dp(1));
 
-        Button back = transparentIconButton("‹");
+        TextView back = new TextView(this);
+        back.setText("‹");
         back.setTextSize(30);
+        back.setTextColor(Color.BLACK);
+        back.setGravity(Gravity.CENTER);
+        back.setIncludeFontPadding(false);
+        back.setClickable(true);
+        back.setBackground(new ColorDrawable(Color.TRANSPARENT));
         back.setOnClickListener(v -> {
             hideKeyboard();
             if (backAction != null) {
@@ -900,6 +912,7 @@ public class MainActivity extends Activity {
         search.setTextColor(Color.rgb(156, 163, 175));
         search.setHintTextColor(Color.rgb(156, 163, 175));
         search.setSingleLine(true);
+        search.setImeOptions(EditorInfo.IME_ACTION_DONE);
         search.setGravity(Gravity.CENTER_VERTICAL);
         search.setPadding(dp(16), 0, dp(16), 0);
         search.setBackground(rounded(Color.rgb(246, 247, 249), dp(12)));
@@ -941,44 +954,15 @@ public class MainActivity extends Activity {
         historyList.setPadding(0, dp(12), 0, dp(72));
         renderHistoryList(historyList, chatStore.recentSessionsWithMessages());
         final int[] searchVersion = {0};
-        final boolean[] searchExpanded = {false};
-        Runnable refreshSearchChrome = () -> {
-            boolean expanded = search.hasFocus();
-            if (searchExpanded[0] == expanded) {
-                return;
-            }
-            searchExpanded[0] = expanded;
-            navGroup.setVisibility(expanded ? View.GONE : View.VISIBLE);
-            divider.setVisibility(expanded ? View.GONE : View.VISIBLE);
-            historyList.setPadding(0, expanded ? dp(4) : dp(12), 0, dp(72));
-        };
-        Runnable hideSearchKeyboard = () -> {
-            if (search.hasFocus()) {
+        drawerLayer.setOnClickListener(v -> closeDrawerAnimated());
+        drawer.setOnClickListener(v -> {});
+        search.setOnEditorActionListener((v, actionId, event) -> {
+            if (actionId == EditorInfo.IME_ACTION_DONE) {
                 hideKeyboardFrom(search);
-                search.clearFocus();
-                refreshSearchChrome.run();
+                return true;
             }
-        };
-        drawerLayer.setOnClickListener(v -> {
-            if (search.hasFocus()) {
-                hideSearchKeyboard.run();
-            } else {
-                closeDrawerAnimated();
-            }
+            return false;
         });
-        drawerLayer.setOnApplyWindowInsetsListener((view, insets) -> {
-            boolean imeVisible = insets.getInsets(WindowInsets.Type.ime()).bottom > 0;
-            if (!imeVisible && searchExpanded[0] && search.hasFocus()) {
-                search.clearFocus();
-                refreshSearchChrome.run();
-            }
-            return insets;
-        });
-        drawer.setOnClickListener(v -> hideSearchKeyboard.run());
-        historyFrame.setOnClickListener(v -> hideSearchKeyboard.run());
-        historyScroll.setOnClickListener(v -> hideSearchKeyboard.run());
-        historyList.setOnClickListener(v -> hideSearchKeyboard.run());
-        search.setOnFocusChangeListener((v, hasFocus) -> refreshSearchChrome.run());
         search.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
@@ -989,7 +973,7 @@ public class MainActivity extends Activity {
                     renderHistoryList(historyList, chatStore.recentSessionsWithMessages());
                     return;
                 }
-                renderHistoryList(historyList, chatStore.searchSessionsLocal(query));
+                renderHistoryStatus(historyList, "搜索中...");
                 new Thread(() -> {
                     try {
                         Thread.sleep(300);
@@ -997,25 +981,20 @@ public class MainActivity extends Activity {
                             return;
                         }
                         JSONArray sessions = api.searchSessions(query);
-                        ArrayList<LocalChatStore.SessionSummary> results = new ArrayList<>();
-                        for (int i = 0; i < sessions.length(); i++) {
-                            JSONObject item = sessions.optJSONObject(i);
-                            if (item == null) {
-                                continue;
-                            }
-                            String localId = chatStore.upsertRemoteSession(item.optString("session_id", ""), item.optString("title", "导购会话"), item.optString("summary", ""), remoteSessionTime(item));
-                            LocalChatStore.SessionSummary summary = chatStore.sessionSummary(localId);
-                            if (summary != null) {
-                                results.add(summary);
-                            }
-                        }
+                        List<LocalChatStore.SessionSummary> results = upsertRemoteSearchResults(sessions);
                         runOnUiThread(() -> {
-                            if (version == searchVersion[0]) {
+                            String currentQuery = search.getText().toString().trim();
+                            if (version == searchVersion[0] && query.equals(currentQuery)) {
                                 renderHistoryList(historyList, results);
                             }
                         });
                     } catch (Exception error) {
-                        runOnUiThread(() -> renderHistoryList(historyList, new ArrayList<>()));
+                        runOnUiThread(() -> {
+                            String currentQuery = search.getText().toString().trim();
+                            if (version == searchVersion[0] && query.equals(currentQuery)) {
+                                renderHistoryStatus(historyList, "搜索失败，请重试");
+                            }
+                        });
                     }
                 }).start();
             }
@@ -1040,15 +1019,15 @@ public class MainActivity extends Activity {
         historyFrame.addView(returnChat, returnParams);
         drawer.addView(historyFrame, new LinearLayout.LayoutParams(-1, 0, 1));
 
+        View bottomDivider = new View(this);
+        bottomDivider.setBackgroundColor(Color.rgb(238, 239, 242));
+        drawer.addView(bottomDivider, new LinearLayout.LayoutParams(-1, 1));
         View bottomBar = bottomUserBar();
-        bottomBar.setOnClickListener(v -> hideSearchKeyboard.run());
         drawer.addView(bottomBar, new LinearLayout.LayoutParams(-1, dp(68)));
         syncRemoteSessions(() -> {
             String query = search.getText().toString().trim();
             if (query.isEmpty()) {
                 renderHistoryList(historyList, chatStore.recentSessionsWithMessages());
-            } else {
-                renderHistoryList(historyList, chatStore.searchSessionsLocal(query));
             }
         });
 
@@ -1101,6 +1080,32 @@ public class MainActivity extends Activity {
                 historyList.addView(historyButton(item));
             }
         }
+    }
+
+    private void renderHistoryStatus(LinearLayout historyList, String message) {
+        historyList.removeAllViews();
+        TextView status = muted(message);
+        status.setGravity(Gravity.CENTER);
+        historyList.addView(status, new LinearLayout.LayoutParams(-1, dp(56)));
+    }
+
+    private List<LocalChatStore.SessionSummary> upsertRemoteSearchResults(JSONArray sessions) {
+        ArrayList<LocalChatStore.SessionSummary> results = new ArrayList<>();
+        if (sessions == null) {
+            return results;
+        }
+        for (int i = 0; i < sessions.length(); i++) {
+            JSONObject item = sessions.optJSONObject(i);
+            if (item == null) {
+                continue;
+            }
+            String localId = chatStore.upsertRemoteSession(item.optString("session_id", ""), item.optString("title", "导购会话"), item.optString("summary", ""), remoteSessionTime(item));
+            LocalChatStore.SessionSummary summary = chatStore.sessionSummary(localId);
+            if (summary != null) {
+                results.add(summary);
+            }
+        }
+        return results;
     }
 
     private void pickAvatar() {
@@ -3915,7 +3920,7 @@ public class MainActivity extends Activity {
         LinearLayout bar = new LinearLayout(this);
         bar.setGravity(Gravity.CENTER_VERTICAL);
         bar.setPadding(dp(6), dp(8), dp(2), dp(8));
-        bar.setBackgroundColor(Color.rgb(243, 244, 246));
+        bar.setBackgroundColor(Color.WHITE);
         bar.setClickable(true);
 
         LinearLayout user = new LinearLayout(this);
@@ -4050,7 +4055,7 @@ public class MainActivity extends Activity {
         content.addView(image, new LinearLayout.LayoutParams(-1, 0, 1));
         Button edit = secondaryButton("编辑个人资料");
         edit.setTextSize(18);
-        edit.setOnClickListener(v -> renderEditProfilePage());
+        edit.setOnClickListener(v -> renderEditProfilePage(() -> renderAvatarPreviewPage()));
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(-1, dp(56), Gravity.BOTTOM);
         params.leftMargin = dp(20);
         params.rightMargin = dp(20);
@@ -4083,6 +4088,10 @@ public class MainActivity extends Activity {
     }
 
     private void renderEditProfilePage() {
+        renderEditProfilePage(() -> renderSettings());
+    }
+
+    private void renderEditProfilePage(Runnable backAction) {
         closeDrawer();
         if (sessionStore.token().isEmpty()) {
             renderLoginPage();
@@ -4093,21 +4102,20 @@ public class MainActivity extends Activity {
         LinearLayout bar = new LinearLayout(this);
         bar.setGravity(Gravity.CENTER_VERTICAL);
         bar.setPadding(dp(18), 0, dp(18), 0);
-        TextView cancel = muted("取消");
-        cancel.setTextSize(17);
-        cancel.setTextColor(Color.BLACK);
-        cancel.setOnClickListener(v -> renderSettings());
+        TextView cancel = topBarTextButton("取消", Color.BLACK);
+        Runnable safeBackAction = backAction == null ? () -> renderSettings() : backAction;
+        editProfileBackAction = safeBackAction;
+        cancel.setOnClickListener(v -> safeBackAction.run());
         bar.addView(cancel, new LinearLayout.LayoutParams(0, -1, 1));
         TextView heading = title("个人资料");
         heading.setGravity(Gravity.CENTER);
+        heading.setIncludeFontPadding(false);
         bar.addView(heading, new LinearLayout.LayoutParams(0, -1, 1));
-        TextView done = muted("保存");
+        TextView done = topBarTextButton("保存", Color.rgb(180, 198, 230));
         done.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
-        done.setTextSize(17);
         done.setEnabled(false);
-        done.setTextColor(Color.rgb(180, 198, 230));
         bar.addView(done, new LinearLayout.LayoutParams(0, -1, 1));
-        content.addView(bar, new LinearLayout.LayoutParams(-1, dp(64)));
+        content.addView(bar, new LinearLayout.LayoutParams(-1, dp(56)));
         LinearLayout page = pageBody();
         page.setGravity(Gravity.CENTER_HORIZONTAL);
         FrameLayout avatarWrap = new FrameLayout(this);
@@ -4172,11 +4180,15 @@ public class MainActivity extends Activity {
             if (!changed[0]) {
                 return;
             }
-            saveProfileChanges(nickname.getText().toString());
+            saveProfileChanges(nickname.getText().toString(), safeBackAction);
         });
     }
 
     private void saveProfileChanges(String nickname) {
+        saveProfileChanges(nickname, () -> renderSettings());
+    }
+
+    private void saveProfileChanges(String nickname, Runnable backAction) {
         String name = nickname == null ? "" : nickname.trim();
         if (name.isEmpty()) {
             toastLine("昵称不能为空");
@@ -4197,7 +4209,11 @@ public class MainActivity extends Activity {
                 pendingAvatarChanged = null;
                 runOnUiThread(() -> {
                     toastLine("资料已保存");
-                    renderSettings();
+                    if (backAction != null) {
+                        backAction.run();
+                    } else {
+                        renderSettings();
+                    }
                 });
             } catch (Exception error) {
                 runOnUiThread(() -> {
@@ -4220,19 +4236,7 @@ public class MainActivity extends Activity {
         }
         activePage = "account";
         baseScreen();
-        LinearLayout toolbar = new LinearLayout(this);
-        toolbar.setGravity(Gravity.CENTER_VERTICAL);
-        toolbar.setPadding(dp(20), 0, dp(20), 0);
-        SpaceView left = new SpaceView(this);
-        toolbar.addView(left, new LinearLayout.LayoutParams(dp(48), -1));
-        TextView heading = title("账号管理");
-        heading.setGravity(Gravity.CENTER);
-        toolbar.addView(heading, new LinearLayout.LayoutParams(0, -1, 1));
-        Button close = transparentIconButton("×");
-        close.setTextSize(28);
-        close.setOnClickListener(v -> onBackPressed());
-        toolbar.addView(close, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        content.addView(toolbar, new LinearLayout.LayoutParams(-1, dp(64)));
+        content.addView(createBackTopBar("账号管理", () -> renderSettings()), new LinearLayout.LayoutParams(-1, dp(56)));
         LinearLayout page = pageBody();
         LinearLayout user = panel();
         LinearLayout userRow = new LinearLayout(this);
@@ -4248,7 +4252,7 @@ public class MainActivity extends Activity {
         user.addView(userRow);
         page.addView(user);
         LinearLayout group1 = panel();
-        group1.addView(settingsRow("▦", "个人资料", v -> renderEditProfilePage(), Color.rgb(124, 58, 237)));
+        group1.addView(settingsRow("▦", "个人资料", v -> renderEditProfilePage(() -> renderAccountPage()), Color.rgb(124, 58, 237)));
         page.addView(group1);
         LinearLayout group2 = panel();
         group2.addView(accountInfoRow("☎", "手机号", maskPhone(sessionStore.phone()), v -> editContact(true)));
@@ -4403,6 +4407,18 @@ public class MainActivity extends Activity {
         view.setTextSize(13);
         view.setTextColor(Color.rgb(107, 114, 128));
         view.setPadding(0, dp(8), 0, dp(8));
+        return view;
+    }
+
+    private TextView topBarTextButton(String text, int color) {
+        TextView view = new TextView(this);
+        view.setText(text);
+        view.setTextSize(17);
+        view.setTextColor(color);
+        view.setGravity(Gravity.CENTER_VERTICAL);
+        view.setIncludeFontPadding(false);
+        view.setPadding(0, 0, 0, 0);
+        view.setClickable(true);
         return view;
     }
 
