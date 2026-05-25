@@ -112,6 +112,9 @@ public class MainActivity extends Activity {
     private boolean loadingProducts;
     private ProductListState currentProductState;
     private String activeProductTab = "list";
+    private FrameLayout productCartFab;
+    private TextView productCartBadge;
+    private int cartItemCountCache;
     private final Map<String, ProductListState> productListCache = new HashMap<>();
     private final Map<String, JSONObject> productDetailCache = new HashMap<>();
     private final Set<String> activeRenderedProductIds = new HashSet<>();
@@ -201,7 +204,7 @@ public class MainActivity extends Activity {
             action.run();
             return;
         }
-        if ("help".equals(activePage) || "about".equals(activePage) || "account".equals(activePage) || "avatar".equals(activePage)) {
+        if ("help".equals(activePage) || "about".equals(activePage) || "account".equals(activePage) || "avatar".equals(activePage) || "advanced_settings".equals(activePage)) {
             renderSettings();
             return;
         }
@@ -234,6 +237,8 @@ public class MainActivity extends Activity {
 
     private void baseScreen() {
         root = new FrameLayout(this);
+        productCartFab = null;
+        productCartBadge = null;
         root.setBackgroundColor(BG_COLOR);
         root.setClipChildren(false);
         root.setClipToPadding(false);
@@ -241,6 +246,7 @@ public class MainActivity extends Activity {
         content.setOrientation(LinearLayout.VERTICAL);
         content.setClipChildren(false);
         content.setClipToPadding(false);
+        content.setPadding(0, 0, 0, 0);
         root.addView(content, new FrameLayout.LayoutParams(-1, -1));
         setContentView(root);
     }
@@ -248,6 +254,7 @@ public class MainActivity extends Activity {
     private void renderChatHome() {
         closeDrawer();
         activePage = "chat";
+        useKeyboardResize();
         backStack.clear();
         baseScreen();
 
@@ -263,6 +270,22 @@ public class MainActivity extends Activity {
             content.setPadding(0, 0, 0, imeBottom);
             return insets;
         });
+    }
+
+    private void useKeyboardResize() {
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+    }
+
+    private void useKeyboardOverlay() {
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);
+    }
+
+    private void restoreKeyboardModeForActivePage() {
+        if ("chat".equals(activePage)) {
+            useKeyboardResize();
+        } else {
+            useKeyboardOverlay();
+        }
     }
 
     private View createTopBar(String titleText, String rightText) {
@@ -886,6 +909,7 @@ public class MainActivity extends Activity {
     }
 
     private void showDrawer() {
+        useKeyboardOverlay();
         hideKeyboard();
         if (sessionStore.token().isEmpty()) {
             renderLoginPage();
@@ -951,7 +975,8 @@ public class MainActivity extends Activity {
         LinearLayout historyList = new LinearLayout(this);
         historyList.setOrientation(LinearLayout.VERTICAL);
         historyList.setClickable(true);
-        historyList.setPadding(0, dp(12), 0, dp(72));
+        int historyBottomPadding = sessionStore.showDrawerReturnChat() ? dp(72) : dp(16);
+        historyList.setPadding(0, dp(12), 0, historyBottomPadding);
         renderHistoryList(historyList, chatStore.recentSessionsWithMessages());
         final int[] searchVersion = {0};
         drawerLayer.setOnClickListener(v -> closeDrawerAnimated());
@@ -1002,21 +1027,23 @@ public class MainActivity extends Activity {
         historyScroll.addView(historyList);
         historyFrame.addView(historyScroll, new FrameLayout.LayoutParams(-1, -1));
 
-        Button returnChat = primaryButton("返回聊天");
-        returnChat.setTextSize(15);
-        returnChat.setPadding(dp(24), 0, dp(24), 0);
-        returnChat.setMinWidth(0);
-        returnChat.setMinHeight(0);
-        returnChat.setOnClickListener(v -> {
-            closeDrawerAnimated();
-            if (!"chat".equals(activePage)) {
-                renderChatHome();
-                loadHomeCopy();
-            }
-        });
-        FrameLayout.LayoutParams returnParams = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(44), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        returnParams.bottomMargin = dp(12);
-        historyFrame.addView(returnChat, returnParams);
+        if (sessionStore.showDrawerReturnChat()) {
+            Button returnChat = primaryButton("返回聊天");
+            returnChat.setTextSize(15);
+            returnChat.setPadding(dp(24), 0, dp(24), 0);
+            returnChat.setMinWidth(0);
+            returnChat.setMinHeight(0);
+            returnChat.setOnClickListener(v -> {
+                closeDrawerAnimated();
+                if (!"chat".equals(activePage)) {
+                    renderChatHome();
+                    loadHomeCopy();
+                }
+            });
+            FrameLayout.LayoutParams returnParams = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(44), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+            returnParams.bottomMargin = dp(12);
+            historyFrame.addView(returnChat, returnParams);
+        }
         drawer.addView(historyFrame, new LinearLayout.LayoutParams(-1, 0, 1));
 
         View bottomDivider = new View(this);
@@ -1709,7 +1736,7 @@ public class MainActivity extends Activity {
         detailParams.rightMargin = dp(8);
         actions.addView(detail, detailParams);
         Button add = primaryButton("加入购物车");
-        add.setOnClickListener(v -> addProductToCart(item));
+        add.setOnClickListener(v -> addProductToCart(item, add));
         actions.addView(add, new LinearLayout.LayoutParams(0, dp(42), 1));
         LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(-1, dp(42));
         actionParams.topMargin = dp(8);
@@ -2249,9 +2276,13 @@ public class MainActivity extends Activity {
     private void renderProductsTab(String tab, boolean restoreScroll) {
         closeDrawer();
         activePage = "products";
+        useKeyboardOverlay();
         activeProductTab = tab == null || tab.isEmpty() ? "list" : tab;
         backStack.clear();
         baseScreen();
+        if (restoreScroll) {
+            content.setAlpha(0f);
+        }
         addPageHeader("商品", "搜索商品、查看详情、加入购物车");
         if ("activity".equals(activeProductTab)) {
             renderProductPromotionsTab();
@@ -2259,6 +2290,7 @@ public class MainActivity extends Activity {
             renderProductListTab(restoreScroll);
         }
         content.addView(productBottomBar(), new LinearLayout.LayoutParams(-1, dp(58)));
+        addProductCartFab();
     }
 
     private void renderProductListTab(boolean restoreScroll) {
@@ -2346,6 +2378,87 @@ public class MainActivity extends Activity {
         bar.addView(productTabButton("商品列表", "list"), new LinearLayout.LayoutParams(0, dp(46), 1));
         bar.addView(productTabButton("活动", "activity"), new LinearLayout.LayoutParams(0, dp(46), 1));
         return bar;
+    }
+
+    private void addProductCartFab() {
+        if (sessionStore.token().isEmpty()) {
+            return;
+        }
+        productCartFab = new FrameLayout(this);
+        productCartFab.setClickable(true);
+        productCartFab.setBackground(rounded(Color.BLACK, dp(28)));
+        productCartFab.setElevation(dp(8));
+        TextView icon = new TextView(this);
+        icon.setText("购物车");
+        icon.setTextSize(13);
+        icon.setTypeface(Typeface.DEFAULT_BOLD);
+        icon.setTextColor(Color.WHITE);
+        icon.setGravity(Gravity.CENTER);
+        productCartFab.addView(icon, new FrameLayout.LayoutParams(dp(56), dp(56), Gravity.CENTER));
+
+        productCartBadge = new TextView(this);
+        productCartBadge.setTextSize(10);
+        productCartBadge.setTextColor(Color.WHITE);
+        productCartBadge.setGravity(Gravity.CENTER);
+        productCartBadge.setTypeface(Typeface.DEFAULT_BOLD);
+        productCartBadge.setBackground(rounded(Color.rgb(220, 38, 38), dp(10)));
+        FrameLayout.LayoutParams badgeParams = new FrameLayout.LayoutParams(dp(28), dp(20), Gravity.RIGHT | Gravity.TOP);
+        badgeParams.topMargin = -dp(4);
+        badgeParams.rightMargin = -dp(6);
+        productCartFab.addView(productCartBadge, badgeParams);
+        productCartFab.setOnClickListener(v -> renderCart());
+
+        FrameLayout.LayoutParams fabParams = new FrameLayout.LayoutParams(dp(56), dp(56), Gravity.RIGHT | Gravity.BOTTOM);
+        fabParams.rightMargin = dp(18);
+        fabParams.bottomMargin = dp(76);
+        root.addView(productCartFab, fabParams);
+        updateProductCartBadge(cartItemCountCache);
+        refreshProductCartBadge();
+    }
+
+    private void refreshProductCartBadge() {
+        if (sessionStore.token().isEmpty() || productCartBadge == null) {
+            return;
+        }
+        new Thread(() -> {
+            try {
+                JSONObject cart = api.cart();
+                int count = cartItemCount(cart);
+                cartItemCountCache = count;
+                runOnUiThread(() -> updateProductCartBadge(count));
+            } catch (Exception ignored) {
+            }
+        }).start();
+    }
+
+    private void updateProductCartBadge(int count) {
+        if (productCartBadge == null) {
+            return;
+        }
+        if (count <= 0) {
+            productCartBadge.setVisibility(View.GONE);
+            return;
+        }
+        productCartBadge.setVisibility(View.VISIBLE);
+        productCartBadge.setText(cartBadgeText(count));
+    }
+
+    private int cartItemCount(JSONObject cart) {
+        JSONArray items = cart == null ? null : cart.optJSONArray("items");
+        int count = 0;
+        if (items != null) {
+            for (int i = 0; i < items.length(); i++) {
+                JSONObject item = items.optJSONObject(i);
+                if (item != null) {
+                    count += Math.max(0, item.optInt("quantity", 0));
+                }
+            }
+        }
+        return count;
+    }
+
+    private String cartBadgeText(int count) {
+        return count > 99 ? "99+" : String.valueOf(count);
     }
 
     private TextView productTabButton(String text, String tab) {
@@ -2562,11 +2675,11 @@ public class MainActivity extends Activity {
         currentProductState = productListCache.get(key);
         if (currentProductState != null && currentProductState.loaded) {
             renderProductItems(list, currentProductState);
-            if (restoreProductsScroll && productsScroll != null) {
-                productsScroll.post(() -> productsScroll.scrollTo(0, currentProductState.scrollY));
-                restoreProductsScroll = false;
-            }
             return;
+        }
+        if (restoreProductsScroll) {
+            content.setAlpha(1f);
+            restoreProductsScroll = false;
         }
         currentProductState = new ProductListState();
         productListCache.put(key, currentProductState);
@@ -2635,8 +2748,12 @@ public class MainActivity extends Activity {
             list.addView(end, new LinearLayout.LayoutParams(-1, dp(44)));
         }
         if (restoreProductsScroll && productsScroll != null) {
-            productsScroll.post(() -> productsScroll.scrollTo(0, state.scrollY));
-            restoreProductsScroll = false;
+            int savedY = state.scrollY;
+            productsScroll.post(() -> {
+                productsScroll.scrollTo(0, savedY);
+                content.setAlpha(1f);
+                restoreProductsScroll = false;
+            });
         }
     }
 
@@ -2699,7 +2816,7 @@ public class MainActivity extends Activity {
         detailParams.rightMargin = dp(8);
         actions.addView(detail, detailParams);
         Button add = primaryButton("加入购物车");
-        add.setOnClickListener(v -> addProductToCart(item));
+        add.setOnClickListener(v -> addProductToCart(item, add));
         actions.addView(add, new LinearLayout.LayoutParams(0, dp(44), 1));
         LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(-1, dp(44));
         actionParams.topMargin = dp(8);
@@ -2710,6 +2827,7 @@ public class MainActivity extends Activity {
     private void renderProductDetail(String productId, Runnable backAction) {
         closeDrawer();
         activePage = "product_detail";
+        useKeyboardOverlay();
         backStack.clear();
         if (backAction != null) {
             backStack.push(backAction);
@@ -2758,7 +2876,7 @@ public class MainActivity extends Activity {
         loadProductReviews(page, item.optString("productId"));
 
         Button add = primaryButton("加入购物车");
-        add.setOnClickListener(v -> addProductToCart(item));
+        add.setOnClickListener(v -> addProductToCart(item, add));
         page.addView(add, new LinearLayout.LayoutParams(-1, dp(52)));
     }
 
@@ -2801,10 +2919,19 @@ public class MainActivity extends Activity {
     }
 
     private void addProductToCart(JSONObject item) {
+        addProductToCart(item, null);
+    }
+
+    private void addProductToCart(JSONObject item, Button sourceButton) {
         if (sessionStore.token().isEmpty()) {
             toastLine("请先登录后再加入购物车");
             renderLoginPage();
             return;
+        }
+        if (sourceButton != null) {
+            sourceButton.setEnabled(false);
+            sourceButton.setAlpha(0.72f);
+            sourceButton.setText("加入中...");
         }
         new Thread(() -> {
             try {
@@ -2820,9 +2947,25 @@ public class MainActivity extends Activity {
                     }
                 }
                 api.addCartItem(item.optString("productId"), skuId, 1);
-                runOnUiThread(() -> toastLine("已加入购物车"));
+                runOnUiThread(() -> {
+                    toastLine("已加入购物车");
+                    refreshProductCartBadge();
+                    if (sourceButton != null) {
+                        sourceButton.setEnabled(true);
+                        sourceButton.setAlpha(1f);
+                        sourceButton.setText("已加入");
+                        sourceButton.postDelayed(() -> sourceButton.setText("加入购物车"), 600);
+                    }
+                });
             } catch (Exception error) {
-                runOnUiThread(() -> toastLine("加入失败：" + error.getMessage()));
+                runOnUiThread(() -> {
+                    if (sourceButton != null) {
+                        sourceButton.setEnabled(true);
+                        sourceButton.setAlpha(1f);
+                        sourceButton.setText("加入购物车");
+                    }
+                    toastLine("加入失败：" + error.getMessage());
+                });
             }
         }).start();
     }
@@ -2830,6 +2973,7 @@ public class MainActivity extends Activity {
     private void renderCart() {
         closeDrawer();
         activePage = "cart";
+        useKeyboardOverlay();
         backStack.clear();
         baseScreen();
         addPageHeader("购物车", "调整数量、选择商品并结算");
@@ -2856,6 +3000,7 @@ public class MainActivity extends Activity {
 
     private void renderCartContent(LinearLayout page, JSONObject cart) {
         page.removeAllViews();
+        cartItemCountCache = cartItemCount(cart);
         JSONArray items = cart.optJSONArray("items");
         if (items == null || items.length() == 0) {
             page.addView(card("购物车为空", "可以先去商品页添加商品。"));
@@ -2873,7 +3018,7 @@ public class MainActivity extends Activity {
         JSONObject summary = cart.optJSONObject("summary");
         LinearLayout checkoutBar = panel();
         checkoutBar.addView(strong("已选 " + (summary == null ? 0 : summary.optInt("selectedCount")) + " 件"));
-        checkoutBar.addView(muted("应付：¥" + (summary == null ? "0" : summary.optString("payAmount", "0"))));
+        checkoutBar.addView(muted("商品总额：¥" + (summary == null ? "0" : summary.optString("totalAmount", "0"))));
         loadDiscountPreview(checkoutBar);
         Button checkout = primaryButton("结算");
         checkout.setOnClickListener(v -> confirmCheckout(page, summary));
@@ -2885,10 +3030,34 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             try {
                 JSONObject preview = api.discountPreview();
-                runOnUiThread(() -> checkoutBar.addView(discountPreviewCard(preview)));
+                runOnUiThread(() -> renderDiscountPreviewRows(checkoutBar, preview));
             } catch (Exception ignored) {
             }
         }).start();
+    }
+
+    private void renderDiscountPreviewRows(LinearLayout parent, JSONObject discount) {
+        View divider = new View(this);
+        divider.setBackgroundColor(Color.rgb(238, 239, 242));
+        LinearLayout.LayoutParams dividerParams = new LinearLayout.LayoutParams(-1, 1);
+        dividerParams.setMargins(0, dp(14), 0, dp(10));
+        parent.addView(divider, dividerParams);
+        parent.addView(strong("优惠明细"));
+        if (discount == null) {
+            parent.addView(muted("暂无可用优惠"));
+            return;
+        }
+        parent.addView(muted("优惠金额：¥" + discount.optString("discount_amount", discount.optString("discountAmount", "0"))));
+        parent.addView(strong("应付：¥" + discount.optString("pay_amount", discount.optString("payAmount", "0"))));
+        JSONArray lines = discount.optJSONArray("lines");
+        if (lines != null) {
+            for (int i = 0; i < lines.length(); i++) {
+                JSONObject line = lines.optJSONObject(i);
+                if (line != null) {
+                    parent.addView(muted(line.optString("name", "优惠") + " -¥" + line.optString("amount", "0")));
+                }
+            }
+        }
     }
 
     private View cartItemView(JSONObject item, LinearLayout page) {
@@ -2925,7 +3094,9 @@ public class MainActivity extends Activity {
         delete.setTextColor(Color.rgb(185, 28, 28));
         delete.setOnClickListener(v -> deleteCartItem(page, item.optString("cartItemId")));
         controls.addView(delete, new LinearLayout.LayoutParams(dp(70), dp(42)));
-        card.addView(controls);
+        LinearLayout.LayoutParams controlsParams = new LinearLayout.LayoutParams(-1, dp(46));
+        controlsParams.topMargin = dp(14);
+        card.addView(controls, controlsParams);
         return card;
     }
 
@@ -3345,10 +3516,12 @@ public class MainActivity extends Activity {
             drawerLayer = null;
             drawerPanel = null;
         }
+        restoreKeyboardModeForActivePage();
     }
 
     private void closeDrawerAnimated() {
         if (drawerLayer == null || drawerPanel == null) {
+            restoreKeyboardModeForActivePage();
             return;
         }
         int panelWidth = drawerPanel.getWidth() == 0 ? (int) (getResources().getDisplayMetrics().widthPixels * 0.82f) : drawerPanel.getWidth();
@@ -3369,6 +3542,7 @@ public class MainActivity extends Activity {
                 if (closingLayer.getParent() == root) {
                     root.removeView(closingLayer);
                 }
+                restoreKeyboardModeForActivePage();
             }
 
             @Override
@@ -3877,19 +4051,20 @@ public class MainActivity extends Activity {
         row.addView(title, titleParams);
         row.setOnClickListener(v -> {
             hideKeyboard();
-            localSessionId = item.localSessionId;
+            String targetLocalSessionId = item.localSessionId;
+            localSessionId = targetLocalSessionId;
             serverSessionId = item.serverSessionId == null ? "" : item.serverSessionId;
             closeDrawerAnimated();
             renderChatHome();
             loadHomeCopy();
-            if (!serverSessionId.isEmpty() && !chatStore.hasMessages(localSessionId)) {
-                loadRemoteSessionDetail(serverSessionId);
+            if (!serverSessionId.isEmpty() && !chatStore.hasMessages(targetLocalSessionId)) {
+                loadRemoteSessionDetail(serverSessionId, targetLocalSessionId);
             }
         });
         return row;
     }
 
-    private void loadRemoteSessionDetail(String sessionId) {
+    private void loadRemoteSessionDetail(String sessionId, String targetLocalSessionId) {
         new Thread(() -> {
             try {
                 JSONObject detail = api.sessionDetail(sessionId);
@@ -3902,13 +4077,16 @@ public class MainActivity extends Activity {
                     if (message != null) {
                         String content = message.optString("content", "");
                         if (!content.isEmpty()) {
-                            chatStore.saveMessage(localSessionId, "user", content, "synced");
+                            long createdAt = parseRemoteTime(message.optString("created_at", ""));
+                            chatStore.saveRemoteMessageSnapshot(targetLocalSessionId, message.optString("role", "user"), content, "[]", "[]", "synced", createdAt);
                         }
                     }
                 }
                 runOnUiThread(() -> {
-                    renderChatHome();
-                    loadHomeCopy();
+                    if (targetLocalSessionId.equals(localSessionId)) {
+                        renderChatHome();
+                        loadHomeCopy();
+                    }
                 });
             } catch (Exception error) {
                 runOnUiThread(() -> toastLine("远程会话加载失败：" + error.getMessage()));
@@ -3950,6 +4128,7 @@ public class MainActivity extends Activity {
             return;
         }
         activePage = "settings";
+        useKeyboardOverlay();
         backStack.clear();
         backStack.push(() -> renderChatHome());
         baseScreen();
@@ -3980,8 +4159,37 @@ public class MainActivity extends Activity {
         LinearLayout group = panel();
         group.addView(settingsRow("?", "帮助", v -> renderHelpPage(), Color.rgb(124, 58, 237)));
         group.addView(settingsRow("i", "关于", v -> renderAboutPage(), Color.rgb(59, 130, 246)));
+        group.addView(settingsRow("⚙", "高级设置", v -> renderAdvancedSettingsPage(), Color.rgb(37, 99, 235)));
         group.addView(settingsRow("→", "退出登录", v -> confirmLogout(), Color.rgb(239, 68, 68)));
         page.addView(group);
+
+        TextView version = muted("Version: " + BuildConfig.VERSION_NAME + "\n由 AI 大模型提供支持");
+        version.setGravity(Gravity.CENTER);
+        page.addView(version, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    private void renderAdvancedSettingsPage() {
+        closeDrawer();
+        if (sessionStore.token().isEmpty()) {
+            renderLoginPage();
+            return;
+        }
+        activePage = "advanced_settings";
+        useKeyboardOverlay();
+        baseScreen();
+        content.addView(createBackTopBar("高级设置", () -> renderSettings()), new LinearLayout.LayoutParams(-1, dp(56)));
+        LinearLayout page = pageBody();
+
+        LinearLayout feature = panel();
+        feature.addView(strong("功能设置"));
+        CheckBox showReturnChat = new CheckBox(this);
+        showReturnChat.setText("侧栏显示“返回聊天”按钮");
+        showReturnChat.setTextSize(15);
+        showReturnChat.setTextColor(Color.rgb(24, 30, 37));
+        showReturnChat.setChecked(sessionStore.showDrawerReturnChat());
+        showReturnChat.setOnCheckedChangeListener((buttonView, isChecked) -> sessionStore.saveShowDrawerReturnChat(isChecked));
+        feature.addView(showReturnChat, new LinearLayout.LayoutParams(-1, dp(52)));
+        page.addView(feature);
 
         if (BuildConfig.SHOW_TEST_SERVER_SETTINGS) {
             LinearLayout dev = panel();
@@ -3989,15 +4197,10 @@ public class MainActivity extends Activity {
             dev.addView(strong("测试后端"));
             dev.addView(apiBase);
             Button saveApi = primaryButton("保存测试地址");
-            saveApi.setOnClickListener(v -> {
-                saveApiBaseFromInput(apiBase.getText().toString());
-            });
+            saveApi.setOnClickListener(v -> saveApiBaseFromInput(apiBase.getText().toString()));
             addFormButton(dev, saveApi);
             page.addView(dev);
         }
-        TextView version = muted("Version: " + BuildConfig.VERSION_NAME + "\n由 AI 大模型提供支持");
-        version.setGravity(Gravity.CENTER);
-        page.addView(version, new LinearLayout.LayoutParams(-1, -2));
     }
 
     private void saveApiBaseFromInput(String value) {

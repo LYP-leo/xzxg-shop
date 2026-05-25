@@ -59,6 +59,7 @@ public class LocalChatStore extends SQLiteOpenHelper {
         }
         String existing = localSessionIdForServer(serverSessionId);
         String localId = existing.isEmpty() ? "remote_" + serverSessionId : existing;
+        String syncState = existing.isEmpty() ? "" : sessionSyncState(localId);
         ContentValues values = new ContentValues();
         values.put("server_session_id", serverSessionId);
         values.put("title", title == null || title.isEmpty() ? "导购会话" : title);
@@ -72,7 +73,8 @@ public class LocalChatStore extends SQLiteOpenHelper {
             getWritableDatabase().insertWithOnConflict("sessions", null, values, SQLiteDatabase.CONFLICT_REPLACE);
         } else {
             long localTime = sessionUpdatedAt(localId);
-            values.put("updated_at", Math.max(localTime, remoteTime));
+            boolean hasLocalPendingChanges = "pending_sync".equals(syncState) || "failed".equals(syncState) || "local_only".equals(syncState);
+            values.put("updated_at", hasLocalPendingChanges ? Math.max(localTime, remoteTime) : remoteTime);
             getWritableDatabase().update("sessions", values, "local_session_id = ?", new String[]{localId});
         }
         return localId;
@@ -116,6 +118,32 @@ public class LocalChatStore extends SQLiteOpenHelper {
             sessionValues.put("summary", safeContent);
         }
         getWritableDatabase().update("sessions", sessionValues, "local_session_id = ?", new String[]{localSessionId});
+    }
+
+    public void saveRemoteMessageSnapshot(String localSessionId, String role, String content, String blocksJson, String followupsJson, String status, long createdAt) {
+        if (localSessionId == null || localSessionId.isEmpty()) {
+            return;
+        }
+        String safeRole = role == null || role.trim().isEmpty() ? "user" : role.trim();
+        String safeContent = content == null ? "" : content;
+        if (safeContent.isEmpty()) {
+            return;
+        }
+        long messageTime = createdAt > 0 ? createdAt : 1;
+        if (remoteMessageSnapshotExists(localSessionId, safeRole, safeContent, messageTime)) {
+            return;
+        }
+        ContentValues values = new ContentValues();
+        String fingerprint = localSessionId + "|" + safeRole + "|" + safeContent + "|" + messageTime;
+        values.put("local_message_id", "remote_msg_" + Math.abs(fingerprint.hashCode()));
+        values.put("local_session_id", localSessionId);
+        values.put("role", safeRole);
+        values.put("content", safeContent);
+        values.put("blocks_json", blocksJson == null || blocksJson.isEmpty() ? "[]" : blocksJson);
+        values.put("followups_json", followupsJson == null || followupsJson.isEmpty() ? "[]" : followupsJson);
+        values.put("status", status == null || status.isEmpty() ? "synced" : status);
+        values.put("created_at", messageTime);
+        getWritableDatabase().insertWithOnConflict("messages", null, values, SQLiteDatabase.CONFLICT_IGNORE);
     }
 
     public List<SessionSummary> recentSessions() {
@@ -231,6 +259,33 @@ public class LocalChatStore extends SQLiteOpenHelper {
         Cursor cursor = getReadableDatabase().query("sessions", new String[]{"updated_at"}, "local_session_id = ?", new String[]{localSessionId}, null, null, null, "1");
         try {
             return cursor.moveToFirst() ? cursor.getLong(0) : 0;
+        } finally {
+            cursor.close();
+        }
+    }
+
+    private String sessionSyncState(String localSessionId) {
+        Cursor cursor = getReadableDatabase().query("sessions", new String[]{"sync_state"}, "local_session_id = ?", new String[]{localSessionId}, null, null, null, "1");
+        try {
+            return cursor.moveToFirst() ? cursor.getString(0) : "";
+        } finally {
+            cursor.close();
+        }
+    }
+
+    private boolean remoteMessageSnapshotExists(String localSessionId, String role, String content, long createdAt) {
+        Cursor cursor = getReadableDatabase().query(
+                "messages",
+                new String[]{"local_message_id"},
+                "local_session_id = ? AND role = ? AND content = ? AND created_at = ?",
+                new String[]{localSessionId, role, content, String.valueOf(createdAt)},
+                null,
+                null,
+                null,
+                "1"
+        );
+        try {
+            return cursor.moveToFirst();
         } finally {
             cursor.close();
         }

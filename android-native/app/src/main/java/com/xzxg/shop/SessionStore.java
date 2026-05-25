@@ -79,6 +79,14 @@ public class SessionStore {
         prefs.edit().putString("api_base", apiBase).apply();
     }
 
+    public boolean showDrawerReturnChat() {
+        return prefs.getBoolean("show_drawer_return_chat", true);
+    }
+
+    public void saveShowDrawerReturnChat(boolean value) {
+        prefs.edit().putBoolean("show_drawer_return_chat", value).apply();
+    }
+
     public void clearAuth() {
         prefs.edit()
                 .remove("token")
