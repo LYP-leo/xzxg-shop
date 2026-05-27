@@ -513,11 +513,24 @@ button {
 .warning,
 .cart-state-block,
 .order-summary-block,
+.action-block,
 .panel {
   background: #f8fafc;
   border: 1px solid #dbe3ef;
   border-radius: 8px;
   padding: 12px;
+}
+
+.action-block {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.action-block p {
+  color: #465367;
+  margin: 0;
 }
 
 .block-title {
@@ -1135,6 +1148,32 @@ button {
 .trace-raw-output--filtered {
   background: #f0fdf4;
   border-color: #bbf7d0;
+}
+
+.trace-raw-output--prompt {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+
+.trace-raw-output--prompt summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.trace-prompt-messages {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.trace-prompt-messages article {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
 }
 
 .trace-raw-output strong {

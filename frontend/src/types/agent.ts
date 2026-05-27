@@ -7,6 +7,7 @@ export type Attachment = {
   type: 'image' | 'file';
   url?: string;
   name?: string;
+  objectKey?: string;
 };
 
 export type Citation = {
@@ -23,6 +24,7 @@ export type AgentBlock =
   | { type: 'cart_state'; cart: Cart }
   | { type: 'order_summary'; orders: Order[] }
   | { type: 'citation'; citation: Citation }
+  | { type: 'action'; message?: string; action: { name: string; target: string; label?: string } }
   | { type: 'warning'; code: string; message: string };
 
 export type AgentTurn = {

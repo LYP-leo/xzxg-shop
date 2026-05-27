@@ -7,9 +7,10 @@ type Props = {
   onFollowup: (question: string) => void;
   onOpenProduct: (productId: string) => void;
   onAddToCart: (product: ProductCardType) => void;
+  onNavigate: (target: string) => void;
 };
 
-export function ChatMessageList({ turns, onFollowup, onOpenProduct, onAddToCart }: Props) {
+export function ChatMessageList({ turns, onFollowup, onOpenProduct, onAddToCart, onNavigate }: Props) {
   if (!turns.length) {
     return (
       <div className="empty-state">
@@ -37,6 +38,7 @@ export function ChatMessageList({ turns, onFollowup, onOpenProduct, onAddToCart 
                   key={`${block.type}-${index}`}
                   onOpenProduct={onOpenProduct}
                   onAddToCart={onAddToCart}
+                  onNavigate={onNavigate}
                 />
               ))}
             </div>
@@ -59,11 +61,13 @@ export function ChatMessageList({ turns, onFollowup, onOpenProduct, onAddToCart 
 function AgentBlockView({
   block,
   onOpenProduct,
-  onAddToCart
+  onAddToCart,
+  onNavigate
 }: {
   block: AgentBlock;
   onOpenProduct: (productId: string) => void;
   onAddToCart: (product: ProductCardType) => void;
+  onNavigate: (target: string) => void;
 }) {
   if (block.type === 'markdown') {
     return <MarkdownText content={block.content} />;
@@ -137,6 +141,19 @@ function AgentBlockView({
         ))}
       </div>
     );
+  }
+  if (block.type === 'action') {
+    if (block.action.name === 'navigate') {
+      return (
+        <div className="action-block">
+          {block.message ? <p>{block.message}</p> : null}
+          <button className="button" onClick={() => onNavigate(block.action.target)}>
+            {block.action.label ?? '打开'}
+          </button>
+        </div>
+      );
+    }
+    return <div className="action-block">{block.message}</div>;
   }
   return <div className="warning">{block.message}</div>;
 }

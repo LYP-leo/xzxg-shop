@@ -1,6 +1,6 @@
 # API 接口文档 v3
 
-更新时间：2026-05-24
+更新时间：2026-05-25
 
 ## 通用约定
 
@@ -49,6 +49,90 @@ page=1&page_size=10
 - 用户：`role=user`。
 - 商家：`role=merchant`。
 - 管理员：`role=admin`。
+
+## 文件与图片搜索
+
+### POST /files
+
+权限：用户、商家、管理员
+
+用途：上传图片或 PDF 到 MinIO，并在 MySQL 记录文件元数据。聊天拍照附件应先调用该接口，再把返回的 `file_id`/`object_key` 放入 Agent 消息附件。
+
+请求：`multipart/form-data`
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `file` | file | 是 | 当前支持 `image/*` 和 `application/pdf` |
+
+响应：`201 Created`
+
+```json
+{
+  "file": {
+    "file_id": "file_xxx",
+    "object_key": "uploads/acct_user_001/2026/05/file_xxx.jpg",
+    "url": "/api/v1/files/file_xxx",
+    "mime_type": "image/jpeg",
+    "size_bytes": 109444,
+    "content_hash": "sha256_hex",
+    "storage_provider": "minio",
+    "created_at": "2026-05-25T22:17:40+08:00"
+  },
+  "upload_duration_ms": 10
+}
+```
+
+### GET /files/{file_id}
+
+权限：用户、商家、管理员
+
+用途：从 MinIO 读取文件对象并返回二进制内容。
+
+### POST /search/image
+
+权限：用户、商家、管理员
+
+用途：图片搜同款/相似商品入口。后端会将图片转成本地图片特征向量，检索 Milvus `product_image_vectors`，再按商品 ID 回查商品卡。该能力当前使用可解释的本地视觉特征，后续可替换为第三方图片 embedding/VLM。
+
+请求：
+
+```json
+{
+  "file_id": "file_xxx",
+  "object_key": "uploads/acct_user_001/2026/05/file_xxx.jpg",
+  "image_url": "",
+  "top_k": 5
+}
+```
+
+响应：
+
+```json
+{
+  "relevance_status": "matched",
+  "match_status": "ok",
+  "items": [
+    {
+      "productId": "p_digital_001",
+      "name": "Apple iPhone 17 Pro 6.3英寸 A19 Pro 256GB 全网通旗舰手机",
+      "imageUrl": "/api/v1/assets/ecommerce_agent_dataset/2_数码电子/images/p_digital_001_live.jpg"
+    }
+  ],
+  "durations": {
+    "total_ms": 145,
+    "download_ms": 44,
+    "embedding_ms": 91,
+    "vector_search_ms": 9,
+    "rerank_ms": 0
+  }
+}
+```
+
+字段说明：
+
+- `relevance_status`：`matched` 表示召回到候选商品，`no_match` 表示无可靠候选。
+- `match_status`：`ok`、`no_vector_hit`、`image_vector_index_unavailable`。
+- `durations.embedding_ms`：当前表示本地图片特征向量计算耗时。
 
 ## 健康检查
 
@@ -814,7 +898,7 @@ Query：`page`、`page_size`
 用途：更新动态配置。后端按 key 自动写入对应 Nacos dataId：
 
 - `retrieval.*` -> `xzxg-shop-rag-config.json`
-- `vector.*`、`milvus.*`、`embedding.*` -> `xzxg-shop-infra-config.json`
+- `vector.*`、`milvus.*`、`embedding.*`、`minio.*`、`files.*` -> `xzxg-shop-infra-config.json`
 - `agent.prompt.*` -> `xzxg-shop-agent-prompts.json`
 - 其他 -> `xzxg-shop-app-config.json`
 
@@ -957,6 +1041,23 @@ GET /api/v1/admin/evals/reports/rag_recall_eval_20260524T023738/rag_recall_eval
       "source": "product:p_digital_001"
     }
   ]
+}
+```
+
+### POST /eval/image-search
+
+权限：管理员
+
+用途：单条图片搜索工具调试和测评。返回结构与 `POST /search/image` 一致，并包含 `durations`，用于观察图片下载/MinIO 读取、embedding、向量检索、重排和端到端耗时。
+
+请求：
+
+```json
+{
+  "file_id": "file_xxx",
+  "object_key": "uploads/eval/example.jpg",
+  "image_url": "https://example.com/a.jpg",
+  "top_k": 5
 }
 ```
 

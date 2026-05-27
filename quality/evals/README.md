@@ -40,6 +40,14 @@ node quality/evals/run_intent_eval.mjs quality/data/eval/intent_cases.jsonl
 node quality/evals/run_rag_recall_eval.mjs quality/data/eval/rag_recall_cases.jsonl
 ```
 
+## 图片搜索测评
+
+后端接口：`POST /api/v1/eval/image-search`。当前先测链路降级正确性和处理耗时，报告会输出端到端、下载/MinIO 读取、embedding、向量检索、重排等耗时维度。
+
+```bash
+node quality/evals/run_image_search_eval.mjs quality/data/eval/image_search_cases.jsonl
+```
+
 ## 环境变量
 
 ```bash

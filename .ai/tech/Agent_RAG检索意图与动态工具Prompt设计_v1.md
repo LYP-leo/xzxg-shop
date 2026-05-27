@@ -473,6 +473,40 @@ Skill 输出结构化 block/action，不靠自然语言硬编码：
 
 前端可按 `action.name= navigate`、`target=cart|orders|products` 跳转。
 
+### 5.3 ReAct 协议扩展
+
+在现有 `tool_call/final` 之外增加 `skill_call`：
+
+```json
+{
+  "type": "skill_call",
+  "skill": "navigate_cart",
+  "arguments": {}
+}
+```
+
+执行规则：
+
+1. `skill_call` 只允许调用当前 `intent_tool_policy.skills` 中声明的 skill。
+2. skill 不直接访问模型，不做开放推理，只执行确定性业务动作或返回固定说明。
+3. skill 执行结果写入 trace，stage 为 `skills`，event_type 为 skill 名称。
+4. skill 返回的 block 立即通过 SSE `block_delta` 发给前端，同时 observation 写回 ReAct messages。
+5. 如果模型调用了不可用 skill，后端拦截并要求模型按当前策略重新输出。
+
+### 5.4 MVP skill 实现
+
+第一批只实现无副作用或低风险 skill：
+
+| skill | 输出 | 前端行为 |
+| --- | --- | --- |
+| `navigate_cart` | `action.name=navigate,target=cart` | 展示“打开购物车”按钮 |
+| `navigate_orders` | `action.name=navigate,target=orders` | 展示“查看订单”按钮 |
+| `coupon_help` | `target=home` 或 `coupons` | 展示优惠券入口说明 |
+| `order_help` | `target=orders` | 展示订单页入口 |
+| `after_sales_help` | `target=orders` | 展示售后从订单进入的说明 |
+
+暂不把 `cart_add/cart_update/cart_delete/checkout` 做成 skill，因为它们已有显式工具且会修改业务状态。后续如果要脚本化 fast_product，再把这些工具迁移为确定性 skill。
+
 ## 6. 动态工具 Prompt 组装
 
 ### 6.1 当前问题
@@ -495,21 +529,15 @@ Skill 输出结构化 block/action，不靠自然语言硬编码：
 
 ### 6.2 目标结构
 
-把工具说明拆成独立配置项：
+工具协议不需要拆成“每个工具一个配置项”。保留一个统一配置项即可：
 
 ```text
-agent.tool.search_products
-agent.tool.search_knowledge
-agent.tool.get_cart
-agent.tool.add_cart_item
-agent.tool.update_cart_item
-agent.tool.delete_cart_item
-agent.tool.checkout
-agent.skill.navigate_cart
-agent.skill.navigate_orders
+agent.prompt.tool_protocol
 ```
 
-再定义每个 intent 可用工具集合：
+这个配置项负责定义全量 ReAct 输出格式、所有工具/skill 的参数 schema、统一调用约束和输出硬约束。动态化发生在子意图组装阶段：后端根据当前 `route/intent` 生成“本轮可用工具/可用 skill/禁用能力/使用侧重”的白名单片段，再和子意图 prompt 拼起来。
+
+推荐新增一个结构化映射配置，也可以先写在代码里：
 
 ```json
 {
@@ -539,14 +567,28 @@ agent.skill.navigate_orders
 
 ### 6.4 scene_solution prompt 改造
 
-用户给的 scene_solution prompt 方向是对的，但“可用工具与信息侧重”不应写死在 intent prompt 里，而应由工具组装器生成。
+用户给的 scene_solution prompt 方向是对的。这里不需要把 `search_products`、`search_knowledge` 拆到不同配置项，而是在组装当前子意图 prompt 时，把工具白名单和使用侧重作为变量注入。
 
-拆分后：
-
-#### intent prompt 只描述任务范式
+组装后形态：
 
 ```markdown
 当前导购意图是 P5/scene_solution：用户需要特定场景下的整体解决方案与清单。
+
+可用工具：
+- search_products：搜索当前商品库。用于查找可推荐商品、核心品类候选、价格/库存/卖点/风险。只允许推荐工具返回且 relevance_status=ok 的商品。
+- search_knowledge：搜索知识库资料。用于查找场景清单、核心品类、场景风险、地点/季节/人群约束、选购攻略。
+
+可用 skill：
+- 无。本轮是导购场景方案，不执行购物车修改、结算、页面跳转。
+
+禁用能力：
+- add_cart_item、update_cart_item、delete_cart_item、checkout。
+- 不要把场景方案写成加购或结算流程。
+
+工具使用侧重：
+- 先建立场景清单框架，再对核心品类查资料和商品。
+- search_products 优先围绕核心品类逐项查询，不要一次查过宽。
+- search_knowledge 返回的资料片段只能作为依据引用，资料不足要说明不足。
 
 内容范式：
 - 先介绍当前需求场景，说明目标、约束和容易遗漏的风险。
@@ -561,44 +603,9 @@ agent.skill.navigate_orders
 - 末尾输出一个 `<further>`。
 ```
 
-#### tool prompt 动态注入
+其中“可用工具/可用 skill/禁用能力/工具使用侧重”由后端动态生成；“内容范式/输出要求”仍来自 `agent.prompt.intent.scene_solution`。
 
-```markdown
-本轮可用工具：
-
-1. search_products
-参数：
-{
-  "query": "string",
-  "limit": 5,
-  "retrieval_intents": ["category", "scenario", "attribute"],
-  "entities": {
-    "categories": [],
-    "attributes": [],
-    "scenarios": [],
-    "negative_terms": []
-  }
-}
-使用规则：
-- 需要商品候选或核心品类候选时调用。
-- 场景方案中优先围绕核心品类查，不要一次查过宽。
-
-2. search_knowledge
-参数：
-{
-  "query": "string",
-  "limit": 5,
-  "retrieval_intents": ["scenario", "category", "attribute"],
-  "filters": {
-    "doc_types": ["scenario_guide", "buying_guide", "product_detail"]
-  }
-}
-使用规则：
-- 需要场景清单、风险、季节、地点、人群约束时调用。
-- 必须把检索到的资料片段作为依据，资料不足要说明不足。
-```
-
-这样 scene_solution 不会看到 `update_cart_item`。
+这样 `scene_solution` 可以继续复用统一工具协议，但当前 prompt 里明确告诉模型本轮只允许 `search_products/search_knowledge`，不会把 `update_cart_item` 当作可选动作。
 
 ## 7. Prompt 配置拆分建议
 
@@ -615,24 +622,15 @@ agent.prompt.intent.category_shop_complex
 agent.prompt.intent.scene_solution
 agent.prompt.intent.open_explore
 agent.prompt.non_guide.base
-agent.prompt.tool_header
-agent.tool.search_products
-agent.tool.search_knowledge
-agent.tool.get_cart
-agent.tool.add_cart_item
-agent.tool.update_cart_item
-agent.tool.delete_cart_item
-agent.tool.checkout
-agent.skill.navigate_cart
-agent.skill.navigate_orders
+agent.prompt.tool_protocol
+agent.prompt.intent_tool_policy
 ```
 
 其中：
 
 - `agent.prompt.intent.*`：只管任务范式和输出格式。
-- `agent.tool.*`：只管工具参数和使用规则。
-- `agent.skill.*`：只管固定流程说明和输出 action。
-- `agent.prompt.tool_header`：定义 ReAct JSON 协议通用外壳。
+- `agent.prompt.tool_protocol`：统一定义 ReAct JSON 协议、全量工具/skill schema 和通用约束。
+- `agent.prompt.intent_tool_policy`：定义各 intent 的工具/skill 白名单、禁用能力和使用侧重；也可以先以内置 map 实现，稳定后再进 Nacos/DB。
 
 ## 8. 实施顺序
 
@@ -656,14 +654,14 @@ agent.skill.navigate_orders
 
 ### Phase 3：动态工具 Prompt 组装
 
-1. 建立工具注册表：工具名、参数 schema、使用规则、适用 intent。
+1. 保留统一 `agent.prompt.tool_protocol`，不拆每个工具配置项。
 2. `reactSystemPromptForPlan` 改为：
    - answer_base
+   - tool_protocol
    - intent_prompt
-   - tool_header
-   - selected_tool_prompts
+   - intent_tool_policy（动态生成可用工具、可用 skill、禁用能力、使用侧重）
    - output constraints
-3. 导购意图只暴露 search_products/search_knowledge。
+3. 导购意图在 `intent_tool_policy` 中只声明 search_products/search_knowledge 可用。
 4. fast_product 不进入 ReAct。
 
 价值：减少工具误用。

@@ -155,6 +155,69 @@ const DefaultToolProtocolPrompt = `你正在一个 ReAct 工具循环中工作�
 - 如需在 text 中额外输出 <item> 标签，<item> 内只能写已由工具返回的 product_id，例如 <item>p_001</item>；不能写商品名或推荐语。
 - 重点词、品牌词、系列词不要用 special_word 标识，统一用 Markdown 加粗，例如 **耐克**。`
 
+const DefaultIntentToolPolicyPrompt = `{
+  "product_deep": {
+    "tools": ["search_products", "search_knowledge"],
+    "skills": [],
+    "disabled": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
+    "focus": ["先围绕用户锚定的商品或型号调用 search_products。", "需要解释参数、材料、售后或选购依据时再调用 search_knowledge。"]
+  },
+  "compare_decide": {
+    "tools": ["search_products", "search_knowledge"],
+    "skills": [],
+    "disabled": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
+    "focus": ["先分别检索候选商品，确保对比对象来自当前商品库。", "围绕用户提到的维度比较，不要引入无关候选。"]
+  },
+  "outfit_styling": {
+    "tools": ["search_products", "search_knowledge"],
+    "skills": [],
+    "disabled": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
+    "focus": ["先把风格、场合、颜色、版型约束转成可检索品类。", "search_products 用于找可购买单品，search_knowledge 用于补充搭配原则。"]
+  },
+  "category_shop_brand": {
+    "tools": ["search_products", "search_knowledge"],
+    "skills": [],
+    "disabled": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
+    "focus": ["检索时保留品牌/店铺和品类约束。", "需要品牌系列或选购知识时调用 search_knowledge。"]
+  },
+  "category_shop_no_brand": {
+    "tools": ["search_products", "search_knowledge"],
+    "skills": [],
+    "disabled": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
+    "focus": ["先按品类、预算、场景、人群和硬属性收敛 query。", "search_products 是主工具，必要时用 search_knowledge 补充选购依据。"]
+  },
+  "category_shop_complex": {
+    "tools": ["search_products", "search_knowledge"],
+    "skills": [],
+    "disabled": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
+    "focus": ["先拆解预算、价格、属性、排除项等硬约束，再检索商品。", "不要为了凑结果推荐违反硬约束的商品。"]
+  },
+  "scene_solution": {
+    "tools": ["search_products", "search_knowledge"],
+    "skills": [],
+    "disabled": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
+    "focus": ["先建立场景清单框架，再对核心品类查资料和商品。", "search_products 优先围绕核心品类逐项查询。"]
+  },
+  "open_explore": {
+    "tools": ["search_products", "search_knowledge"],
+    "skills": [],
+    "disabled": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
+    "focus": ["先把用户的风格、IP、美学或模糊诉求收敛成可购买品类。", "可先 search_knowledge 获取品类框架，再 search_products 找探索式候选。"]
+  },
+  "non_guide": {
+    "tools": ["get_cart"],
+    "skills": ["navigate_cart", "navigate_orders", "navigate_products", "coupon_help", "order_help", "after_sales_help"],
+    "disabled": ["search_products", "search_knowledge", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
+    "focus": ["非导购请求优先用自然语言或 skill 承接，不主动搜索商品。", "只有读取购物车状态时允许 get_cart。"]
+  },
+  "fast_product": {
+    "tools": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
+    "skills": [],
+    "disabled": ["search_knowledge"],
+    "focus": ["固定商品动作优先脚本化执行。", "缺少 product_id 或 cart_item_id 时先澄清或 get_cart，不要猜 ID。"]
+  }
+}`
+
 const DefaultFollowupsPrompt = `你是电商导购追问生成器。根据用户原始问题和本轮回答，生成 2 个能推进购买决策的简短中文追问。只输出 JSON 数组。
 要求：
 - 追问必须围绕预算、使用场景、人群、偏好、候选商品、尺寸规格、售后顾虑之一。
@@ -233,6 +296,7 @@ func DefaultConfigs(envAPIKey string) []domain.AppConfig {
 		{ConfigKey: "agent.prompt.guide_intent", ConfigValue: DefaultGuideIntentPrompt, ValueType: "text", Description: "导购细分 Prompt：P1-P6", Domain: "prompt"},
 		{ConfigKey: "agent.prompt.answer_base", ConfigValue: DefaultAnswerBasePrompt, ValueType: "text", Description: "主导购 Agent 基础系统 Prompt", Domain: "prompt"},
 		{ConfigKey: "agent.prompt.tool_protocol", ConfigValue: DefaultToolProtocolPrompt, ValueType: "text", Description: "主 Agent ReAct 工具协议 Prompt", Domain: "prompt"},
+		{ConfigKey: "agent.prompt.intent_tool_policy", ConfigValue: DefaultIntentToolPolicyPrompt, ValueType: "json", Description: "各子意图可用工具、skill、禁用能力和使用侧重", Domain: "prompt"},
 		{ConfigKey: "agent.prompt.followups", ConfigValue: DefaultFollowupsPrompt, ValueType: "text", Description: "追问生成 Agent 系统 Prompt", Domain: "prompt"},
 	}
 	for _, intent := range DefaultIntentKeys() {
@@ -253,6 +317,7 @@ func PromptDefaults() []domain.AgentPromptInput {
 		{PromptKey: "agent.prompt.guide_intent", Title: "导购细分 Prompt", Content: DefaultGuideIntentPrompt, Description: "P1-P6 导购意图识别"},
 		{PromptKey: "agent.prompt.answer_base", Title: "主 Agent 基础 Prompt", Content: DefaultAnswerBasePrompt, Description: "主导购 Agent 系统提示词"},
 		{PromptKey: "agent.prompt.tool_protocol", Title: "工具协议 Prompt", Content: DefaultToolProtocolPrompt, Description: "ReAct 工具调用协议"},
+		{PromptKey: "agent.prompt.intent_tool_policy", Title: "意图工具策略 Prompt", Content: DefaultIntentToolPolicyPrompt, Description: "按 route/intent 注入可用工具、skill 和禁用能力"},
 		{PromptKey: "agent.prompt.followups", Title: "追问生成 Prompt", Content: DefaultFollowupsPrompt, Description: "导购追问生成"},
 	}
 	for _, intent := range DefaultIntentKeys() {

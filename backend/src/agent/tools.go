@@ -33,6 +33,7 @@ const (
 type reactAction struct {
 	Type      string          `json:"type"`
 	Tool      string          `json:"tool,omitempty"`
+	Skill     string          `json:"skill,omitempty"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 	Text      string          `json:"text,omitempty"`
 	Blocks    []reactBlock    `json:"blocks,omitempty"`
@@ -45,19 +46,20 @@ type reactBlock struct {
 }
 
 type toolObservation struct {
-	Tool                string         `json:"tool"`
-	OK                  bool           `json:"ok"`
-	Message             string         `json:"message,omitempty"`
-	Result              map[string]any `json:"result,omitempty"`
-	ProductIDs          []string       `json:"product_ids,omitempty"`
-	CandidateProductIDs []string       `json:"candidate_product_ids,omitempty"`
-	DroppedProductIDs   []string       `json:"dropped_product_ids,omitempty"`
-	ChunkIDs            []string       `json:"chunk_ids,omitempty"`
-	RelevanceStatus     string         `json:"relevance_status,omitempty"`
-	RelevanceReason     string         `json:"relevance_reason,omitempty"`
-	Cart                *domain.Cart   `json:"-"`
-	Orders              []domain.Order `json:"-"`
-	DurationMS          int64          `json:"duration_ms"`
+	Tool                string              `json:"tool"`
+	OK                  bool                `json:"ok"`
+	Message             string              `json:"message,omitempty"`
+	Result              map[string]any      `json:"result,omitempty"`
+	ProductIDs          []string            `json:"product_ids,omitempty"`
+	CandidateProductIDs []string            `json:"candidate_product_ids,omitempty"`
+	DroppedProductIDs   []string            `json:"dropped_product_ids,omitempty"`
+	ChunkIDs            []string            `json:"chunk_ids,omitempty"`
+	RelevanceStatus     string              `json:"relevance_status,omitempty"`
+	RelevanceReason     string              `json:"relevance_reason,omitempty"`
+	Blocks              []domain.AgentBlock `json:"blocks,omitempty"`
+	Cart                *domain.Cart        `json:"-"`
+	Orders              []domain.Order      `json:"-"`
+	DurationMS          int64               `json:"duration_ms"`
 }
 
 func (r *Runtime) executeTool(ctx context.Context, run domain.AgentRun, call reactAction) toolObservation {
@@ -299,8 +301,9 @@ func parseReactAction(content string) (reactAction, error) {
 	}
 	action.Type = strings.TrimSpace(action.Type)
 	action.Tool = strings.TrimSpace(action.Tool)
+	action.Skill = strings.TrimSpace(action.Skill)
 	switch action.Type {
-	case "tool_call", "final":
+	case "tool_call", "skill_call", "final":
 		return action, nil
 	default:
 		return action, errors.New("unknown action type: " + action.Type)
@@ -319,6 +322,7 @@ func observationForModel(observation toolObservation) string {
 		"product_ids":           observation.ProductIDs,
 		"candidate_product_ids": observation.CandidateProductIDs,
 		"dropped_product_ids":   observation.DroppedProductIDs,
+		"blocks":                observation.Blocks,
 	}
 	bytes, err := json.Marshal(payload)
 	if err != nil {

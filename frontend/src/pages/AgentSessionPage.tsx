@@ -10,9 +10,10 @@ type Props = {
   initialQuestion?: string;
   onOpenProduct: (productId: string) => void;
   onCartChange: () => void;
+  onNavigate: (target: string) => void;
 };
 
-export function AgentSessionPage({ initialQuestion, onOpenProduct, onCartChange }: Props) {
+export function AgentSessionPage({ initialQuestion, onOpenProduct, onCartChange, onNavigate }: Props) {
   const [session, setSession] = useState<AgentSession | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const hasCreatedSession = useRef(false);
@@ -134,6 +135,7 @@ export function AgentSessionPage({ initialQuestion, onOpenProduct, onCartChange 
         onFollowup={sendMessage}
         onOpenProduct={onOpenProduct}
         onAddToCart={addProduct}
+        onNavigate={onNavigate}
       />
       <ChatInputBar disabled={isStreaming || !session} onSend={sendMessage} onCancel={cancelRun} />
     </section>

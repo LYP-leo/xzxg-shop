@@ -549,6 +549,7 @@ export function AdminPage({ token, view = 'platform' }: AdminPageProps) {
                         {event.error ? <span className="trace-error">错误 {event.error}</span> : null}
                       </div>
                       {event.stage === 'tools' ? <ToolTraceResult event={event} /> : null}
+                      {event.event_type === 'llm_call' ? <LLMTracePrompt event={event} /> : null}
                       {rawModelOutput(event) ? (
                         <div className="trace-raw-output">
                           <strong>模型原始输出</strong>
@@ -1039,12 +1040,12 @@ function EvalReportDetailView({ detail }: { detail: EvalReportDetail }) {
   const [page, setPage] = useState(1);
   const results = detail.results ?? [];
   const failed = results.filter((item) => !evalCasePassed(item));
-  const queryTypes = Array.from(new Set(results.map((item) => String(item.query_type ?? '')).filter(Boolean))).sort();
+  const queryTypes = Array.from(new Set(results.map((item) => String(item.query_type ?? item.case_type ?? '')).filter(Boolean))).sort();
   const filteredResults = results.filter((item) => {
     const passed = evalCasePassed(item);
     if (statusFilter === 'passed' && !passed) return false;
     if (statusFilter === 'failed' && passed) return false;
-    if (queryTypeFilter !== 'all' && String(item.query_type ?? '') !== queryTypeFilter) return false;
+    if (queryTypeFilter !== 'all' && String(item.query_type ?? item.case_type ?? '') !== queryTypeFilter) return false;
     return true;
   });
   const totalPagesForCases = totalPages(filteredResults.length, pageSize);
@@ -1073,6 +1074,10 @@ function EvalReportDetailView({ detail }: { detail: EvalReportDetail }) {
           <span>失败样本</span>
           <strong>{failed.length}</strong>
         </div>
+        <div className="trace-summary-item">
+          <span>P95 耗时</span>
+          <strong>{formatDuration(detail.summary.image_total_duration_ms_p95 ?? (detail.summary.latency_ms as Record<string, unknown> | undefined)?.p95)}</strong>
+        </div>
       </div>
       {detail.summary.by_query_type && typeof detail.summary.by_query_type === 'object' ? (
         <div className="eval-query-type-grid">
@@ -1081,6 +1086,20 @@ function EvalReportDetailView({ detail }: { detail: EvalReportDetail }) {
               <strong>{type}</strong>
               <span>Hit@K {formatPercent(Number(stat.hit_rate_at_k ?? 0))}</span>
               <span>MRR {formatDecimal(stat.mrr)}</span>
+              <small>
+                {String(stat.hits ?? 0)} / {String(stat.total ?? 0)}
+              </small>
+            </article>
+          ))}
+        </div>
+      ) : null}
+      {detail.summary.by_case_type && typeof detail.summary.by_case_type === 'object' ? (
+        <div className="eval-query-type-grid">
+          {Object.entries(detail.summary.by_case_type as Record<string, Record<string, unknown>>).map(([type, stat]) => (
+            <article key={type}>
+              <strong>{type}</strong>
+              <span>通过率 {formatPercent(Number(stat.pass_rate ?? 0))}</span>
+              <span>P95 {formatDuration((stat.latency_ms as Record<string, unknown> | undefined)?.p95)}</span>
               <small>
                 {String(stat.hits ?? 0)} / {String(stat.total ?? 0)}
               </small>
@@ -1222,6 +1241,17 @@ function EvalCaseBody({ item }: { item: Record<string, unknown> }) {
         <EvalField label="回答" value={item.answer} />
         <EvalField label="结构化块" value={item.blocks} />
         <EvalField label="Trace" value={[item.run_id, item.trace_id].filter(Boolean)} />
+      </div>
+    );
+  }
+  if ('actual_status' in item || 'match_status' in item) {
+    return (
+      <div className="eval-case-body">
+        <EvalField label="Case 类型" value={item.case_type} />
+        <EvalField label="期望状态" value={item.expected_status} />
+        <EvalField label="实际状态" value={item.actual_status} />
+        <EvalField label="匹配状态" value={item.match_status} />
+        <EvalField label="处理耗时" value={item.durations ?? { latency_ms: item.latency_ms }} />
       </div>
     );
   }
@@ -1419,6 +1449,42 @@ function ToolTraceResult({ event }: { event: AgentTraceEvent }) {
   );
 }
 
+function LLMTracePrompt({ event }: { event: AgentTraceEvent }) {
+  const metadata = parseTraceMetadata(event.metadata_json);
+  if (!metadata) {
+    return null;
+  }
+  const messages = Array.isArray(metadata.messages)
+    ? metadata.messages.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+    : [];
+  if (!messages.length) {
+    return null;
+  }
+  const promptChars = typeof metadata.prompt_chars === 'number' ? metadata.prompt_chars : undefined;
+  const promptHash = typeof metadata.prompt_hash === 'string' ? metadata.prompt_hash : '';
+  const temperature = typeof metadata.temperature === 'number' ? metadata.temperature : undefined;
+  return (
+    <div className="trace-raw-output trace-raw-output--prompt">
+      <details>
+        <summary>
+          大模型输入 Prompt
+          {promptChars !== undefined ? ` · ${promptChars} 字` : ''}
+          {temperature !== undefined ? ` · temperature ${temperature}` : ''}
+        </summary>
+        {promptHash ? <small>hash {promptHash}</small> : null}
+        <div className="trace-prompt-messages">
+          {messages.map((message, index) => (
+            <article key={`${String(message.role ?? 'message')}-${index}`}>
+              <strong>{String(message.role ?? 'unknown')}</strong>
+              <pre>{String(message.content ?? '')}</pre>
+            </article>
+          ))}
+        </div>
+      </details>
+    </div>
+  );
+}
+
 function traceResultItems(metadata: Record<string, unknown>) {
   const result = metadata.result;
   if (!result || typeof result !== 'object') {
@@ -1451,9 +1517,18 @@ function formatPercent(value?: number) {
 
 function evalTypeLabel(type: string) {
   if (type === 'rag_retriever_eval' || type === 'rag_recall') return 'RAG 检索';
+  if (type === 'image_search_eval') return '图片搜索';
   if (type === 'intent_classification') return '意图识别';
   if (type === 'agent_e2e') return 'Agent E2E';
   return type || 'unknown';
+}
+
+function formatDuration(value: unknown) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return '-';
+  }
+  return `${Math.round(number)}ms`;
 }
 
 function formatDecimal(value: unknown) {

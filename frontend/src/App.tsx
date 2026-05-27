@@ -34,6 +34,26 @@ export function App() {
     setCartRefreshToken((value) => value + 1);
   }
 
+  function navigateFromAgent(target: string) {
+    switch (target) {
+      case 'cart':
+        setRoute('cart');
+        return;
+      case 'orders':
+        setRoute('orders');
+        return;
+      case 'products':
+        setRoute('products');
+        return;
+      case 'home':
+      case 'coupons':
+        setRoute('home');
+        return;
+      default:
+        setRoute('home');
+    }
+  }
+
   function handleLogin(nextSession: AuthSession) {
     setSession(nextSession);
     setRoute(defaultRoute(nextSession.account.role));
@@ -130,6 +150,7 @@ export function App() {
             initialQuestion={agentSeedQuestion}
             onOpenProduct={openProduct}
             onCartChange={refreshCart}
+            onNavigate={navigateFromAgent}
           />
         ) : null}
         {route === 'products' ? <ProductListPage onOpenProduct={openProduct} onCartChange={refreshCart} canAddToCart={isUser} /> : null}

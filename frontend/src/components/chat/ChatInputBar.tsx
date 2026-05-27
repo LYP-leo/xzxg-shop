@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { uploadFile } from '../../api/files';
 import type { Attachment } from '../../types/agent';
 
 type Props = {
@@ -10,10 +11,11 @@ type Props = {
 export function ChatInputBar({ disabled, onSend, onCancel }: Props) {
   const [content, setContent] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [uploading, setUploading] = useState(false);
 
   function submit() {
     const trimmed = content.trim();
-    if ((!trimmed && attachments.length === 0) || disabled) return;
+    if ((!trimmed && attachments.length === 0) || disabled || uploading) return;
     onSend(trimmed || '拍照找货', attachments);
     setContent('');
     setAttachments([]);
@@ -39,19 +41,26 @@ export function ChatInputBar({ disabled, onSend, onCancel }: Props) {
           <input
             accept="image/*"
             capture="environment"
-            disabled={disabled}
+            disabled={disabled || uploading}
             type="file"
-            onChange={(event) => {
+            onChange={async (event) => {
               const file = event.target.files?.[0];
               if (!file) return;
-              setAttachments([
-                {
-                  attachmentId: `img_${Date.now()}`,
-                  type: 'image',
-                  url: URL.createObjectURL(file),
-                  name: file.name
-                }
-              ]);
+              setUploading(true);
+              try {
+                const uploaded = await uploadFile(file);
+                setAttachments([
+                  {
+                    attachmentId: uploaded.file_id,
+                    type: 'image',
+                    url: uploaded.url,
+                    objectKey: uploaded.object_key,
+                    name: file.name
+                  }
+                ]);
+              } finally {
+                setUploading(false);
+              }
               event.target.value = '';
             }}
           />
@@ -61,11 +70,12 @@ export function ChatInputBar({ disabled, onSend, onCancel }: Props) {
             停止
           </button>
         ) : null}
-        <button className="button" disabled={disabled || (!content.trim() && attachments.length === 0)} onClick={submit}>
+        <button className="button" disabled={disabled || uploading || (!content.trim() && attachments.length === 0)} onClick={submit}>
           发送
         </button>
       </div>
-      {attachments.length ? <div className="attachment-preview">已选择图片：{attachments[0].name ?? 'photo'}</div> : null}
+      {uploading ? <div className="attachment-preview">图片上传中...</div> : null}
+      {attachments.length ? <div className="attachment-preview">已上传图片：{attachments[0].name ?? 'photo'}</div> : null}
     </div>
   );
 }

@@ -31,7 +31,9 @@ export async function streamAgentMessage(input: {
         attachments: input.attachments.map((item) => ({
           attachment_id: item.attachmentId,
           type: item.type,
-          url: item.url
+          url: item.url,
+          object_key: item.objectKey,
+          name: item.name
         }))
       })
     });
