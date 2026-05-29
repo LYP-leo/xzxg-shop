@@ -110,6 +110,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/agent/sessions/", s.handleAgentSessionAction)
 	mux.HandleFunc("PATCH /api/v1/agent/sessions/", s.handleAgentSessionAction)
 	mux.HandleFunc("POST /api/v1/agent/sessions/", s.handleAgentSessionAction)
+	mux.HandleFunc("DELETE /api/v1/agent/sessions/", s.handleAgentSessionAction)
 	mux.HandleFunc("GET /api/v1/agent/runs/", s.handleAgentRunTrace)
 	mux.HandleFunc("POST /api/v1/agent/runs/", s.handleAgentRunAction)
 	return s.withCORS(s.withRequestContext(s.withAccessLog(s.withBodyLimit(s.withAuth(s.withRateLimit(mux))))))
@@ -1632,6 +1633,27 @@ func (s *Server) handleAgentSessionAction(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, ":pin") {
+		sessionID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/agent/sessions/"), ":pin")
+		if sessionID == "" || strings.Contains(sessionID, "/") {
+			writeError(w, http.StatusNotFound, "not_found", "接口不存在")
+			return
+		}
+		var request struct {
+			Pinned bool `json:"pinned"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+			return
+		}
+		session, ok := s.store.PinSession(r.Context(), account.AccountID, sessionID, request.Pinned)
+		if !ok {
+			writeError(w, http.StatusNotFound, "session_not_found", "会话不存在")
+			return
+		}
+		writeJSON(w, http.StatusOK, session)
+		return
+	}
 	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, ":summarize") {
 		sessionID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/agent/sessions/"), ":summarize")
 		if sessionID == "" || strings.Contains(sessionID, "/") {
@@ -1686,6 +1708,19 @@ func (s *Server) handleAgentSessionAction(w http.ResponseWriter, r *http.Request
 			return
 		}
 		writeJSON(w, http.StatusOK, session)
+		return
+	}
+	if r.Method == http.MethodDelete {
+		sessionID := strings.TrimPrefix(r.URL.Path, "/api/v1/agent/sessions/")
+		if sessionID == "" || strings.Contains(sessionID, "/") {
+			writeError(w, http.StatusNotFound, "not_found", "接口不存在")
+			return
+		}
+		if !s.store.DeleteSession(r.Context(), account.AccountID, sessionID) {
+			writeError(w, http.StatusNotFound, "session_not_found", "会话不存在")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"session_id": sessionID, "status": "deleted"})
 		return
 	}
 
@@ -1778,7 +1813,36 @@ func (s *Server) streamAgentRun(w http.ResponseWriter, r *http.Request, run doma
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
+	var content strings.Builder
+	var currentText strings.Builder
+	blocks := make([]domain.AgentBlock, 0)
+	followups := make([]string, 0)
+	segments := make([]domain.AgentSegment, 0)
+	flushText := func() {
+		text := strings.TrimSpace(currentText.String())
+		if text == "" {
+			currentText.Reset()
+			return
+		}
+		segments = append(segments, domain.AgentSegment{Type: "text", Text: text})
+		currentText.Reset()
+	}
+
 	emit := func(event domain.SSEEvent) error {
+		switch event.Type {
+		case "text_delta":
+			content.WriteString(event.Delta)
+			currentText.WriteString(event.Delta)
+		case "block_delta":
+			flushText()
+			if event.Block != nil {
+				blocks = append(blocks, *event.Block)
+				block := *event.Block
+				segments = append(segments, domain.AgentSegment{Type: "block", Block: &block})
+			}
+		case "followups":
+			followups = append([]string{}, event.Questions...)
+		}
 		payload, err := json.Marshal(event)
 		if err != nil {
 			return err
@@ -1796,7 +1860,13 @@ func (s *Server) streamAgentRun(w http.ResponseWriter, r *http.Request, run doma
 	if err := s.runtime.Stream(r.Context(), run, message, emit); err != nil {
 		s.logger.Error("stream agent run failed", "run_id", run.RunID, "error", err)
 		s.store.UpdateRunStatus(r.Context(), run.AccountID, run.RunID, domain.RunStatusFailed)
+		return
 	}
+	flushText()
+	blocksJSON, _ := json.Marshal(blocks)
+	followupsJSON, _ := json.Marshal(followups)
+	segmentsJSON, _ := json.Marshal(segments)
+	s.store.UpdateRunResult(r.Context(), run.AccountID, run.RunID, strings.TrimSpace(content.String()), string(blocksJSON), string(followupsJSON), string(segmentsJSON))
 }
 
 func (s *Server) withCORS(next http.Handler) http.Handler {

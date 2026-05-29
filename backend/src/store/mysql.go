@@ -97,9 +97,15 @@ func (s *MySQLStore) ensureAccessSchema(ctx context.Context) error {
 		{"chat_sessions", "summary", "ALTER TABLE chat_sessions ADD COLUMN summary TEXT AFTER title"},
 		{"chat_sessions", "message_count", "ALTER TABLE chat_sessions ADD COLUMN message_count INT NOT NULL DEFAULT 0 AFTER summary"},
 		{"chat_sessions", "last_message_at", "ALTER TABLE chat_sessions ADD COLUMN last_message_at DATETIME NULL AFTER message_count"},
+		{"chat_sessions", "pinned_at", "ALTER TABLE chat_sessions ADD COLUMN pinned_at DATETIME NULL AFTER last_message_at"},
+		{"chat_sessions", "deleted_at", "ALTER TABLE chat_sessions ADD COLUMN deleted_at DATETIME NULL AFTER pinned_at"},
 		{"chat_sessions", "updated_at", "ALTER TABLE chat_sessions ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP AFTER created_at"},
 		{"user_messages", "account_id", "ALTER TABLE user_messages ADD COLUMN account_id VARCHAR(64) NOT NULL DEFAULT '' AFTER session_id"},
 		{"agent_runs", "account_id", "ALTER TABLE agent_runs ADD COLUMN account_id VARCHAR(64) NOT NULL DEFAULT '' AFTER message_id"},
+		{"agent_runs", "content", "ALTER TABLE agent_runs ADD COLUMN content TEXT AFTER trace_id"},
+		{"agent_runs", "blocks_json", "ALTER TABLE agent_runs ADD COLUMN blocks_json JSON NULL AFTER content"},
+		{"agent_runs", "followups_json", "ALTER TABLE agent_runs ADD COLUMN followups_json JSON NULL AFTER blocks_json"},
+		{"agent_runs", "segments_json", "ALTER TABLE agent_runs ADD COLUMN segments_json JSON NULL AFTER followups_json"},
 		{"orders", "order_no", "ALTER TABLE orders ADD COLUMN order_no VARCHAR(64) NOT NULL DEFAULT '' AFTER order_id"},
 		{"orders", "discount_amount", "ALTER TABLE orders ADD COLUMN discount_amount DECIMAL(10, 2) NOT NULL DEFAULT 0.00 AFTER total_amount"},
 		{"orders", "pay_amount", "ALTER TABLE orders ADD COLUMN pay_amount DECIMAL(10, 2) NOT NULL DEFAULT 0.00 AFTER discount_amount"},
@@ -567,12 +573,12 @@ func (s *MySQLStore) CreateSession(ctx context.Context, accountID string, title 
 func (s *MySQLStore) GetSession(ctx context.Context, accountID string, sessionID string) (domain.ChatSession, bool) {
 	var session domain.ChatSession
 	var summary sql.NullString
-	var lastMessageAt sql.NullTime
+	var lastMessageAt, pinnedAt, deletedAt sql.NullTime
 	err := s.db.QueryRowContext(ctx, `
-		SELECT session_id, account_id, title, summary, message_count, last_message_at, created_at, updated_at
+		SELECT session_id, account_id, title, summary, message_count, last_message_at, pinned_at, deleted_at, created_at, updated_at
 		FROM chat_sessions
-		WHERE session_id = ? AND account_id = ?
-	`, sessionID, accountID).Scan(&session.SessionID, &session.AccountID, &session.Title, &summary, &session.MessageCount, &lastMessageAt, &session.CreatedAt, &session.UpdatedAt)
+		WHERE session_id = ? AND account_id = ? AND deleted_at IS NULL
+	`, sessionID, accountID).Scan(&session.SessionID, &session.AccountID, &session.Title, &summary, &session.MessageCount, &lastMessageAt, &pinnedAt, &deletedAt, &session.CreatedAt, &session.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.ChatSession{}, false
 	}
@@ -582,15 +588,21 @@ func (s *MySQLStore) GetSession(ctx context.Context, accountID string, sessionID
 	if lastMessageAt.Valid {
 		session.LastMessageAt = lastMessageAt.Time
 	}
+	if pinnedAt.Valid {
+		session.PinnedAt = pinnedAt.Time
+	}
+	if deletedAt.Valid {
+		session.DeletedAt = deletedAt.Time
+	}
 	return session, err == nil
 }
 
 func (s *MySQLStore) ListUserSessions(ctx context.Context, accountID string) []domain.ChatSession {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT session_id, account_id, title, summary, message_count, last_message_at, created_at, updated_at
+		SELECT session_id, account_id, title, summary, message_count, last_message_at, pinned_at, deleted_at, created_at, updated_at
 		FROM chat_sessions
-		WHERE account_id = ? AND message_count > 0
-		ORDER BY COALESCE(last_message_at, created_at) DESC, created_at DESC
+		WHERE account_id = ? AND message_count > 0 AND deleted_at IS NULL
+		ORDER BY CASE WHEN pinned_at IS NULL THEN 1 ELSE 0 END, pinned_at DESC, COALESCE(last_message_at, created_at) DESC, created_at DESC
 	`, accountID)
 	if err != nil {
 		return nil
@@ -601,8 +613,8 @@ func (s *MySQLStore) ListUserSessions(ctx context.Context, accountID string) []d
 	for rows.Next() {
 		var item domain.ChatSession
 		var summary sql.NullString
-		var lastMessageAt sql.NullTime
-		if err := rows.Scan(&item.SessionID, &item.AccountID, &item.Title, &summary, &item.MessageCount, &lastMessageAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		var lastMessageAt, pinnedAt, deletedAt sql.NullTime
+		if err := rows.Scan(&item.SessionID, &item.AccountID, &item.Title, &summary, &item.MessageCount, &lastMessageAt, &pinnedAt, &deletedAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil
 		}
 		if summary.Valid {
@@ -610,6 +622,12 @@ func (s *MySQLStore) ListUserSessions(ctx context.Context, accountID string) []d
 		}
 		if lastMessageAt.Valid {
 			item.LastMessageAt = lastMessageAt.Time
+		}
+		if pinnedAt.Valid {
+			item.PinnedAt = pinnedAt.Time
+		}
+		if deletedAt.Valid {
+			item.DeletedAt = deletedAt.Time
 		}
 		items = append(items, item)
 	}
@@ -641,18 +659,20 @@ func (s *MySQLStore) SearchUserSessions(ctx context.Context, accountID string, k
 			LEFT JOIN user_messages m ON m.session_id = s.session_id AND m.account_id = s.account_id
 			WHERE s.account_id = ?
 			  AND s.message_count > 0
+			  AND s.deleted_at IS NULL
 			  AND (s.title LIKE ? OR s.summary LIKE ? OR m.content LIKE ?)
 		) hits
 	`, accountID, like, like, like).Scan(&total)
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT DISTINCT s.session_id, s.account_id, s.title, s.summary, s.message_count, s.last_message_at, s.created_at, s.updated_at
+		SELECT DISTINCT s.session_id, s.account_id, s.title, s.summary, s.message_count, s.last_message_at, s.pinned_at, s.deleted_at, s.created_at, s.updated_at
 		FROM chat_sessions s
 		LEFT JOIN user_messages m ON m.session_id = s.session_id AND m.account_id = s.account_id
 		WHERE s.account_id = ?
 		  AND s.message_count > 0
+		  AND s.deleted_at IS NULL
 		  AND (s.title LIKE ? OR s.summary LIKE ? OR m.content LIKE ?)
-		ORDER BY COALESCE(s.last_message_at, s.updated_at, s.created_at) DESC, s.created_at DESC
+		ORDER BY CASE WHEN s.pinned_at IS NULL THEN 1 ELSE 0 END, s.pinned_at DESC, COALESCE(s.last_message_at, s.updated_at, s.created_at) DESC, s.created_at DESC
 		LIMIT ? OFFSET ?
 	`, accountID, like, like, like, pageSize, pageOffset(page, pageSize))
 	if err != nil {
@@ -664,8 +684,8 @@ func (s *MySQLStore) SearchUserSessions(ctx context.Context, accountID string, k
 	for rows.Next() {
 		var item domain.ChatSession
 		var summary sql.NullString
-		var lastMessageAt sql.NullTime
-		if err := rows.Scan(&item.SessionID, &item.AccountID, &item.Title, &summary, &item.MessageCount, &lastMessageAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		var lastMessageAt, pinnedAt, deletedAt sql.NullTime
+		if err := rows.Scan(&item.SessionID, &item.AccountID, &item.Title, &summary, &item.MessageCount, &lastMessageAt, &pinnedAt, &deletedAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, 0
 		}
 		if summary.Valid {
@@ -673,6 +693,12 @@ func (s *MySQLStore) SearchUserSessions(ctx context.Context, accountID string, k
 		}
 		if lastMessageAt.Valid {
 			item.LastMessageAt = lastMessageAt.Time
+		}
+		if pinnedAt.Valid {
+			item.PinnedAt = pinnedAt.Time
+		}
+		if deletedAt.Valid {
+			item.DeletedAt = deletedAt.Time
 		}
 		items = append(items, item)
 	}
@@ -691,7 +717,7 @@ func (s *MySQLStore) UpdateSessionSummary(ctx context.Context, accountID string,
 		args = append(args, truncateRunes(strings.TrimSpace(summary), 500))
 	}
 	args = append(args, sessionID, accountID)
-	result, err := s.db.ExecContext(ctx, `UPDATE chat_sessions SET `+strings.Join(sets, ", ")+` WHERE session_id = ? AND account_id = ?`, args...)
+	result, err := s.db.ExecContext(ctx, `UPDATE chat_sessions SET `+strings.Join(sets, ", ")+` WHERE session_id = ? AND account_id = ? AND deleted_at IS NULL`, args...)
 	if err != nil {
 		return domain.ChatSession{}, false
 	}
@@ -700,6 +726,39 @@ func (s *MySQLStore) UpdateSessionSummary(ctx context.Context, accountID string,
 		return domain.ChatSession{}, false
 	}
 	return s.GetSession(ctx, accountID, sessionID)
+}
+
+func (s *MySQLStore) PinSession(ctx context.Context, accountID string, sessionID string, pinned bool) (domain.ChatSession, bool) {
+	var pinnedAt any
+	if pinned {
+		pinnedAt = time.Now()
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE chat_sessions
+		SET pinned_at = ?, updated_at = ?
+		WHERE session_id = ? AND account_id = ? AND deleted_at IS NULL
+	`, pinnedAt, time.Now(), sessionID, accountID)
+	if err != nil {
+		return domain.ChatSession{}, false
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return domain.ChatSession{}, false
+	}
+	return s.GetSession(ctx, accountID, sessionID)
+}
+
+func (s *MySQLStore) DeleteSession(ctx context.Context, accountID string, sessionID string) bool {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE chat_sessions
+		SET deleted_at = ?, updated_at = ?
+		WHERE session_id = ? AND account_id = ? AND deleted_at IS NULL
+	`, time.Now(), time.Now(), sessionID, accountID)
+	if err != nil {
+		return false
+	}
+	affected, err := result.RowsAffected()
+	return err == nil && affected > 0
 }
 
 func (s *MySQLStore) GetSessionDetail(ctx context.Context, accountID string, sessionID string) (domain.ChatSessionDetail, bool) {
@@ -773,7 +832,7 @@ func (s *MySQLStore) CreateUserMessage(ctx context.Context, input domain.UserMes
 
 func (s *MySQLStore) listRunsByMessage(ctx context.Context, accountID string, messageID string) []domain.AgentRun {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT run_id, session_id, message_id, account_id, status, trace_id, created_at, updated_at
+		SELECT run_id, session_id, message_id, account_id, status, trace_id, COALESCE(content, ''), COALESCE(CAST(blocks_json AS CHAR), ''), COALESCE(CAST(followups_json AS CHAR), ''), COALESCE(CAST(segments_json AS CHAR), ''), created_at, updated_at
 		FROM agent_runs
 		WHERE account_id = ? AND message_id = ?
 		ORDER BY created_at, run_id
@@ -785,21 +844,10 @@ func (s *MySQLStore) listRunsByMessage(ctx context.Context, accountID string, me
 
 	items := make([]domain.AgentRun, 0)
 	for rows.Next() {
-		var item domain.AgentRun
-		var status string
-		if err := rows.Scan(
-			&item.RunID,
-			&item.SessionID,
-			&item.MessageID,
-			&item.AccountID,
-			&status,
-			&item.TraceID,
-			&item.CreatedAt,
-			&item.UpdatedAt,
-		); err != nil {
+		item, err := scanAgentRun(rows)
+		if err != nil {
 			return nil
 		}
-		item.Status = domain.RunStatus(status)
 		items = append(items, item)
 	}
 	return items
@@ -810,7 +858,7 @@ func (s *MySQLStore) ListRecentAgentRuns(ctx context.Context, limit int) []domai
 		limit = 30
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT run_id, session_id, message_id, account_id, status, trace_id, created_at, updated_at
+		SELECT run_id, session_id, message_id, account_id, status, trace_id, COALESCE(content, ''), COALESCE(CAST(blocks_json AS CHAR), ''), COALESCE(CAST(followups_json AS CHAR), ''), COALESCE(CAST(segments_json AS CHAR), ''), created_at, updated_at
 		FROM agent_runs
 		ORDER BY created_at DESC, run_id DESC
 		LIMIT ?
@@ -835,7 +883,7 @@ func (s *MySQLStore) ListAgentRunsPage(ctx context.Context, page int, pageSize i
 	page, pageSize = normalizePage(page, pageSize)
 	total := s.countRows(ctx, "agent_runs")
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT run_id, session_id, message_id, account_id, status, trace_id, created_at, updated_at
+		SELECT run_id, session_id, message_id, account_id, status, trace_id, COALESCE(content, ''), COALESCE(CAST(blocks_json AS CHAR), ''), COALESCE(CAST(followups_json AS CHAR), ''), COALESCE(CAST(segments_json AS CHAR), ''), created_at, updated_at
 		FROM agent_runs
 		ORDER BY created_at DESC, run_id DESC
 		LIMIT ? OFFSET ?
@@ -893,6 +941,22 @@ func (s *MySQLStore) UpdateRunStatus(ctx context.Context, accountID string, runI
 		return domain.AgentRun{}, false
 	}
 	return s.getRun(ctx, runID)
+}
+
+func (s *MySQLStore) UpdateRunResult(ctx context.Context, accountID string, runID string, content string, blocksJSON string, followupsJSON string, segmentsJSON string) bool {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE agent_runs
+		SET content = ?, blocks_json = CAST(? AS JSON), followups_json = CAST(? AS JSON), segments_json = CAST(? AS JSON), updated_at = ?
+		WHERE run_id = ? AND account_id = ?
+	`, content, emptyJSON(blocksJSON), emptyJSON(followupsJSON), emptyJSON(segmentsJSON), time.Now(), runID, accountID)
+	return err == nil
+}
+
+func emptyJSON(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "[]"
+	}
+	return value
 }
 
 func (s *MySQLStore) IsRunCanceled(ctx context.Context, runID string) bool {
@@ -2455,21 +2519,24 @@ func (s *MySQLStore) CreateMerchantDocument(ctx context.Context, input domain.Kn
 func (s *MySQLStore) getRun(ctx context.Context, runID string) (domain.AgentRun, bool) {
 	var run domain.AgentRun
 	var status string
+	var blocksJSON, followupsJSON, segmentsJSON string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT run_id, session_id, message_id, account_id, status, trace_id, created_at, updated_at
+		SELECT run_id, session_id, message_id, account_id, status, trace_id, COALESCE(content, ''), COALESCE(CAST(blocks_json AS CHAR), ''), COALESCE(CAST(followups_json AS CHAR), ''), COALESCE(CAST(segments_json AS CHAR), ''), created_at, updated_at
 		FROM agent_runs
 		WHERE run_id = ?
-	`, runID).Scan(&run.RunID, &run.SessionID, &run.MessageID, &run.AccountID, &status, &run.TraceID, &run.CreatedAt, &run.UpdatedAt)
+	`, runID).Scan(&run.RunID, &run.SessionID, &run.MessageID, &run.AccountID, &status, &run.TraceID, &run.Content, &blocksJSON, &followupsJSON, &segmentsJSON, &run.CreatedAt, &run.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.AgentRun{}, false
 	}
 	run.Status = domain.RunStatus(status)
+	decodeRunJSON(&run, blocksJSON, followupsJSON, segmentsJSON)
 	return run, err == nil
 }
 
 func scanAgentRun(rows *sql.Rows) (domain.AgentRun, error) {
 	var item domain.AgentRun
 	var status string
+	var blocksJSON, followupsJSON, segmentsJSON string
 	err := rows.Scan(
 		&item.RunID,
 		&item.SessionID,
@@ -2477,11 +2544,28 @@ func scanAgentRun(rows *sql.Rows) (domain.AgentRun, error) {
 		&item.AccountID,
 		&status,
 		&item.TraceID,
+		&item.Content,
+		&blocksJSON,
+		&followupsJSON,
+		&segmentsJSON,
 		&item.CreatedAt,
 		&item.UpdatedAt,
 	)
 	item.Status = domain.RunStatus(status)
+	decodeRunJSON(&item, blocksJSON, followupsJSON, segmentsJSON)
 	return item, err
+}
+
+func decodeRunJSON(run *domain.AgentRun, blocksJSON string, followupsJSON string, segmentsJSON string) {
+	if strings.TrimSpace(blocksJSON) != "" {
+		_ = json.Unmarshal([]byte(blocksJSON), &run.Blocks)
+	}
+	if strings.TrimSpace(followupsJSON) != "" {
+		_ = json.Unmarshal([]byte(followupsJSON), &run.Followups)
+	}
+	if strings.TrimSpace(segmentsJSON) != "" {
+		_ = json.Unmarshal([]byte(segmentsJSON), &run.Segments)
+	}
 }
 
 func scanAgentTraceEvents(rows *sql.Rows) []domain.AgentTraceEvent {

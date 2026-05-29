@@ -186,12 +186,18 @@ func (r *Runtime) streamReactFinal(ctx context.Context, run domain.AgentRun, pla
 		r.logger.Warn("react final stream fallback", "run_id", run.RunID, "error", err, "model", plan.AnswerModel)
 		r.traceLLM(ctx, run, "react.final", plan.AnswerModel, startedAt, err, map[string]any{"route": plan.Route, "intent": plan.ReferenceIntent()})
 		if content.Len() > 0 {
-			return nil
+			return r.emitReactFinalBlocks(run.RunID, result.FinalBlocks, emit)
 		}
 		if strings.TrimSpace(finalAction.Text) != "" {
-			return r.emitFallbackAnswer(ctx, run, finalAction.Text, emit)
+			if err := r.emitFallbackAnswer(ctx, run, finalAction.Text, emit); err != nil {
+				return err
+			}
+			return r.emitReactFinalBlocks(run.RunID, result.FinalBlocks, emit)
 		}
-		return r.emitFallbackAnswer(ctx, run, buildAnswer(query, plan, nil), emit)
+		if err := r.emitFallbackAnswer(ctx, run, buildAnswer(query, plan, nil), emit); err != nil {
+			return err
+		}
+		return r.emitReactFinalBlocks(run.RunID, result.FinalBlocks, emit)
 	}
 	r.traceLLM(ctx, run, "react.final", plan.AnswerModel, startedAt, nil, map[string]any{
 		"route":                     plan.Route,
@@ -203,6 +209,20 @@ func (r *Runtime) streamReactFinal(ctx context.Context, run domain.AgentRun, pla
 		"stream_filter_used":        true,
 		"final_allowed_product_ids": result.ProductIDs,
 	})
+	return r.emitReactFinalBlocks(run.RunID, result.FinalBlocks, emit)
+}
+
+func (r *Runtime) emitReactFinalBlocks(runID string, blocks []domain.AgentBlock, emit func(domain.SSEEvent) error) error {
+	for i := range blocks {
+		block := blocks[i]
+		if block.Type == "" {
+			continue
+		}
+		r.logger.Debug("agent final block", "run_id", runID, "type", block.Type)
+		if err := emit(domain.SSEEvent{Type: "block_delta", RunID: runID, Block: &block}); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -276,6 +296,18 @@ func blocksFromReact(action reactAction, productIDs []string, chunkIDs []string)
 		}
 		if !hasCitationRefs {
 			blocks = append(blocks, domain.AgentBlock{Type: "citation_refs", ChunkIDs: appendUnique(nil, chunkIDs...)})
+		}
+	}
+	if len(productIDs) > 0 {
+		hasProductRefs := false
+		for _, block := range blocks {
+			if block.Type == "product_refs" {
+				hasProductRefs = true
+				break
+			}
+		}
+		if !hasProductRefs {
+			blocks = append(blocks, domain.AgentBlock{Type: "product_refs", ProductIDs: appendUnique(nil, productIDs...)})
 		}
 	}
 	return blocks

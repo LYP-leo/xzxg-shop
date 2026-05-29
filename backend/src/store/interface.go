@@ -31,9 +31,12 @@ type Store interface {
 	GetSession(ctx context.Context, accountID string, sessionID string) (domain.ChatSession, bool)
 	GetSessionDetail(ctx context.Context, accountID string, sessionID string) (domain.ChatSessionDetail, bool)
 	UpdateSessionSummary(ctx context.Context, accountID string, sessionID string, title string, summary string) (domain.ChatSession, bool)
+	PinSession(ctx context.Context, accountID string, sessionID string, pinned bool) (domain.ChatSession, bool)
+	DeleteSession(ctx context.Context, accountID string, sessionID string) bool
 	CreateUserMessage(ctx context.Context, input domain.UserMessage) (domain.UserMessage, error)
 	CreateRun(ctx context.Context, accountID string, sessionID string, messageID string) (domain.AgentRun, error)
 	UpdateRunStatus(ctx context.Context, accountID string, runID string, status domain.RunStatus) (domain.AgentRun, bool)
+	UpdateRunResult(ctx context.Context, accountID string, runID string, content string, blocksJSON string, followupsJSON string, segmentsJSON string) bool
 	IsRunCanceled(ctx context.Context, runID string) bool
 	RecordAgentTrace(ctx context.Context, input domain.AgentTraceInput) error
 	ListAgentTrace(ctx context.Context, accountID string, runID string) []domain.AgentTraceEvent

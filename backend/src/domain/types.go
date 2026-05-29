@@ -41,6 +41,8 @@ type ChatSession struct {
 	Summary       string    `json:"summary,omitempty"`
 	MessageCount  int       `json:"message_count"`
 	LastMessageAt time.Time `json:"last_message_at,omitempty"`
+	PinnedAt      time.Time `json:"pinned_at,omitempty"`
+	DeletedAt     time.Time `json:"deleted_at,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
@@ -66,14 +68,24 @@ type UserMessageWithRuns struct {
 }
 
 type AgentRun struct {
-	RunID     string    `json:"run_id"`
-	SessionID string    `json:"session_id"`
-	MessageID string    `json:"message_id"`
-	AccountID string    `json:"account_id,omitempty"`
-	Status    RunStatus `json:"status"`
-	TraceID   string    `json:"trace_id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	RunID     string         `json:"run_id"`
+	SessionID string         `json:"session_id"`
+	MessageID string         `json:"message_id"`
+	AccountID string         `json:"account_id,omitempty"`
+	Status    RunStatus      `json:"status"`
+	TraceID   string         `json:"trace_id"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	Content   string         `json:"content"`
+	Blocks    []AgentBlock   `json:"blocks,omitempty"`
+	Followups []string       `json:"followups,omitempty"`
+	Segments  []AgentSegment `json:"segments,omitempty"`
+}
+
+type AgentSegment struct {
+	Type  string      `json:"type"`
+	Text  string      `json:"text,omitempty"`
+	Block *AgentBlock `json:"block,omitempty"`
 }
 
 type AgentTraceEvent struct {
