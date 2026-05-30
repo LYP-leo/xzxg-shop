@@ -1,0 +1,51 @@
+{
+  "product_id": "p_dummyjson_171",
+  "title": "Pacifica Touring",
+  "brand": "Chrysler",
+  "category": "汽车摩托",
+  "sub_category": "汽车用品",
+  "base_price": 230399.93,
+  "image_path": "14_汽车摩托/images/p_dummyjson_171_live.jpg",
+  "skus": [
+    {
+      "sku_id": "s_p_dummyjson_171_1",
+      "properties": {
+        "规格": "标准款",
+        "库存状态": "现货"
+      },
+      "price": 230399.93
+    },
+    {
+      "sku_id": "s_p_dummyjson_171_2",
+      "properties": {
+        "规格": "组合优惠款"
+      },
+      "price": 248831.92
+    }
+  ],
+  "rag_knowledge": {
+    "marketing_description": "Pacifica Touring 是来自 DummyJSON public products API 的公开商品数据，归入汽车摩托/汽车用品。商品品牌为 Chrysler，参考售价约 230399.93 元，当前公开数据里的评分为 3.6 分，库存约 53 件，折扣信息约 14.8%。The Pacifica Touring is a stylish and well-equipped minivan, offering comfort and convenience for family journeys. 适合用于导购 Agent 的跨品类推荐、价格带比较、规格咨询和挂品测试。由于该数据来自公开测试商品 API，实际售卖状态、保修和配送以真实平台页面为准。",
+    "official_faq": [
+      {
+        "question": "Pacifica Touring 适合什么购物场景？",
+        "answer": "它属于汽车摩托/汽车用品，适合用户提出跨品类推荐、预算比较、同类商品筛选或希望快速了解品牌、价格和基础卖点时使用。"
+      },
+      {
+        "question": "这条商品数据的价格和库存是否可以直接作为下单依据？",
+        "answer": "价格、库存和评分来自 DummyJSON public products API 的公开接口快照，只适合演示和测评。正式交易前应以真实商城的商品详情、库存、售后政策和结算页为准。"
+      }
+    ],
+    "user_reviews": [
+      {
+        "nickname": "公开数据用户A",
+        "rating": 4,
+        "content": "看中 Pacifica Touring 的品牌和价格，适合先放进候选清单里和同类商品对比。"
+      },
+      {
+        "nickname": "公开数据用户B",
+        "rating": 4,
+        "content": "商品信息比较完整，但购买前还需要确认规格、售后和真实库存。"
+      }
+    ]
+  }
+}

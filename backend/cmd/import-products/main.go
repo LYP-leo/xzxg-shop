@@ -399,6 +399,37 @@ func categoryIDMap() map[string]string {
 		"茶饮":    "c_dataset_tea",
 		"调味品":   "c_dataset_condiment",
 		"酸奶":    "c_dataset_yogurt",
+		"香水美妆":  "c_dataset_fragrance_beauty",
+		"家居家装":  "c_dataset_home_living",
+		"厨房用品":  "c_dataset_kitchen",
+		"海外食品":  "c_dataset_global_food",
+		"服装鞋包":  "c_dataset_fashion_bags",
+		"腕表配饰":  "c_dataset_accessories",
+		"电脑办公":  "c_dataset_computer_office",
+		"手机通讯":  "c_dataset_mobile",
+		"运动户外":  "c_dataset_sports_outdoor",
+		"汽车摩托":  "c_dataset_auto_moto",
+		"彩妆":    "c_dataset_makeup",
+		"香水":    "c_dataset_fragrance",
+		"身体护理":  "c_dataset_body_care",
+		"家具":    "c_dataset_furniture",
+		"家居装饰":  "c_dataset_home_decor",
+		"厨房配件":  "c_dataset_kitchen_accessories",
+		"食品杂货":  "c_dataset_groceries",
+		"男士衬衫":  "c_dataset_mens_shirts",
+		"男鞋":    "c_dataset_mens_shoes",
+		"男士腕表":  "c_dataset_mens_watches",
+		"女包":    "c_dataset_womens_bags",
+		"女装连衣裙": "c_dataset_womens_dresses",
+		"女士首饰":  "c_dataset_womens_jewellery",
+		"女鞋":    "c_dataset_womens_shoes",
+		"女士腕表":  "c_dataset_womens_watches",
+		"太阳镜":   "c_dataset_sunglasses",
+		"上装":    "c_dataset_tops",
+		"手机配件":  "c_dataset_mobile_accessories",
+		"运动配件":  "c_dataset_sports_accessories",
+		"摩托车":   "c_dataset_motorcycle",
+		"汽车用品":  "c_dataset_vehicle",
 	}
 }
 
@@ -412,8 +443,28 @@ func categorySort(category string) int {
 		return 300
 	case "食品饮料":
 		return 400
-	default:
+	case "香水美妆":
+		return 500
+	case "家居家装":
+		return 600
+	case "厨房用品":
+		return 700
+	case "海外食品":
+		return 800
+	case "服装鞋包":
 		return 900
+	case "腕表配饰":
+		return 1000
+	case "电脑办公":
+		return 1100
+	case "手机通讯":
+		return 1200
+	case "运动户外":
+		return 1300
+	case "汽车摩托":
+		return 1400
+	default:
+		return 9900
 	}
 }
 
@@ -457,6 +508,26 @@ func suitableFor(product datasetProduct) []string {
 		return []string{"尺码选择", "穿搭场景", "运动需求"}
 	case "食品饮料":
 		return []string{"家庭囤货", "口味选择", "生活场景"}
+	case "香水美妆":
+		return []string{"香型选择", "礼赠咨询", "妆容搭配"}
+	case "家居家装":
+		return []string{"空间搭配", "尺寸选择", "材质比较"}
+	case "厨房用品":
+		return []string{"厨房收纳", "烹饪场景", "规格比较"}
+	case "海外食品":
+		return []string{"进口食品", "口味选择", "家庭囤货"}
+	case "服装鞋包":
+		return []string{"尺码选择", "穿搭场景", "风格比较"}
+	case "腕表配饰":
+		return []string{"礼赠咨询", "风格搭配", "材质比较"}
+	case "电脑办公":
+		return []string{"办公学习", "参数对比", "预算决策"}
+	case "手机通讯":
+		return []string{"换机咨询", "配件搭配", "参数对比"}
+	case "运动户外":
+		return []string{"运动场景", "装备搭配", "耐用性咨询"}
+	case "汽车摩托":
+		return []string{"出行装备", "配件选择", "预算比较"}
 	default:
 		return []string{"日常购物咨询"}
 	}
