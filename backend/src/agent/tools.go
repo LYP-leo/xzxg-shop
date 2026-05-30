@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -62,7 +63,30 @@ type toolObservation struct {
 	DurationMS          int64               `json:"duration_ms"`
 }
 
-func (r *Runtime) executeTool(ctx context.Context, run domain.AgentRun, call reactAction) toolObservation {
+type toolExecutionContext struct {
+	AllowedAddProductIDs map[string]bool
+}
+
+var productIDPattern = regexp.MustCompile(`\bp_[A-Za-z0-9_]+\b`)
+
+func productIDSetFromText(text string) map[string]bool {
+	ids := make(map[string]bool)
+	for _, id := range productIDPattern.FindAllString(text, -1) {
+		ids[id] = true
+	}
+	return ids
+}
+
+func addProductIDsToSet(set map[string]bool, ids ...string) {
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			set[id] = true
+		}
+	}
+}
+
+func (r *Runtime) executeTool(ctx context.Context, run domain.AgentRun, call reactAction, execCtx toolExecutionContext) toolObservation {
 	startedAt := time.Now()
 	tool := strings.TrimSpace(call.Tool)
 	observation := toolObservation{Tool: tool, OK: false}
@@ -81,13 +105,13 @@ func (r *Runtime) executeTool(ctx context.Context, run domain.AgentRun, call rea
 
 	switch tool {
 	case toolSearchProducts:
-		observation = r.toolSearchProducts(ctx, call.Arguments)
+		observation = r.toolSearchProducts(ctx, run, call.Arguments)
 	case toolSearchKnowledge:
 		observation = r.toolSearchKnowledge(ctx, call.Arguments)
 	case toolGetCart:
 		observation = r.toolGetCart(ctx, run.AccountID)
 	case toolAddCartItem:
-		observation = r.toolAddCartItem(ctx, run.AccountID, call.Arguments)
+		observation = r.toolAddCartItem(ctx, run.AccountID, call.Arguments, execCtx.AllowedAddProductIDs)
 	case toolUpdateCartItem:
 		observation = r.toolUpdateCartItem(ctx, run.AccountID, call.Arguments)
 	case toolDeleteCartItem:
@@ -102,7 +126,7 @@ func (r *Runtime) executeTool(ctx context.Context, run domain.AgentRun, call rea
 	return observation
 }
 
-func (r *Runtime) toolSearchProducts(ctx context.Context, raw json.RawMessage) toolObservation {
+func (r *Runtime) toolSearchProducts(ctx context.Context, run domain.AgentRun, raw json.RawMessage) toolObservation {
 	var args struct {
 		Query string `json:"query"`
 		Limit int    `json:"limit"`
@@ -114,7 +138,7 @@ func (r *Runtime) toolSearchProducts(ctx context.Context, raw json.RawMessage) t
 	}
 	limit := clampLimit(args.Limit, 5, 10)
 	products := r.store.SearchProducts(ctx, args.Query)
-	relevance := r.classifyProductSearchRelevance(ctx, args.Query, products)
+	relevance := r.classifyProductSearchRelevanceWithRun(ctx, run, args.Query, products)
 	products = relevance.AllowedProducts
 	if len(products) > limit {
 		products = products[:limit]
@@ -202,7 +226,7 @@ func (r *Runtime) toolGetCart(ctx context.Context, accountID string) toolObserva
 	}
 }
 
-func (r *Runtime) toolAddCartItem(ctx context.Context, accountID string, raw json.RawMessage) toolObservation {
+func (r *Runtime) toolAddCartItem(ctx context.Context, accountID string, raw json.RawMessage, allowedProductIDs map[string]bool) toolObservation {
 	var args struct {
 		ProductID string `json:"product_id"`
 		SkuID     string `json:"sku_id"`
@@ -213,6 +237,9 @@ func (r *Runtime) toolAddCartItem(ctx context.Context, accountID string, raw jso
 	args.SkuID = strings.TrimSpace(args.SkuID)
 	if args.ProductID == "" {
 		return toolObservation{Tool: toolAddCartItem, Message: "product_id 不能为空；如不确定商品，请先调用 search_products"}
+	}
+	if !allowedProductIDs[args.ProductID] {
+		return toolObservation{Tool: toolAddCartItem, Message: "当前轮没有明确可加购的商品 ID；禁止根据购物车内容、列表位置或猜测的 product_id 加购，请先让用户明确要加购哪个商品"}
 	}
 	if args.Quantity <= 0 {
 		args.Quantity = 1
@@ -397,6 +424,10 @@ type productRelevanceResult struct {
 }
 
 func (r *Runtime) classifyProductSearchRelevance(ctx context.Context, query string, products []domain.ProductCard) productRelevanceResult {
+	return r.classifyProductSearchRelevanceWithRun(ctx, domain.AgentRun{}, query, products)
+}
+
+func (r *Runtime) classifyProductSearchRelevanceWithRun(ctx context.Context, run domain.AgentRun, query string, products []domain.ProductCard) productRelevanceResult {
 	result := productRelevanceResult{
 		Status:              relevanceNoMatch,
 		Reason:              "没有召回到商品",
@@ -407,6 +438,11 @@ func (r *Runtime) classifyProductSearchRelevance(ctx context.Context, query stri
 	}
 
 	values := r.configs.GetMap(ctx)
+	if r.llm != nil && r.llm.Enabled() && boolFromMap(values, "retrieval.product.llm_filter.enabled", true) {
+		if llmResult, ok := r.classifyProductSearchRelevanceByLLM(ctx, run, query, products); ok {
+			return llmResult
+		}
+	}
 	guardEnabled := boolFromMap(values, "retrieval.product.lexical_guard.enabled", true)
 	minEvidence := intFromMap(values, "retrieval.product.lexical_guard.min_evidence_count", 1)
 	minRatio := floatFromMap(values, "retrieval.product.lexical_guard.min_match_ratio", 0.35)
@@ -481,7 +517,136 @@ func (r *Runtime) classifyProductSearchRelevance(ctx context.Context, query stri
 	}
 }
 
+type productRelevanceLLMOutput struct {
+	RelevantProductIDs []string `json:"relevant_product_ids"`
+	Reason             string   `json:"reason"`
+}
+
+func (r *Runtime) classifyProductSearchRelevanceByLLM(ctx context.Context, run domain.AgentRun, query string, products []domain.ProductCard) (productRelevanceResult, bool) {
+	limit := r.intConfig(ctx, "retrieval.product.llm_filter.max_candidates", 10)
+	if limit <= 0 {
+		limit = 10
+	}
+	candidates := products
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	messages := []ChatMessage{
+		{Role: "system", Content: productRelevanceLLMSystemPrompt()},
+		{Role: "user", Content: productRelevanceLLMUserPrompt(query, candidates)},
+	}
+	startedAt := time.Now()
+	temperature := 0.0
+	content, err := r.llm.Complete(ctx, r.llm.SmallModel(), messages, temperature)
+	if strings.TrimSpace(run.RunID) != "" {
+		extra := map[string]any{"candidate_count": len(candidates)}
+		if err == nil {
+			extra["raw_length"] = len([]rune(content))
+			extra["raw_output"] = content
+		}
+		r.traceLLM(ctx, run, "tools.search_products.filter", r.llm.SmallModel(), startedAt, err, llmPromptMetadata(messages, temperature, extra))
+	}
+	if err != nil {
+		r.logger.Warn("product relevance llm fallback", "run_id", run.RunID, "error", err)
+		return productRelevanceResult{}, false
+	}
+	var parsed productRelevanceLLMOutput
+	if err := json.Unmarshal([]byte(extractJSONObject(content)), &parsed); err != nil {
+		r.logger.Warn("product relevance llm json fallback", "run_id", run.RunID, "error", err, "content", content)
+		return productRelevanceResult{}, false
+	}
+	candidateByID := make(map[string]domain.ProductCard, len(candidates))
+	for _, product := range candidates {
+		candidateByID[product.ProductID] = product
+	}
+	seen := map[string]bool{}
+	allowed := make([]domain.ProductCard, 0, len(candidates))
+	for _, id := range parsed.RelevantProductIDs {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		product, ok := candidateByID[id]
+		if !ok {
+			continue
+		}
+		seen[id] = true
+		allowed = append(allowed, product)
+	}
+	dropped := make([]string, 0, len(candidates)-len(allowed))
+	for _, product := range candidates {
+		if !seen[product.ProductID] {
+			dropped = append(dropped, product.ProductID)
+		}
+	}
+	reason := strings.TrimSpace(parsed.Reason)
+	if reason == "" {
+		reason = "小模型完成商品相关性过滤"
+	}
+	if len(allowed) == 0 {
+		return productRelevanceResult{
+			Status:              relevanceWeak,
+			Reason:              reason,
+			CandidateProductIDs: productCardIDs(candidates),
+			DroppedProductIDs:   dropped,
+		}, true
+	}
+	return productRelevanceResult{
+		Status:              relevanceOK,
+		Reason:              reason,
+		AllowedProducts:     allowed,
+		AllowedProductIDs:   productCardIDs(allowed),
+		CandidateProductIDs: productCardIDs(candidates),
+		DroppedProductIDs:   dropped,
+	}, true
+}
+
+func productRelevanceLLMSystemPrompt() string {
+	return `你是电商商品检索相关性过滤器。你会收到用户检索词和候选商品，只判断候选商品是否可以作为当前检索词的直接推荐结果。
+
+判断规则：
+1. 只保留与用户品类、品牌、型号、场景或属性直接相关的商品。
+2. 宽泛品类词可以匹配其合理子类，例如“化妆品”可以保留护肤、彩妆、香水等；“手机数码”可以保留手机、耳机、充电配件等。
+3. 如果用户同时给出硬约束，例如品牌、预算、材质、适用对象，候选商品必须不明显违背这些约束。
+4. 不要因为商品标题没有逐字出现所有检索词就剔除，只要类目/标签/卖点语义匹配即可保留。
+5. 输出只能使用候选里的 product_id，不能编造。
+
+只输出 JSON：
+{"relevant_product_ids":["商品ID"],"reason":"中文，80字以内，说明保留/剔除依据"}`
+}
+
+func productRelevanceLLMUserPrompt(query string, products []domain.ProductCard) string {
+	var b strings.Builder
+	b.WriteString("用户检索词：")
+	b.WriteString(strings.TrimSpace(query))
+	b.WriteString("\n\n候选商品：\n")
+	for i, product := range products {
+		b.WriteString(fmt.Sprintf("%d. product_id=%s\n", i+1, product.ProductID))
+		b.WriteString("名称：")
+		b.WriteString(product.Name)
+		b.WriteString("\n品牌：")
+		b.WriteString(product.Brand)
+		b.WriteString("\n类目ID：")
+		b.WriteString(product.CategoryID)
+		if len(product.Tags) > 0 {
+			b.WriteString("\n标签：")
+			b.WriteString(strings.Join(product.Tags, "、"))
+		}
+		if len(product.SellingPoints) > 0 {
+			b.WriteString("\n卖点：")
+			b.WriteString(strings.Join(product.SellingPoints, "、"))
+		}
+		if strings.TrimSpace(product.RecommendReason) != "" {
+			b.WriteString("\n说明：")
+			b.WriteString(truncateRunes(product.RecommendReason, 120))
+		}
+		b.WriteString("\n\n")
+	}
+	return b.String()
+}
+
 func productRelevanceTerms(query string, genericConfig string) []string {
+	lower := strings.ToLower(query)
 	generic := map[string]bool{
 		"推荐": true, "怎么选": true, "好用": true, "商品": true, "产品": true, "一下": true, "几个": true, "一款": true, "适合": true,
 	}
@@ -495,9 +660,16 @@ func productRelevanceTerms(query string, genericConfig string) []string {
 	}
 	out := make([]string, 0)
 	seen := map[string]bool{}
-	for _, term := range append(strings.Fields(strings.ToLower(query)), rag.QueryTerms(query)...) {
+	fieldTerms := strings.Fields(lower)
+	for _, term := range fieldTerms {
+		fieldTerms = append(fieldTerms, stripProductGenericAffix(term, generic)...)
+	}
+	for _, term := range append(fieldTerms, rag.QueryTerms(query)...) {
 		term = strings.TrimSpace(strings.ToLower(term))
 		if term == "" || seen[term] || generic[term] {
+			continue
+		}
+		if strings.HasSuffix(term, "推") && strings.Contains(lower, term+"荐") {
 			continue
 		}
 		containsGeneric := false
@@ -513,7 +685,65 @@ func productRelevanceTerms(query string, genericConfig string) []string {
 		seen[term] = true
 		out = append(out, term)
 	}
+	return removeCoveredProductRelevanceTerms(out, generic)
+}
+
+func stripProductGenericAffix(term string, generic map[string]bool) []string {
+	out := make([]string, 0, 2)
+	for item := range generic {
+		if item == "" {
+			continue
+		}
+		if strings.HasSuffix(term, item) {
+			value := strings.TrimSpace(strings.TrimSuffix(term, item))
+			if value != "" {
+				out = append(out, value)
+			}
+		}
+		if strings.HasPrefix(term, item) {
+			value := strings.TrimSpace(strings.TrimPrefix(term, item))
+			if value != "" {
+				out = append(out, value)
+			}
+		}
+	}
 	return out
+}
+
+func removeCoveredProductRelevanceTerms(terms []string, generic map[string]bool) []string {
+	if len(terms) <= 1 {
+		return terms
+	}
+	out := make([]string, 0, len(terms))
+	for _, term := range terms {
+		covered := false
+		termRunes := len([]rune(term))
+		for _, other := range terms {
+			if term == other {
+				continue
+			}
+			if containsProductGenericTerm(other, generic) {
+				continue
+			}
+			if termRunes < len([]rune(other)) && strings.Contains(other, term) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			out = append(out, term)
+		}
+	}
+	return out
+}
+
+func containsProductGenericTerm(term string, generic map[string]bool) bool {
+	for item := range generic {
+		if item != "" && strings.Contains(term, item) {
+			return true
+		}
+	}
+	return false
 }
 
 func productEvidenceCount(text string, terms []string) int {

@@ -147,7 +147,8 @@ const DefaultAnswerBasePrompt = `你是小猪小狗电商平台的 AI 导购主 
 - 最终回答先给结论，再给 2 到 4 条依据，最后给 1 到 2 个可执行追问或下一步建议。
 - 可使用 Markdown 的短标题、列表和加粗来突出重点词；禁止输出 "special_word"、"special word"、"（special_word）" 等内部标识。
 - 如果引用挂品标签 <item>...</item>，标签内容必须是商品 ID，例如 <item>p_001</item>；禁止在 <item> 内放商品名、品牌名或自然语言挂品指令。
-- 不输出 markdown 表格，不输出隐藏推理。`
+- 如果需要输出 Markdown 表格，必须把完整 Markdown 表格包在 <form>...</form> 中。
+- 不输出隐藏推理。`
 
 const DefaultToolProtocolPrompt = `你正在一个 ReAct 工具循环中工作。每一步只能输出一种协议内容，不能输出隐藏推理。
 
@@ -177,8 +178,17 @@ Skill 调用：
 
 最终回答：
 <final>
-给用户看的完整最终回答。这里可以使用 Markdown 标题、列表、加粗和 <item>product_id</item>。
+给用户看的完整最终回答。这里可以使用 Markdown 标题、列表、加粗、<item>product_id</item>，以及用 <form>...</form> 包裹的 Markdown 表格。
 </final>
+
+表格输出协议：
+如果最终回答需要表格，只能在 <final> 内输出 <form>...</form>，<form> 内必须是完整 Markdown 表格文本，例如：
+<form>
+| 维度 | 商品A | 商品B |
+| --- | --- | --- |
+| 价格 | 129元 | 199元 |
+| 适合人群 | 通勤 | 户外 |
+</form>
 
 规则：
 - 商品推荐、商品对比、商品详情、价格、库存、卖点、风险提示，必须先调用 search_products。
@@ -190,6 +200,8 @@ Skill 调用：
 - 如果用户问题不是导购或工具动作，可以直接输出 <final>，简短说明能力边界或给出自然问候。
 - 最终回答必须用 <final> 开始、</final> 结束；不要把最终回答放进 JSON 字符串。
 - 如需在最终回答中输出 <item> 标签，<item> 内只能写已由工具返回的 product_id，例如 <item>p_001</item>；不能写商品名或推荐语。
+- 如需在最终回答中输出表格，必须用 <form>...</form> 包裹 Markdown 表格；不要在 <form> 内输出 JSON，不要输出 HTML table。
+- 只要用户明确要求“用表格、表格输出、对比表”，最终回答必须包含 <form>...</form> 包裹的 Markdown 表格；不能改用纯列表替代。
 - <final> 内的内容会被后端实时流式转发给前端；因此信息足够时直接开始写最终回答，不要再输出 {"type":"final"}。
 - 重点词、品牌词、系列词不要用 special_word 标识，统一用 Markdown 加粗，例如 **耐克**。`
 
@@ -252,7 +264,7 @@ const DefaultIntentToolPolicyPrompt = `{
     "tools": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
     "skills": [],
     "disabled": ["search_knowledge"],
-    "focus": ["固定商品动作优先脚本化执行。", "缺少 product_id 或 cart_item_id 时先澄清或 get_cart，不要猜 ID。"]
+    "focus": ["固定商品动作优先脚本化执行。", "加购缺少明确 product_id 时必须澄清，禁止通过 get_cart、购物车第一项、列表位置或历史购物车内容猜测加购目标。", "get_cart 只用于查看、修改、删除或结算已有购物车项，不用于决定 add_cart_item 的 product_id。", "只有当前输入文本中明文出现 product_id，或本轮 search_products 返回了候选商品 ID，才允许 add_cart_item。"]
   }
 }`
 
@@ -325,6 +337,8 @@ func DefaultConfigs(envAPIKey string) []domain.AppConfig {
 		{ConfigKey: "retrieval.product.lexical_guard.min_evidence_count", ConfigValue: "1", ValueType: "int", Description: "商品候选至少需要命中的有效词面证据数", Domain: "rag"},
 		{ConfigKey: "retrieval.product.lexical_guard.min_match_ratio", ConfigValue: "0.35", ValueType: "float", Description: "商品候选有效词面命中比例阈值；低于阈值时降为弱相关", Domain: "rag"},
 		{ConfigKey: "retrieval.product.ok.max_results", ConfigValue: "10", ValueType: "int", Description: "商品检索相关结果最多进入 Agent 的数量", Domain: "rag"},
+		{ConfigKey: "retrieval.product.llm_filter.enabled", ConfigValue: "true", ValueType: "bool", Description: "是否用小模型过滤 search_products 召回候选；失败时回退词面保护", Domain: "rag"},
+		{ConfigKey: "retrieval.product.llm_filter.max_candidates", ConfigValue: "10", ValueType: "int", Description: "小模型商品相关性过滤的最大候选数", Domain: "rag"},
 		{ConfigKey: "retrieval.rerank.weight.title_match", ConfigValue: "0.30", ValueType: "float", Description: "RAG 重排：标题命中基础权重", Domain: "rag"},
 		{ConfigKey: "retrieval.rerank.weight.term_match", ConfigValue: "0.35", ValueType: "float", Description: "RAG 重排：query term 命中比例权重", Domain: "rag"},
 		{ConfigKey: "retrieval.rerank.weight.required_match", ConfigValue: "0.15", ValueType: "float", Description: "RAG 重排：强约束 term 命中权重", Domain: "rag"},

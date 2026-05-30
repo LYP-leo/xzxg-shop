@@ -6,30 +6,30 @@ const datasetRoot = process.env.ECOMMERCE_DATASET_ROOT ?? path.resolve('quality/
 const sourceName = 'DummyJSON public products API';
 
 const categoryMap = {
-  beauty: ['5_香水美妆', '香水美妆', '彩妆'],
-  fragrances: ['5_香水美妆', '香水美妆', '香水'],
-  'skin-care': ['5_香水美妆', '香水美妆', '身体护理'],
-  furniture: ['6_家居家装', '家居家装', '家具'],
-  'home-decoration': ['6_家居家装', '家居家装', '家居装饰'],
-  'kitchen-accessories': ['7_厨房用品', '厨房用品', '厨房配件'],
-  groceries: ['8_海外食品', '海外食品', '食品杂货'],
-  'mens-shirts': ['9_服装鞋包', '服装鞋包', '男士衬衫'],
-  'mens-shoes': ['9_服装鞋包', '服装鞋包', '男鞋'],
-  'mens-watches': ['10_腕表配饰', '腕表配饰', '男士腕表'],
-  'womens-bags': ['10_腕表配饰', '腕表配饰', '女包'],
-  'womens-dresses': ['9_服装鞋包', '服装鞋包', '女装连衣裙'],
-  'womens-jewellery': ['10_腕表配饰', '腕表配饰', '女士首饰'],
-  'womens-shoes': ['9_服装鞋包', '服装鞋包', '女鞋'],
-  'womens-watches': ['10_腕表配饰', '腕表配饰', '女士腕表'],
-  sunglasses: ['10_腕表配饰', '腕表配饰', '太阳镜'],
-  tops: ['9_服装鞋包', '服装鞋包', '上装'],
-  laptops: ['11_电脑办公', '电脑办公', '笔记本电脑'],
-  tablets: ['11_电脑办公', '电脑办公', '平板电脑'],
-  smartphones: ['12_手机通讯', '手机通讯', '智能手机'],
-  'mobile-accessories': ['12_手机通讯', '手机通讯', '手机配件'],
-  'sports-accessories': ['13_运动户外', '运动户外', '运动配件'],
-  motorcycle: ['14_汽车摩托', '汽车摩托', '摩托车'],
-  vehicle: ['14_汽车摩托', '汽车摩托', '汽车用品']
+  beauty: ['5_美妆个护', '美妆个护', '彩妆'],
+  fragrances: ['5_美妆个护', '美妆个护', '香水'],
+  'skin-care': ['5_美妆个护', '美妆个护', '身体护理'],
+  furniture: ['8_家居家装', '家居家装', '家具'],
+  'home-decoration': ['8_家居家装', '家居家装', '家居装饰'],
+  'kitchen-accessories': ['9_厨房餐具', '厨房餐具', '厨房配件'],
+  groceries: ['6_食品生鲜', '食品生鲜', '食品杂货'],
+  'mens-shirts': ['12_服饰鞋包', '服饰鞋包', '男装'],
+  'mens-shoes': ['12_服饰鞋包', '服饰鞋包', '男鞋'],
+  'mens-watches': ['13_钟表配饰', '钟表配饰', '男士腕表'],
+  'womens-bags': ['12_服饰鞋包', '服饰鞋包', '箱包'],
+  'womens-dresses': ['12_服饰鞋包', '服饰鞋包', '女装'],
+  'womens-jewellery': ['13_钟表配饰', '钟表配饰', '首饰'],
+  'womens-shoes': ['12_服饰鞋包', '服饰鞋包', '女鞋'],
+  'womens-watches': ['13_钟表配饰', '钟表配饰', '女士腕表'],
+  sunglasses: ['13_钟表配饰', '钟表配饰', '眼镜'],
+  tops: ['12_服饰鞋包', '服饰鞋包', '女装'],
+  laptops: ['10_电脑办公', '电脑办公', '笔记本电脑'],
+  tablets: ['10_电脑办公', '电脑办公', '平板电脑'],
+  smartphones: ['11_手机数码', '手机数码', '智能手机'],
+  'mobile-accessories': ['11_手机数码', '手机数码', '手机配件'],
+  'sports-accessories': ['14_运动户外', '运动户外', '球类运动'],
+  motorcycle: ['15_汽车摩托', '汽车摩托', '摩托车'],
+  vehicle: ['15_汽车摩托', '汽车摩托', '汽车']
 };
 
 const response = await fetch(apiURL);
@@ -41,10 +41,10 @@ const products = payload.products ?? [];
 let written = 0;
 
 for (const product of products) {
-  const mapped = categoryMap[product.category];
+  const productID = `p_dummyjson_${String(product.id).padStart(3, '0')}`;
+  const mapped = taxonomyFor(productID) ?? categoryMap[product.category];
   if (!mapped) continue;
   const [folder, category, subCategory] = mapped;
-  const productID = `p_dummyjson_${String(product.id).padStart(3, '0')}`;
   const imageFile = `${productID}_live.jpg`;
   const imagePath = `${folder}/images/${imageFile}`;
   const dataDir = path.join(datasetRoot, folder, 'data');
@@ -139,4 +139,45 @@ function buildKnowledge(product, category, subCategory) {
 
 function brandFromTitle(title) {
   return String(title || 'Imported').split(/\s+/)[0] || 'Imported';
+}
+
+function taxonomyFor(productID) {
+  const id = Number(productID.replace('p_dummyjson_', ''));
+  const inRange = (start, end) => id >= start && id <= end;
+  if (inRange(1, 5)) return item('5_美妆个护', '美妆个护', '彩妆');
+  if (inRange(6, 10)) return item('5_美妆个护', '美妆个护', '香水');
+  if (inRange(118, 120)) return item('5_美妆个护', '美妆个护', '身体护理');
+  if ([18, 22].includes(id)) return item('7_宠物生活', '宠物生活', '宠物食品');
+  if ([16, 21, 25, 26, 30, 31, 33, 35, 37, 40].includes(id)) return item('6_食品生鲜', '食品生鲜', '水果蔬菜');
+  if ([17, 19, 23, 24, 32].includes(id)) return item('6_食品生鲜', '食品生鲜', '肉禽蛋奶');
+  if ([20, 27, 34, 36, 38].includes(id)) return item('6_食品生鲜', '食品生鲜', '粮油冲调');
+  if ([28, 29, 39, 42].includes(id)) return item('6_食品生鲜', '食品生鲜', '饮品零食');
+  if ([41].includes(id)) return item('8_家居家装', '家居家装', '纸品清洁');
+  if (inRange(11, 15)) return item('8_家居家装', '家居家装', '家具');
+  if (inRange(43, 47)) return item('8_家居家装', '家居家装', '家居装饰');
+  if (inRange(48, 77)) return item('9_厨房餐具', '厨房餐具', '厨房配件');
+  if (inRange(78, 82)) return item('10_电脑办公', '电脑办公', '笔记本电脑');
+  if (inRange(159, 161)) return item('10_电脑办公', '电脑办公', '平板电脑');
+  if (inRange(99, 101) || [103, 107].includes(id)) return item('11_手机数码', '手机数码', '耳机音箱');
+  if ([102, 104, 105].includes(id)) return item('11_手机数码', '手机数码', '充电配件');
+  if ([106].includes(id)) return item('11_手机数码', '手机数码', '智能穿戴');
+  if (inRange(108, 112)) return item('11_手机数码', '手机数码', '拍摄配件');
+  if (inRange(121, 136)) return item('11_手机数码', '手机数码', '智能手机');
+  if (inRange(83, 87)) return item('12_服饰鞋包', '服饰鞋包', '男装');
+  if (inRange(88, 92)) return item('12_服饰鞋包', '服饰鞋包', '男鞋');
+  if (inRange(162, 166) || inRange(177, 181)) return item('12_服饰鞋包', '服饰鞋包', '女装');
+  if (inRange(185, 189)) return item('12_服饰鞋包', '服饰鞋包', '女鞋');
+  if (inRange(172, 176)) return item('12_服饰鞋包', '服饰鞋包', '箱包');
+  if (inRange(93, 98)) return item('13_钟表配饰', '钟表配饰', '男士腕表');
+  if (inRange(190, 194)) return item('13_钟表配饰', '钟表配饰', '女士腕表');
+  if (inRange(182, 184)) return item('13_钟表配饰', '钟表配饰', '首饰');
+  if (inRange(154, 158)) return item('13_钟表配饰', '钟表配饰', '眼镜');
+  if (inRange(137, 153)) return item('14_运动户外', '运动户外', '球类运动');
+  if (inRange(113, 117)) return item('15_汽车摩托', '汽车摩托', '摩托车');
+  if (inRange(167, 171)) return item('15_汽车摩托', '汽车摩托', '汽车');
+  return null;
+}
+
+function item(folder, category, subCategory) {
+  return [folder, category, subCategory];
 }

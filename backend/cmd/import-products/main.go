@@ -192,7 +192,43 @@ func upsertDatasetBase(ctx context.Context, tx *sql.Tx) error {
 func cleanupLegacyDatasetCategories(ctx context.Context, tx *sql.Tx) error {
 	_, err := tx.ExecContext(ctx, `
 		DELETE FROM categories
-		WHERE category_id IN ('c_dataset_cat_4', 'c_dataset__', 'c_dataset___')
+		WHERE category_id IN (
+			'c_dataset_cat_4',
+			'c_dataset__',
+			'c_dataset___',
+			'c_dataset_public_goods',
+			'c_dataset_public_goods_public_item',
+			'c_dataset_fragrance_beauty',
+			'c_dataset_fragrance_beauty_makeup',
+			'c_dataset_fragrance_beauty_fragrance',
+			'c_dataset_fragrance_beauty_body_care',
+			'c_dataset_home_living_furniture',
+			'c_dataset_home_living_home_decor',
+			'c_dataset_kitchen',
+			'c_dataset_kitchen_kitchen_accessories',
+			'c_dataset_global_food',
+			'c_dataset_global_food_groceries',
+			'c_dataset_fashion_bags_mens_shirts',
+			'c_dataset_fashion_bags_mens_shoes',
+			'c_dataset_fashion_bags_womens_dresses',
+			'c_dataset_fashion_bags_womens_shoes',
+			'c_dataset_fashion_bags_tops',
+			'c_dataset_fashion_bags_womens_bags',
+			'c_dataset_accessories',
+			'c_dataset_accessories_womens_bags',
+			'c_dataset_accessories_mens_watches',
+			'c_dataset_accessories_womens_watches',
+			'c_dataset_accessories_womens_jewellery',
+			'c_dataset_accessories_sunglasses',
+			'c_dataset_computer_office_laptop',
+			'c_dataset_computer_office_tablet',
+			'c_dataset_mobile',
+			'c_dataset_mobile_smartphone',
+			'c_dataset_mobile_mobile_accessories',
+			'c_dataset_sports_outdoor_sports_accessories',
+			'c_dataset_auto_moto_motorcycle',
+			'c_dataset_auto_moto_vehicle'
+		)
 			OR (category_id LIKE 'c_dataset_%' AND category_id REGEXP '[^ -~]')
 	`)
 	return err
@@ -399,37 +435,45 @@ func categoryIDMap() map[string]string {
 		"茶饮":    "c_dataset_tea",
 		"调味品":   "c_dataset_condiment",
 		"酸奶":    "c_dataset_yogurt",
-		"香水美妆":  "c_dataset_fragrance_beauty",
+		"美妆个护":  "c_dataset_beauty_personal_care",
+		"食品生鲜":  "c_dataset_fresh_food",
+		"宠物生活":  "c_dataset_pet_life",
 		"家居家装":  "c_dataset_home_living",
-		"厨房用品":  "c_dataset_kitchen",
-		"海外食品":  "c_dataset_global_food",
-		"服装鞋包":  "c_dataset_fashion_bags",
-		"腕表配饰":  "c_dataset_accessories",
+		"厨房餐具":  "c_dataset_kitchen_dining",
 		"电脑办公":  "c_dataset_computer_office",
-		"手机通讯":  "c_dataset_mobile",
+		"手机数码":  "c_dataset_mobile_digital",
+		"服饰鞋包":  "c_dataset_fashion_bags",
+		"钟表配饰":  "c_dataset_watch_accessories",
 		"运动户外":  "c_dataset_sports_outdoor",
 		"汽车摩托":  "c_dataset_auto_moto",
 		"彩妆":    "c_dataset_makeup",
 		"香水":    "c_dataset_fragrance",
 		"身体护理":  "c_dataset_body_care",
+		"水果蔬菜":  "c_dataset_fruit_veg",
+		"肉禽蛋奶":  "c_dataset_meat_egg_dairy",
+		"粮油冲调":  "c_dataset_grain_oil",
+		"饮品零食":  "c_dataset_drinks_snacks",
+		"宠物食品":  "c_dataset_pet_food",
+		"纸品清洁":  "c_dataset_paper_cleaning",
 		"家具":    "c_dataset_furniture",
 		"家居装饰":  "c_dataset_home_decor",
 		"厨房配件":  "c_dataset_kitchen_accessories",
-		"食品杂货":  "c_dataset_groceries",
-		"男士衬衫":  "c_dataset_mens_shirts",
+		"耳机音箱":  "c_dataset_audio",
+		"充电配件":  "c_dataset_charging_accessories",
+		"智能穿戴":  "c_dataset_wearables",
+		"拍摄配件":  "c_dataset_photo_accessories",
+		"男装":    "c_dataset_menswear",
 		"男鞋":    "c_dataset_mens_shoes",
-		"男士腕表":  "c_dataset_mens_watches",
-		"女包":    "c_dataset_womens_bags",
-		"女装连衣裙": "c_dataset_womens_dresses",
-		"女士首饰":  "c_dataset_womens_jewellery",
+		"女装":    "c_dataset_womenswear",
 		"女鞋":    "c_dataset_womens_shoes",
+		"箱包":    "c_dataset_bags",
+		"男士腕表":  "c_dataset_mens_watches",
 		"女士腕表":  "c_dataset_womens_watches",
-		"太阳镜":   "c_dataset_sunglasses",
-		"上装":    "c_dataset_tops",
-		"手机配件":  "c_dataset_mobile_accessories",
-		"运动配件":  "c_dataset_sports_accessories",
+		"首饰":    "c_dataset_jewellery",
+		"眼镜":    "c_dataset_eyewear",
+		"球类运动":  "c_dataset_ball_sports",
 		"摩托车":   "c_dataset_motorcycle",
-		"汽车用品":  "c_dataset_vehicle",
+		"汽车":    "c_dataset_vehicle",
 	}
 }
 
@@ -443,26 +487,28 @@ func categorySort(category string) int {
 		return 300
 	case "食品饮料":
 		return 400
-	case "香水美妆":
+	case "美妆个护":
 		return 500
-	case "家居家装":
+	case "食品生鲜":
 		return 600
-	case "厨房用品":
+	case "宠物生活":
 		return 700
-	case "海外食品":
+	case "家居家装":
 		return 800
-	case "服装鞋包":
+	case "厨房餐具":
 		return 900
-	case "腕表配饰":
-		return 1000
 	case "电脑办公":
+		return 1000
+	case "手机数码":
 		return 1100
-	case "手机通讯":
+	case "服饰鞋包":
 		return 1200
-	case "运动户外":
+	case "钟表配饰":
 		return 1300
-	case "汽车摩托":
+	case "运动户外":
 		return 1400
+	case "汽车摩托":
+		return 1500
 	default:
 		return 9900
 	}
@@ -508,22 +554,24 @@ func suitableFor(product datasetProduct) []string {
 		return []string{"尺码选择", "穿搭场景", "运动需求"}
 	case "食品饮料":
 		return []string{"家庭囤货", "口味选择", "生活场景"}
-	case "香水美妆":
-		return []string{"香型选择", "礼赠咨询", "妆容搭配"}
+	case "美妆个护":
+		return []string{"彩妆护肤", "香型选择", "个人护理"}
+	case "食品生鲜":
+		return []string{"日常生鲜", "家庭囤货", "口味选择"}
+	case "宠物生活":
+		return []string{"宠物喂养", "口粮选择", "日常补货"}
 	case "家居家装":
 		return []string{"空间搭配", "尺寸选择", "材质比较"}
-	case "厨房用品":
+	case "厨房餐具":
 		return []string{"厨房收纳", "烹饪场景", "规格比较"}
-	case "海外食品":
-		return []string{"进口食品", "口味选择", "家庭囤货"}
-	case "服装鞋包":
-		return []string{"尺码选择", "穿搭场景", "风格比较"}
-	case "腕表配饰":
-		return []string{"礼赠咨询", "风格搭配", "材质比较"}
 	case "电脑办公":
 		return []string{"办公学习", "参数对比", "预算决策"}
-	case "手机通讯":
+	case "手机数码":
 		return []string{"换机咨询", "配件搭配", "参数对比"}
+	case "服饰鞋包":
+		return []string{"尺码选择", "穿搭场景", "风格比较"}
+	case "钟表配饰":
+		return []string{"礼赠咨询", "风格搭配", "材质比较"}
 	case "运动户外":
 		return []string{"运动场景", "装备搭配", "耐用性咨询"}
 	case "汽车摩托":
