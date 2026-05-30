@@ -1,0 +1,3 @@
+{"id":"image_phone_001","case_type":"dataset_local_image","image_url":"quality/data/ecommerce_agent_dataset/2_数码电子/images/p_digital_001_live.jpg","expected_status":"matched","top_k":5}
+{"id":"image_shoes_001","case_type":"dataset_local_image","image_url":"quality/data/ecommerce_agent_dataset/3_服饰运动/images/p_clothes_001_live.jpg","expected_status":"matched","top_k":5}
+{"id":"image_beauty_001","case_type":"dataset_local_image","image_url":"quality/data/ecommerce_agent_dataset/1_美妆护肤/images/p_beauty_001_live.jpg","expected_status":"matched","top_k":5}

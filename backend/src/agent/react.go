@@ -49,15 +49,15 @@ func (r *Runtime) runReactAgent(ctx context.Context, run domain.AgentRun, plan r
 		content, err := r.llm.Complete(ctx, plan.AnswerModel, messages, 0.1)
 		if err != nil {
 			r.logger.Warn("react step fallback", "run_id", run.RunID, "step", step, "error", err)
-			r.traceLLM(ctx, run, fmt.Sprintf("react.step.%d", step), plan.AnswerModel, startedAt, err, map[string]any{"route": plan.Route, "intent": plan.ReferenceIntent()})
+			r.traceLLM(ctx, run, fmt.Sprintf("react.step.%d", step), plan.AnswerModel, startedAt, err, llmPromptMetadata(messages, 0.1, map[string]any{"route": plan.Route, "intent": plan.ReferenceIntent()}))
 			break
 		}
-		r.traceLLM(ctx, run, fmt.Sprintf("react.step.%d", step), plan.AnswerModel, startedAt, nil, map[string]any{
+		r.traceLLM(ctx, run, fmt.Sprintf("react.step.%d", step), plan.AnswerModel, startedAt, nil, llmPromptMetadata(messages, 0.1, map[string]any{
 			"route":      plan.Route,
 			"intent":     plan.ReferenceIntent(),
 			"raw_length": len([]rune(content)),
 			"raw_output": content,
-		})
+		}))
 
 		action, err := parseReactAction(content)
 		if err != nil {
@@ -72,10 +72,48 @@ func (r *Runtime) runReactAgent(ctx context.Context, run domain.AgentRun, plan r
 			continue
 		}
 		parseFailures = 0
+		if action.Type == "tool_call" && r.skillAllowedForPlan(ctx, plan, action.Tool) {
+			action.Skill = action.Tool
+			action.Tool = ""
+			action.Type = "skill_call"
+		}
 
 		if action.Type == "final" {
 			finalAction = action
 			break
+		}
+		if action.Type == "skill_call" {
+			if !r.skillAllowedForPlan(ctx, plan, action.Skill) {
+				messages = append(messages,
+					ChatMessage{Role: "assistant", Content: content},
+					ChatMessage{Role: "user", Content: fmt.Sprintf("skill %q 不在当前子意图的可用 skill 列表中。请遵守“当前子意图工具策略”：需要业务入口则调用允许的 skill；否则输出 final 澄清或说明能力边界。", action.Skill)},
+				)
+				continue
+			}
+			if err := r.emitStatus(ctx, run.RunID, "skill", statusTextForSkill(action.Skill), emit); err != nil {
+				return result, err
+			}
+			observation := r.executeSkill(ctx, run, action)
+			result.Observations = append(result.Observations, observation)
+			r.trace(ctx, run, "skills", action.Skill, "", traceStatus(observation.OK), observation.DurationMS, "", skillObservationForTrace(observation))
+			for _, block := range observation.Blocks {
+				item := block
+				if err := emit(domain.SSEEvent{Type: "block_delta", RunID: run.RunID, Block: &item}); err != nil {
+					return result, err
+				}
+			}
+			messages = append(messages,
+				ChatMessage{Role: "assistant", Content: content},
+				ChatMessage{Role: "user", Content: "Observation:\n" + observationForModel(observation) + "\n\n继续。需要更多信息则继续 tool_call 或 skill_call；信息足够则输出 final。"},
+			)
+			continue
+		}
+		if !r.toolAllowedForPlan(ctx, plan, action.Tool) {
+			messages = append(messages,
+				ChatMessage{Role: "assistant", Content: content},
+				ChatMessage{Role: "user", Content: fmt.Sprintf("工具 %q 不在当前子意图的可用工具列表中。请遵守“当前子意图工具策略”：需要更多信息则调用允许的工具；否则输出 final 澄清或说明能力边界。", action.Tool)},
+			)
+			continue
 		}
 		if action.Tool == toolSearchProducts {
 			searchProductCalls++
@@ -128,7 +166,7 @@ func (r *Runtime) runReactAgent(ctx context.Context, run domain.AgentRun, plan r
 
 		messages = append(messages,
 			ChatMessage{Role: "assistant", Content: content},
-			ChatMessage{Role: "user", Content: "Observation:\n" + observationForModel(observation) + "\n\n继续。需要更多信息则继续 tool_call；信息足够则输出 final。"},
+			ChatMessage{Role: "user", Content: "Observation:\n" + observationForModel(observation) + "\n\n继续。需要更多信息则继续 tool_call 或 skill_call；信息足够则输出 final。"},
 		)
 	}
 
@@ -154,37 +192,56 @@ func (r *Runtime) streamReactFinal(ctx context.Context, run domain.AgentRun, pla
 		"observations":              compactObservations(result.Observations),
 	}
 	payload, _ := json.Marshal(finalInstruction)
-	streamMessages := append([]ChatMessage{}, messages...)
+	streamMessages := []ChatMessage{
+		{Role: "system", Content: r.finalSystemPromptForPlan(ctx, plan)},
+	}
+	for _, message := range messages[1:] {
+		streamMessages = append(streamMessages, message)
+	}
 	streamMessages = append(streamMessages,
 		ChatMessage{
-			Role:    "system",
-			Content: "最终回答阶段输出面向用户的中文回答。允许使用 Markdown 短标题、列表和加粗，禁止 Markdown 表格、Markdown 链接、JSON、Action、Observation 和隐藏推理。重点词、品牌词、系列词用 Markdown 加粗，不要输出 special_word 或 special word。若输出 <item> 标签，标签内容必须是 final_allowed_product_ids 中的 product_id，例如 <item>p_001</item>，禁止在 <item> 内放商品名或自然语言挂品指令。若 final_allowed_product_ids 为空，禁止输出任何 <item>，并说明当前商品库没有找到匹配商品；可以给通用选购建议，但不能编造商品、品牌或商品 ID。",
-		},
-		ChatMessage{
 			Role:    "user",
-			Content: "请基于以上 observation 生成最终中文回答。要求：先给结论，再给依据和下一步；可以用 Markdown 加粗突出重点词，但不要输出 JSON、Action、Observation、隐藏推理或 special_word。若需要挂品标签，<item> 内只能写 product_id。\n\n最终上下文：\n" + string(payload),
+			Content: string(payload),
 		},
 	)
 
 	startedAt := time.Now()
 	var content strings.Builder
 	var rawContent strings.Builder
-	filter := newStreamTextFilter(result.ProductIDs)
+	var filterErr error
+	filter := newStreamTextFilter(result.ProductIDs, func(productID string) {
+		if filterErr != nil {
+			return
+		}
+		product, ok := r.store.GetProduct(ctx, productID)
+		if !ok {
+			return
+		}
+		card := product.ProductCard
+		part := domain.AgentBlock{Type: "product_card", Product: &card}
+		filterErr = emit(domain.SSEEvent{Type: "content_delta", RunID: run.RunID, Part: &part})
+	})
 	err := r.llm.Stream(ctx, plan.AnswerModel, streamMessages, 0.4, func(delta string) error {
 		if r.store.IsRunCanceled(ctx, run.RunID) {
 			return emit(domain.SSEEvent{Type: "error", RunID: run.RunID, Code: "canceled", Message: "已停止生成"})
 		}
 		rawContent.WriteString(delta)
 		clean := filter.Clean(delta)
+		if filterErr != nil {
+			return filterErr
+		}
 		if clean == "" {
 			return nil
 		}
 		content.WriteString(clean)
+		if err := emit(domain.SSEEvent{Type: "content_delta", RunID: run.RunID, Part: &domain.AgentBlock{Type: "text", Content: clean}}); err != nil {
+			return err
+		}
 		return emit(domain.SSEEvent{Type: "text_delta", RunID: run.RunID, Delta: clean})
 	})
 	if err != nil {
 		r.logger.Warn("react final stream fallback", "run_id", run.RunID, "error", err, "model", plan.AnswerModel)
-		r.traceLLM(ctx, run, "react.final", plan.AnswerModel, startedAt, err, map[string]any{"route": plan.Route, "intent": plan.ReferenceIntent()})
+		r.traceLLM(ctx, run, "react.final", plan.AnswerModel, startedAt, err, llmPromptMetadata(streamMessages, 0.4, map[string]any{"route": plan.Route, "intent": plan.ReferenceIntent()}))
 		if content.Len() > 0 {
 			return r.emitReactFinalBlocks(run.RunID, result.FinalBlocks, emit)
 		}
@@ -199,7 +256,7 @@ func (r *Runtime) streamReactFinal(ctx context.Context, run domain.AgentRun, pla
 		}
 		return r.emitReactFinalBlocks(run.RunID, result.FinalBlocks, emit)
 	}
-	r.traceLLM(ctx, run, "react.final", plan.AnswerModel, startedAt, nil, map[string]any{
+	r.traceLLM(ctx, run, "react.final", plan.AnswerModel, startedAt, nil, llmPromptMetadata(streamMessages, 0.4, map[string]any{
 		"route":                     plan.Route,
 		"intent":                    plan.ReferenceIntent(),
 		"raw_length":                len([]rune(rawContent.String())),
@@ -208,7 +265,7 @@ func (r *Runtime) streamReactFinal(ctx context.Context, run domain.AgentRun, pla
 		"filtered_output":           content.String(),
 		"stream_filter_used":        true,
 		"final_allowed_product_ids": result.ProductIDs,
-	})
+	}))
 	return r.emitReactFinalBlocks(run.RunID, result.FinalBlocks, emit)
 }
 
@@ -230,6 +287,18 @@ func (r *Runtime) reactSystemPromptForPlan(ctx context.Context, plan runPlan) st
 	parts := []string{
 		r.stringConfig(ctx, "agent.prompt.answer_base", configcenter.DefaultAnswerBasePrompt),
 		r.stringConfig(ctx, "agent.prompt.tool_protocol", configcenter.DefaultToolProtocolPrompt),
+	}
+	intent := plan.ReferenceIntent()
+	if prompt := r.stringConfig(ctx, "agent.prompt.intent."+intent, configcenter.DefaultIntentPrompt(intent)); prompt != "" {
+		parts = append(parts, prompt)
+	}
+	parts = append(parts, r.intentToolPolicyPrompt(ctx, plan))
+	return strings.Join(parts, "\n\n")
+}
+
+func (r *Runtime) finalSystemPromptForPlan(ctx context.Context, plan runPlan) string {
+	parts := []string{
+		r.stringConfig(ctx, "agent.prompt.answer_base", configcenter.DefaultAnswerBasePrompt),
 	}
 	intent := plan.ReferenceIntent()
 	if prompt := r.stringConfig(ctx, "agent.prompt.intent."+intent, configcenter.DefaultIntentPrompt(intent)); prompt != "" {
@@ -383,11 +452,15 @@ type streamTextFilter struct {
 	tagBuffer       strings.Builder
 	itemBuffer      strings.Builder
 	inItem          bool
+	inBuyer         bool
 	allowedItemIDs  map[string]bool
+	emittedItemIDs  map[string]bool
+	onItem          func(string)
 	pendingItemText string
+	fenceCarry      string
 }
 
-func newStreamTextFilter(allowedProductIDs []string) *streamTextFilter {
+func newStreamTextFilter(allowedProductIDs []string, onItem ...func(string)) *streamTextFilter {
 	allowed := make(map[string]bool, len(allowedProductIDs))
 	for _, id := range allowedProductIDs {
 		id = strings.TrimSpace(id)
@@ -395,7 +468,11 @@ func newStreamTextFilter(allowedProductIDs []string) *streamTextFilter {
 			allowed[id] = true
 		}
 	}
-	return &streamTextFilter{allowedItemIDs: allowed}
+	var callback func(string)
+	if len(onItem) > 0 {
+		callback = onItem[0]
+	}
+	return &streamTextFilter{allowedItemIDs: allowed, emittedItemIDs: map[string]bool{}, onItem: callback}
 }
 
 func (f *streamTextFilter) Clean(delta string) string {
@@ -419,11 +496,18 @@ func (f *streamTextFilter) Clean(delta string) string {
 				f.itemBuffer.Reset()
 			case "/item":
 				id := strings.TrimSpace(f.itemBuffer.String())
-				if f.allowedItemIDs[id] {
-					// 合法挂品标签只用于前端协议，不把 product_id 作为正文吐给用户。
+				if f.allowedItemIDs[id] && !f.emittedItemIDs[id] {
+					f.emittedItemIDs[id] = true
+					if f.onItem != nil {
+						f.onItem(id)
+					}
 				}
 				f.inItem = false
 				f.itemBuffer.Reset()
+			case "buyer":
+				f.inBuyer = true
+			case "/buyer":
+				f.inBuyer = false
 			}
 			continue
 		case f.inTag:
@@ -431,6 +515,8 @@ func (f *streamTextFilter) Clean(delta string) string {
 			continue
 		case f.inItem:
 			f.itemBuffer.WriteRune(item)
+			continue
+		case f.inBuyer:
 			continue
 		default:
 			builder.WriteRune(item)
@@ -443,5 +529,55 @@ func (f *streamTextFilter) Clean(delta string) string {
 	clean = strings.ReplaceAll(clean, "_word", "")
 	clean = strings.ReplaceAll(clean, "（）", "")
 	clean = strings.ReplaceAll(clean, "()", "")
-	return clean
+	return f.stripMarkdownFenceLines(clean)
+}
+
+func (f *streamTextFilter) stripMarkdownFenceLines(text string) string {
+	if text == "" && f.fenceCarry == "" {
+		return ""
+	}
+	text = f.fenceCarry + text
+	f.fenceCarry = ""
+	lines := strings.SplitAfter(text, "\n")
+	if len(lines) > 0 && !strings.HasSuffix(text, "\n") {
+		last := lines[len(lines)-1]
+		if isMarkdownFencePrefix(strings.TrimSpace(last)) {
+			f.fenceCarry = last
+			lines = lines[:len(lines)-1]
+		}
+	}
+	var builder strings.Builder
+	for _, line := range lines {
+		if isMarkdownFenceLine(strings.TrimSpace(line)) {
+			continue
+		}
+		builder.WriteString(line)
+	}
+	return builder.String()
+}
+
+func isMarkdownFenceLine(line string) bool {
+	if line == "" {
+		return false
+	}
+	if line == "```" {
+		return true
+	}
+	if strings.HasPrefix(line, "```") {
+		lang := strings.TrimSpace(strings.TrimPrefix(line, "```"))
+		return lang == "markdown" || lang == "md"
+	}
+	return false
+}
+
+func isMarkdownFencePrefix(line string) bool {
+	if line == "" {
+		return false
+	}
+	for _, fence := range []string{"```", "```markdown", "```md"} {
+		if strings.HasPrefix(fence, line) {
+			return true
+		}
+	}
+	return isMarkdownFenceLine(line)
 }

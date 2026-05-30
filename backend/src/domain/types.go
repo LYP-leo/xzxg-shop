@@ -201,6 +201,32 @@ type Attachment struct {
 	Type         string `json:"type"`
 	URL          string `json:"url,omitempty"`
 	Name         string `json:"name,omitempty"`
+	ObjectKey    string `json:"object_key,omitempty"`
+}
+
+type StoredFile struct {
+	FileID          string    `json:"file_id"`
+	AccountID       string    `json:"account_id,omitempty"`
+	ObjectKey       string    `json:"object_key"`
+	URL             string    `json:"url"`
+	MimeType        string    `json:"mime_type"`
+	SizeBytes       int64     `json:"size_bytes"`
+	ContentHash     string    `json:"content_hash"`
+	StorageProvider string    `json:"storage_provider"`
+	SourceURL       string    `json:"source_url,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+type StoredFileInput struct {
+	FileID          string
+	AccountID       string
+	ObjectKey       string
+	URL             string
+	MimeType        string
+	SizeBytes       int64
+	ContentHash     string
+	StorageProvider string
+	SourceURL       string
 }
 
 type ProductCard struct {
@@ -511,6 +537,7 @@ type SSEEvent struct {
 	Text          string      `json:"text,omitempty"`
 	Delta         string      `json:"delta,omitempty"`
 	Block         *AgentBlock `json:"block,omitempty"`
+	Part          *AgentBlock `json:"part,omitempty"`
 	Questions     []string    `json:"questions,omitempty"`
 	Code          string      `json:"code,omitempty"`
 	Message       string      `json:"message,omitempty"`

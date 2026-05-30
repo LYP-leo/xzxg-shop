@@ -57,3 +57,35 @@ func TestStreamTextFilterDropsItemTagContent(t *testing.T) {
 		t.Fatalf("cleaned = %q, want %q", got, want)
 	}
 }
+
+func TestStreamTextFilterDropsMarkdownFenceWrapper(t *testing.T) {
+	filter := newStreamTextFilter(nil)
+	got := filter.Clean("```mar") + filter.Clean("kdown\n# 标题\n内容\n") + filter.Clean("```")
+	want := "# 标题\n内容\n"
+	if got != want {
+		t.Fatalf("cleaned = %q, want %q", got, want)
+	}
+}
+
+func TestStreamTextFilterDropsBuyerTagContent(t *testing.T) {
+	filter := newStreamTextFilter(nil)
+	got := filter.Clean("正文<buyer>适合人群</buyer>继续")
+	want := "正文继续"
+	if got != want {
+		t.Fatalf("cleaned = %q, want %q", got, want)
+	}
+}
+
+func TestStreamTextFilterEmitsAllowedItemOnce(t *testing.T) {
+	var emitted []string
+	filter := newStreamTextFilter([]string{"p_001"}, func(productID string) {
+		emitted = append(emitted, productID)
+	})
+	got := filter.Clean("a<item>p_001</item>b<item>p_001</item>c<item>p_002</item>d")
+	if got != "abcd" {
+		t.Fatalf("cleaned = %q, want abcd", got)
+	}
+	if len(emitted) != 1 || emitted[0] != "p_001" {
+		t.Fatalf("emitted = %v, want [p_001]", emitted)
+	}
+}

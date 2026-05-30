@@ -113,7 +113,7 @@ func (s *Server) withBodyLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
 			// 限制请求体大小，避免异常上传或恶意请求拖垮 API 进程内存。
-			r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
+			r.Body = http.MaxBytesReader(w, r.Body, 12<<20)
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -182,6 +182,9 @@ func routePolicy(method string, path string) (bool, []domain.AccountRole) {
 	// 三端路由按前缀划分：用户端、商家端、管理员端分别校验对应角色。
 	if strings.HasPrefix(path, "/api/v1/cart") || strings.HasPrefix(path, "/api/v1/agent") || strings.HasPrefix(path, "/api/v1/orders") || strings.HasPrefix(path, "/api/v1/coupons") {
 		return true, []domain.AccountRole{domain.AccountRoleUser}
+	}
+	if strings.HasPrefix(path, "/api/v1/files") || strings.HasPrefix(path, "/api/v1/search/image") {
+		return true, []domain.AccountRole{domain.AccountRoleUser, domain.AccountRoleMerchant, domain.AccountRoleAdmin}
 	}
 	if strings.HasPrefix(path, "/api/v1/merchant") {
 		return true, []domain.AccountRole{domain.AccountRoleMerchant}

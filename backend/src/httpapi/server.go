@@ -2,12 +2,14 @@ package httpapi
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,6 +22,8 @@ import (
 	"github.com/LYP-leo/xzxg-shop/backend/src/agent"
 	"github.com/LYP-leo/xzxg-shop/backend/src/configcenter"
 	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
+	"github.com/LYP-leo/xzxg-shop/backend/src/imagevector"
+	"github.com/LYP-leo/xzxg-shop/backend/src/objectstore"
 	"github.com/LYP-leo/xzxg-shop/backend/src/rag"
 	"github.com/LYP-leo/xzxg-shop/backend/src/retrievalconfig"
 	"github.com/LYP-leo/xzxg-shop/backend/src/store"
@@ -60,6 +64,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/coupons/available", s.handleListCoupons)
 	mux.HandleFunc("GET /api/v1/coupons/mine", s.handleListUserCoupons)
 	mux.HandleFunc("POST /api/v1/coupons/", s.handleCouponAction)
+	mux.HandleFunc("POST /api/v1/files", s.handleUploadFile)
+	mux.HandleFunc("GET /api/v1/files/", s.handleGetFile)
+	mux.HandleFunc("POST /api/v1/search/image", s.handleSearchImage)
 	mux.HandleFunc("GET /api/v1/merchant/documents", s.handleListMerchantDocuments)
 	mux.HandleFunc("POST /api/v1/merchant/documents", s.handleCreateMerchantDocument)
 	mux.HandleFunc("GET /api/v1/merchant/orders", s.handleListMerchantOrders)
@@ -95,6 +102,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/admin/products/", s.handleUpdateAdminProduct)
 	mux.HandleFunc("POST /api/v1/eval/intent", s.handleEvalIntent)
 	mux.HandleFunc("POST /api/v1/eval/rag", s.handleEvalRAGRecall)
+	mux.HandleFunc("POST /api/v1/eval/image-search", s.handleEvalImageSearch)
 	mux.HandleFunc("GET /api/v1/cart", s.handleGetCart)
 	mux.HandleFunc("GET /api/v1/cart/discount-preview", s.handleCartDiscountPreview)
 	mux.HandleFunc("POST /api/v1/cart/items", s.handleAddCartItem)
@@ -461,6 +469,235 @@ func (s *Server) handleCouponAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, coupon)
+}
+
+func (s *Server) handleUploadFile(w http.ResponseWriter, r *http.Request) {
+	account, ok := accountFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "请先登录")
+		return
+	}
+	maxBytes := int64FromMap(s.configs.GetMap(r.Context()), "files.max_upload_bytes", 10<<20)
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	if err := r.ParseMultipartForm(maxBytes); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_multipart", "文件上传请求不合法或文件过大")
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "empty_file", "缺少 file 字段")
+		return
+	}
+	defer file.Close()
+
+	buffer, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "read_file_failed", "读取文件失败")
+		return
+	}
+	if int64(len(buffer)) > maxBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "file_too_large", "文件超过上传大小限制")
+		return
+	}
+	mimeType := http.DetectContentType(buffer)
+	if header.Header.Get("Content-Type") != "" {
+		mimeType = header.Header.Get("Content-Type")
+	}
+	if !strings.HasPrefix(mimeType, "image/") && !strings.HasPrefix(mimeType, "application/pdf") {
+		writeError(w, http.StatusBadRequest, "unsupported_file_type", "当前只支持图片和 PDF 文件")
+		return
+	}
+
+	fileID := "file_" + newRequestID()
+	ext := fileExtension(header.Filename, mimeType)
+	now := time.Now()
+	objectKey := strings.Join([]string{
+		"uploads",
+		account.AccountID,
+		now.Format("2006"),
+		now.Format("01"),
+		fileID + ext,
+	}, "/")
+	hash := sha256.Sum256(buffer)
+	storage, err := objectstore.NewMinIOFromConfig(s.configs.GetMap(r.Context()))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "object_store_unavailable", "对象存储配置不可用")
+		return
+	}
+	startedAt := time.Now()
+	if _, err := storage.Put(r.Context(), objectKey, bytes.NewReader(buffer), int64(len(buffer)), mimeType); err != nil {
+		s.logger.Warn("upload file to minio failed", "error", err)
+		writeError(w, http.StatusBadGateway, "object_store_unavailable", "对象存储不可用")
+		return
+	}
+	fileMeta, err := s.store.CreateStoredFile(r.Context(), domain.StoredFileInput{
+		FileID:          fileID,
+		AccountID:       account.AccountID,
+		ObjectKey:       objectKey,
+		URL:             "/api/v1/files/" + fileID,
+		MimeType:        mimeType,
+		SizeBytes:       int64(len(buffer)),
+		ContentHash:     hex.EncodeToString(hash[:]),
+		StorageProvider: "minio",
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "save_file_failed", "保存文件元数据失败")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"file":               fileMeta,
+		"upload_duration_ms": time.Since(startedAt).Milliseconds(),
+	})
+}
+
+func (s *Server) handleGetFile(w http.ResponseWriter, r *http.Request) {
+	fileID := strings.TrimPrefix(r.URL.Path, "/api/v1/files/")
+	fileID = strings.Trim(fileID, "/")
+	if fileID == "" || strings.Contains(fileID, "..") {
+		writeError(w, http.StatusBadRequest, "bad_file_id", "文件 ID 不合法")
+		return
+	}
+	fileMeta, ok := s.store.GetStoredFile(r.Context(), fileID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "file_not_found", "文件不存在")
+		return
+	}
+	storage, err := objectstore.NewMinIOFromConfig(s.configs.GetMap(r.Context()))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "object_store_unavailable", "对象存储配置不可用")
+		return
+	}
+	object, err := storage.Get(r.Context(), fileMeta.ObjectKey)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "object_not_found", "对象存储文件不存在")
+		return
+	}
+	defer object.Close()
+	w.Header().Set("Content-Type", fileMeta.MimeType)
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	if fileMeta.SizeBytes > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(fileMeta.SizeBytes, 10))
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, object)
+}
+
+func (s *Server) handleSearchImage(w http.ResponseWriter, r *http.Request) {
+	if _, ok := accountFromContext(r.Context()); !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "请先登录")
+		return
+	}
+	s.writeImageSearchResult(w, r)
+}
+
+func (s *Server) handleEvalImageSearch(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	s.writeImageSearchResult(w, r)
+}
+
+func (s *Server) writeImageSearchResult(w http.ResponseWriter, r *http.Request) {
+	startedAt := time.Now()
+	var request struct {
+		FileID    string `json:"file_id"`
+		ObjectKey string `json:"object_key"`
+		ImageURL  string `json:"image_url"`
+		TopK      int    `json:"top_k"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	downloadStartedAt := time.Now()
+	downloadMS := int64(0)
+	if request.FileID != "" {
+		fileMeta, ok := s.store.GetStoredFile(r.Context(), request.FileID)
+		if !ok {
+			writeError(w, http.StatusNotFound, "file_not_found", "文件不存在")
+			return
+		}
+		request.ObjectKey = fileMeta.ObjectKey
+		storage, err := objectstore.NewMinIOFromConfig(s.configs.GetMap(r.Context()))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "object_store_unavailable", "对象存储配置不可用")
+			return
+		}
+		object, err := storage.Get(r.Context(), fileMeta.ObjectKey)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "object_not_found", "对象存储文件不存在")
+			return
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(object, 1<<20))
+		_ = object.Close()
+		downloadMS = time.Since(downloadStartedAt).Milliseconds()
+	} else if strings.TrimSpace(request.ObjectKey) != "" {
+		downloadMS = time.Since(downloadStartedAt).Milliseconds()
+	} else if strings.TrimSpace(request.ImageURL) != "" {
+		downloadMS = time.Since(downloadStartedAt).Milliseconds()
+	} else {
+		writeError(w, http.StatusBadRequest, "empty_image", "file_id、object_key 或 image_url 至少传一个")
+		return
+	}
+
+	embeddingStartedAt := time.Now()
+	vector, err := s.imageVectorFromSearchRequest(r.Context(), request.FileID, request.ObjectKey, request.ImageURL)
+	embeddingMS := time.Since(embeddingStartedAt).Milliseconds()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "image_embedding_failed", "图片解析失败")
+		return
+	}
+	searchStartedAt := time.Now()
+	items, searchErr := s.store.SearchProductsByImageVector(r.Context(), vector, request.TopK)
+	vectorSearchMS := time.Since(searchStartedAt).Milliseconds()
+	status := "matched"
+	matchStatus := "ok"
+	if searchErr != nil {
+		status = "no_match"
+		matchStatus = "image_vector_index_unavailable"
+		items = []domain.ProductCard{}
+	}
+	if len(items) == 0 {
+		status = "no_match"
+		if matchStatus == "ok" {
+			matchStatus = "no_vector_hit"
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"relevance_status": status,
+		"match_status":     matchStatus,
+		"items":            items,
+		"durations": map[string]int64{
+			"total_ms":         time.Since(startedAt).Milliseconds(),
+			"download_ms":      downloadMS,
+			"embedding_ms":     embeddingMS,
+			"vector_search_ms": vectorSearchMS,
+			"rerank_ms":        0,
+		},
+	})
+}
+
+func (s *Server) imageVectorFromSearchRequest(ctx context.Context, fileID string, objectKey string, imageURL string) ([]float32, error) {
+	if fileID != "" {
+		fileMeta, ok := s.store.GetStoredFile(ctx, fileID)
+		if !ok {
+			return nil, errText("file not found")
+		}
+		objectKey = fileMeta.ObjectKey
+	}
+	if objectKey != "" {
+		storage, err := objectstore.NewMinIOFromConfig(s.configs.GetMap(ctx))
+		if err != nil {
+			return nil, err
+		}
+		object, err := storage.Get(ctx, objectKey)
+		if err != nil {
+			return nil, err
+		}
+		defer object.Close()
+		return imagevector.FromReader(object)
+	}
+	return imagevector.FromSource(ctx, imageURL)
 }
 
 func (s *Server) handleCreateMerchantProduct(w http.ResponseWriter, r *http.Request) {
@@ -1156,19 +1393,26 @@ func readEvalReport(path string, runID string) (adminEvalReport, bool) {
 
 func evalReportSummary(payload map[string]any) map[string]any {
 	return map[string]any{
-		"type":          payload["type"],
-		"dataset":       payload["dataset"],
-		"generated_at":  payload["generated_at"],
-		"total":         payload["total"],
-		"evaluated":     payload["evaluated"],
-		"hits":          payload["hits"],
-		"correct":       payload["correct"],
-		"accuracy":      payload["accuracy"],
-		"hit_rate_at_k": payload["hit_rate_at_k"],
-		"mrr":           payload["mrr"],
-		"by_query_type": payload["by_query_type"],
-		"by_group":      payload["by_group"],
-		"pass_rate":     firstNumber(payload["pass_rate"], payload["accuracy"], payload["hit_rate_at_k"], payload["recall_case_hit_rate"]),
+		"type":                                payload["type"],
+		"dataset":                             payload["dataset"],
+		"generated_at":                        payload["generated_at"],
+		"total":                               payload["total"],
+		"evaluated":                           payload["evaluated"],
+		"hits":                                payload["hits"],
+		"correct":                             payload["correct"],
+		"accuracy":                            payload["accuracy"],
+		"hit_rate_at_k":                       payload["hit_rate_at_k"],
+		"mrr":                                 payload["mrr"],
+		"by_query_type":                       payload["by_query_type"],
+		"by_group":                            payload["by_group"],
+		"by_case_type":                        payload["by_case_type"],
+		"latency_ms":                          payload["latency_ms"],
+		"image_total_duration_ms_p95":         payload["image_total_duration_ms_p95"],
+		"image_download_duration_ms_p95":      payload["image_download_duration_ms_p95"],
+		"image_embedding_duration_ms_p95":     payload["image_embedding_duration_ms_p95"],
+		"image_vector_search_duration_ms_p95": payload["image_vector_search_duration_ms_p95"],
+		"image_rerank_duration_ms_p95":        payload["image_rerank_duration_ms_p95"],
+		"pass_rate":                           firstNumber(payload["pass_rate"], payload["accuracy"], payload["hit_rate_at_k"], payload["recall_case_hit_rate"]),
 	}
 }
 
@@ -1192,6 +1436,7 @@ func firstNumber(values ...any) float64 {
 func evalToolSuites(datasets []adminEvalDataset, reports []adminEvalReport) []adminEvalToolSuite {
 	suites := []adminEvalToolSuite{
 		{ID: "rag_retriever_eval", Name: "RAG 检索召回", Scope: "tool", DatasetID: "rag_recall_cases", Command: "node quality/evals/run_rag_recall_eval.mjs quality/data/eval/rag_recall_cases.jsonl"},
+		{ID: "image_search_eval", Name: "图片搜索", Scope: "tool", DatasetID: "image_search_cases", Command: "node quality/evals/run_image_search_eval.mjs quality/data/eval/image_search_cases.jsonl"},
 		{ID: "intent", Name: "意图识别", Scope: "tool", DatasetID: "intent_cases", Command: "node quality/evals/run_intent_eval.mjs quality/data/eval/intent_cases.jsonl"},
 		{ID: "agent_e2e", Name: "导购 Agent 端到端", Scope: "agent", DatasetID: "agent_e2e_queries", Command: "node quality/evals/run_agent_e2e.mjs quality/data/eval/agent_e2e_queries.jsonl"},
 		{ID: "agent_no_inventory", Name: "Agent 无库存误挂品", Scope: "agent", DatasetID: "agent_no_inventory_cases", Command: "node quality/evals/run_agent_e2e.mjs quality/data/eval/agent_no_inventory_cases.jsonl"},
@@ -1221,6 +1466,9 @@ func sameEvalFamily(reportType string, suiteID string) bool {
 	if strings.HasPrefix(reportType, "intent") && strings.HasPrefix(suiteID, "intent") {
 		return true
 	}
+	if strings.HasPrefix(reportType, "image_search") && strings.HasPrefix(suiteID, "image_search") {
+		return true
+	}
 	return false
 }
 
@@ -1232,6 +1480,8 @@ func evalTypeFromDataset(id string) string {
 		return "rag_recall"
 	case strings.Contains(id, "intent"):
 		return "intent"
+	case strings.Contains(id, "image_search"):
+		return "image_search_eval"
 	case strings.Contains(id, "agent"):
 		return "agent_e2e"
 	default:
@@ -1245,6 +1495,8 @@ func evalDatasetName(id string) string {
 		return "RAG 召回测试集"
 	case "intent_cases":
 		return "意图识别测试集"
+	case "image_search_cases":
+		return "图片搜索测试集"
 	case "agent_e2e_queries":
 		return "Agent 端到端测试集"
 	case "agent_no_inventory_cases":
@@ -2017,6 +2269,29 @@ func avatarUploadRoot() string {
 		return root
 	}
 	return filepath.Join(".", "uploads", "avatar")
+}
+
+func int64FromMap(values map[string]string, key string, fallback int64) int64 {
+	value := strings.TrimSpace(values[key])
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+
+func fileExtension(filename string, mimeType string) string {
+	if ext := strings.ToLower(filepath.Ext(filename)); ext != "" && len(ext) <= 12 {
+		return ext
+	}
+	exts, err := mime.ExtensionsByType(mimeType)
+	if err == nil && len(exts) > 0 {
+		return exts[0]
+	}
+	return ".bin"
 }
 
 func readPagination(r *http.Request) (int, int) {

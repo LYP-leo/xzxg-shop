@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
+	"github.com/LYP-leo/xzxg-shop/backend/src/imagevector"
 	"github.com/LYP-leo/xzxg-shop/backend/src/rag"
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -74,7 +75,7 @@ func (s *MySQLStore) BootstrapVectorIndex(ctx context.Context) error {
 	if s.vector == nil {
 		return nil
 	}
-	return s.vector.Bootstrap(ctx, s.productVectorRows(ctx), s.knowledgeVectorRows(ctx))
+	return s.vector.Bootstrap(ctx, s.productVectorRows(ctx), s.knowledgeVectorRows(ctx), s.productImageVectorRows(ctx))
 }
 
 func (s *MySQLStore) VectorIndexStatus(ctx context.Context) domain.VectorIndexStatus {
@@ -268,6 +269,21 @@ func (s *MySQLStore) ensureCommerceV3Tables(ctx context.Context) error {
 			INDEX idx_product_reviews_product_id (product_id),
 			INDEX idx_product_reviews_account_id (account_id),
 			INDEX idx_product_reviews_status (status)
+		)`,
+		`CREATE TABLE IF NOT EXISTS stored_files (
+			file_id VARCHAR(64) PRIMARY KEY,
+			account_id VARCHAR(64) NOT NULL DEFAULT '',
+			object_key VARCHAR(512) NOT NULL,
+			url VARCHAR(512) NOT NULL,
+			mime_type VARCHAR(128) NOT NULL,
+			size_bytes BIGINT NOT NULL DEFAULT 0,
+			content_hash VARCHAR(128) NOT NULL,
+			storage_provider VARCHAR(32) NOT NULL DEFAULT 'minio',
+			source_url VARCHAR(1024) NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE KEY uk_stored_files_object_key (object_key),
+			INDEX idx_stored_files_account_id (account_id),
+			INDEX idx_stored_files_content_hash (content_hash)
 		)`,
 		`INSERT IGNORE INTO promotion_rules (
 			promotion_id, name, scope, merchant_id, type, threshold_amount, discount_amount, discount_rate, stackable, start_at, end_at, status
@@ -1313,6 +1329,37 @@ func (s *MySQLStore) GetProduct(ctx context.Context, productID string) (domain.P
 		return domain.ProductDetail{}, false
 	}
 	return product, true
+}
+
+func (s *MySQLStore) SearchProductsByImageVector(ctx context.Context, vector []float32, limit int) ([]domain.ProductCard, error) {
+	if s.vector == nil {
+		return nil, errors.New("image vector index disabled")
+	}
+	hits, err := s.vector.SearchProductImages(ctx, vector, limit)
+	if err != nil {
+		return nil, err
+	}
+	productIDs := make([]string, 0, len(hits))
+	seen := make(map[string]bool, len(hits))
+	for _, hit := range hits {
+		productID := fmt.Sprint(hit.Fields["product_id"])
+		if productID == "" || productID == "<nil>" || seen[productID] {
+			continue
+		}
+		seen[productID] = true
+		productIDs = append(productIDs, productID)
+	}
+	if len(productIDs) == 0 {
+		return []domain.ProductCard{}, nil
+	}
+	cards := s.productCardMapByIDs(ctx, productIDs)
+	out := make([]domain.ProductCard, 0, len(productIDs))
+	for _, id := range productIDs {
+		if card, ok := cards[id]; ok {
+			out = append(out, card)
+		}
+	}
+	return out, nil
 }
 
 func (s *MySQLStore) CreateProduct(ctx context.Context, input domain.ProductUpsertInput) (domain.ProductDetail, error) {
@@ -2516,6 +2563,60 @@ func (s *MySQLStore) CreateMerchantDocument(ctx context.Context, input domain.Kn
 	return document, nil
 }
 
+func (s *MySQLStore) CreateStoredFile(ctx context.Context, input domain.StoredFileInput) (domain.StoredFile, error) {
+	if input.FileID == "" {
+		input.FileID = nextID("file")
+	}
+	if input.StorageProvider == "" {
+		input.StorageProvider = "minio"
+	}
+	now := time.Now()
+	file := domain.StoredFile{
+		FileID:          input.FileID,
+		AccountID:       input.AccountID,
+		ObjectKey:       input.ObjectKey,
+		URL:             input.URL,
+		MimeType:        input.MimeType,
+		SizeBytes:       input.SizeBytes,
+		ContentHash:     input.ContentHash,
+		StorageProvider: input.StorageProvider,
+		SourceURL:       input.SourceURL,
+		CreatedAt:       now,
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO stored_files (file_id, account_id, object_key, url, mime_type, size_bytes, content_hash, storage_provider, source_url, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, file.FileID, file.AccountID, file.ObjectKey, file.URL, file.MimeType, file.SizeBytes, file.ContentHash, file.StorageProvider, file.SourceURL, file.CreatedAt)
+	if err != nil {
+		return domain.StoredFile{}, fmt.Errorf("insert stored file: %w", err)
+	}
+	return file, nil
+}
+
+func (s *MySQLStore) GetStoredFile(ctx context.Context, fileID string) (domain.StoredFile, bool) {
+	var file domain.StoredFile
+	err := s.db.QueryRowContext(ctx, `
+		SELECT file_id, account_id, object_key, url, mime_type, size_bytes, content_hash, storage_provider, source_url, created_at
+		FROM stored_files
+		WHERE file_id = ?
+	`, fileID).Scan(
+		&file.FileID,
+		&file.AccountID,
+		&file.ObjectKey,
+		&file.URL,
+		&file.MimeType,
+		&file.SizeBytes,
+		&file.ContentHash,
+		&file.StorageProvider,
+		&file.SourceURL,
+		&file.CreatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.StoredFile{}, false
+	}
+	return file, err == nil
+}
+
 func (s *MySQLStore) getRun(ctx context.Context, runID string) (domain.AgentRun, bool) {
 	var run domain.AgentRun
 	var status string
@@ -2708,6 +2809,15 @@ func (s *MySQLStore) productCardsByIDs(ctx context.Context, productIDs []string)
 	return ordered
 }
 
+func (s *MySQLStore) productCardMapByIDs(ctx context.Context, productIDs []string) map[string]domain.ProductCard {
+	cards := s.productCardsByIDs(ctx, productIDs)
+	byID := make(map[string]domain.ProductCard, len(cards))
+	for _, card := range cards {
+		byID[card.ProductID] = card
+	}
+	return byID
+}
+
 func (s *MySQLStore) knowledgeChunksByIDs(ctx context.Context, chunkIDs []string) []domain.Citation {
 	chunkIDs = uniqueTerms(chunkIDs, 100)
 	if len(chunkIDs) == 0 {
@@ -2771,6 +2881,48 @@ func (s *MySQLStore) productVectorRows(ctx context.Context) []map[string]any {
 			"updated_at_ts": time.Now().Unix(),
 			"search_text":   productSearchText(product),
 		})
+	}
+	return out
+}
+
+func (s *MySQLStore) productImageVectorRows(ctx context.Context) []map[string]any {
+	rows, err := s.db.QueryContext(ctx, productDetailSelect()+` WHERE p.status = 'active' ORDER BY p.product_id`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]map[string]any, 0)
+	for rows.Next() {
+		product, err := scanProductDetail(rows)
+		if err != nil {
+			return nil
+		}
+		sources := product.ImageURLs
+		if len(sources) == 0 && product.ImageURL != "" {
+			sources = []string{product.ImageURL}
+		}
+		for index, source := range sources {
+			vector, err := imagevector.FromSource(ctx, source)
+			if err != nil || len(vector) == 0 {
+				continue
+			}
+			imageType := "detail"
+			if index == 0 {
+				imageType = "main"
+			}
+			out = append(out, map[string]any{
+				"image_vector_id": fmt.Sprintf("img_%s_%d", product.ProductID, index),
+				"product_id":      product.ProductID,
+				"merchant_id":     product.MerchantID,
+				"category_id":     product.CategoryID,
+				"brand":           product.Brand,
+				"image_url":       source,
+				"image_type":      imageType,
+				"quality_score":   0.8,
+				"updated_at_ts":   time.Now().Unix(),
+				"embedding":       vector,
+			})
+		}
 	}
 	return out
 }

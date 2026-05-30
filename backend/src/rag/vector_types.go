@@ -11,6 +11,7 @@ const (
 	DefaultMilvusToken         = "root:Milvus"
 	DefaultProductCollection   = "product_text_vectors"
 	DefaultKnowledgeCollection = "knowledge_text_chunks"
+	DefaultImageCollection     = "product_image_vectors"
 	DefaultEmbeddingModel      = "text-embedding-v4"
 	DefaultEmbeddingBatchSize  = 10
 	MaxEmbeddingBatchSize      = 10
@@ -26,6 +27,7 @@ type Config struct {
 	Database            string
 	ProductCollection   string
 	KnowledgeCollection string
+	ImageCollection     string
 	EmbeddingBaseURL    string
 	EmbeddingAPIKey     string
 	EmbeddingModel      string
@@ -52,6 +54,7 @@ func ConfigFromMap(values map[string]string, fallbackAPIKey string, fallbackBase
 		Database:            strings.TrimSpace(values["milvus.database"]),
 		ProductCollection:   valueOr(values["milvus.collection.products"], DefaultProductCollection),
 		KnowledgeCollection: valueOr(values["milvus.collection.knowledge"], DefaultKnowledgeCollection),
+		ImageCollection:     valueOr(values["milvus.collection.product_images"], DefaultImageCollection),
 		EmbeddingBaseURL:    valueOr(values["embedding.base_url"], valueOr(values["ai.base_url"], fallbackBaseURL)),
 		EmbeddingAPIKey:     valueOr(values["embedding.api_key"], valueOr(values["ai.api_key"], fallbackAPIKey)),
 		EmbeddingModel:      valueOr(values["embedding.model"], DefaultEmbeddingModel),

@@ -57,6 +57,7 @@ type Store interface {
 	ListAllProducts(ctx context.Context) []domain.ProductCard
 	ListAllProductsPage(ctx context.Context, page int, pageSize int) ([]domain.ProductCard, int)
 	GetProduct(ctx context.Context, productID string) (domain.ProductDetail, bool)
+	SearchProductsByImageVector(ctx context.Context, vector []float32, limit int) ([]domain.ProductCard, error)
 	CreateProduct(ctx context.Context, input domain.ProductUpsertInput) (domain.ProductDetail, error)
 	UpdateProduct(ctx context.Context, productID string, input domain.ProductUpsertInput) (domain.ProductDetail, bool)
 	UpdateProductStatus(ctx context.Context, merchantID string, productID string, status string) (domain.ProductDetail, bool)
@@ -102,4 +103,8 @@ type Store interface {
 	ListAllDocuments(ctx context.Context) []domain.KnowledgeDocument
 	ListAllDocumentsPage(ctx context.Context, page int, pageSize int) ([]domain.KnowledgeDocument, int)
 	CreateMerchantDocument(ctx context.Context, input domain.KnowledgeDocumentInput) (domain.KnowledgeDocument, error)
+
+	// 文件与对象存储。
+	CreateStoredFile(ctx context.Context, input domain.StoredFileInput) (domain.StoredFile, error)
+	GetStoredFile(ctx context.Context, fileID string) (domain.StoredFile, bool)
 }

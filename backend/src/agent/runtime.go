@@ -2,9 +2,12 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +17,7 @@ import (
 	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
 	"github.com/LYP-leo/xzxg-shop/backend/src/rag"
 	"github.com/LYP-leo/xzxg-shop/backend/src/retrievalconfig"
+	"github.com/LYP-leo/xzxg-shop/backend/src/risk"
 	"github.com/LYP-leo/xzxg-shop/backend/src/store"
 )
 
@@ -65,6 +69,22 @@ func (r *Runtime) Stream(ctx context.Context, run domain.AgentRun, message domai
 		TraceID:       run.TraceID,
 	}); err != nil {
 		return err
+	}
+
+	if result := risk.CheckText(message.Content, r.configs.GetMap(ctx)); result.Blocked {
+		if err := r.emitText(run, result.Message, emit); err != nil {
+			return err
+		}
+		block := domain.AgentBlock{Type: "warning", Code: result.Code, Message: result.Message}
+		if err := emit(domain.SSEEvent{Type: "block_delta", RunID: run.RunID, Block: &block}); err != nil {
+			return err
+		}
+		if _, ok := r.store.UpdateRunStatus(ctx, run.AccountID, run.RunID, domain.RunStatusCompleted); !ok {
+			r.logger.Warn("agent run status update skipped", "run_id", run.RunID)
+		}
+		r.trace(ctx, run, "risk", "blocked", "", "blocked", 0, "", map[string]any{"code": result.Code, "matched": result.Matched})
+		r.trace(ctx, run, "run", "completed", "", "blocked", 0, "", nil)
+		return emit(domain.SSEEvent{Type: "message_end", RunID: run.RunID})
 	}
 
 	if needsPhotoSearch(message) {
@@ -180,7 +200,8 @@ func (r *Runtime) classifyIntent(ctx context.Context, run domain.AgentRun, query
 	}
 
 	startedAt := time.Now()
-	routeContent, err := r.llm.Complete(ctx, r.llm.SmallModel(), []ChatMessage{
+	temperature := 0.1
+	messages := []ChatMessage{
 		{
 			Role:    "system",
 			Content: r.stringConfig(ctx, "agent.prompt.route", configcenter.DefaultRoutePrompt),
@@ -189,16 +210,17 @@ func (r *Runtime) classifyIntent(ctx context.Context, run domain.AgentRun, query
 			Role:    "user",
 			Content: "用户问题：" + query + "\n只输出字段：reasoning、route。",
 		},
-	}, 0.1)
+	}
+	routeContent, err := r.llm.Complete(ctx, r.llm.SmallModel(), messages, temperature)
 	if err != nil {
 		r.logger.Warn("agent route fallback", "error", err)
 		if recordTrace {
-			r.traceLLM(ctx, run, "planner.route", r.llm.SmallModel(), startedAt, err, nil)
+			r.traceLLM(ctx, run, "planner.route", r.llm.SmallModel(), startedAt, err, llmPromptMetadata(messages, temperature, nil))
 		}
 		return fallback
 	}
 	if recordTrace {
-		r.traceLLM(ctx, run, "planner.route", r.llm.SmallModel(), startedAt, nil, map[string]any{"raw_length": len([]rune(routeContent))})
+		r.traceLLM(ctx, run, "planner.route", r.llm.SmallModel(), startedAt, nil, llmPromptMetadata(messages, temperature, map[string]any{"raw_length": len([]rune(routeContent))}))
 	}
 
 	var plan runPlan
@@ -227,7 +249,8 @@ func (r *Runtime) classifyIntent(ctx context.Context, run domain.AgentRun, query
 // classifyGuideIntent 只处理导购内部的细分类；非导购和快速商品动作不会进入这里。
 func (r *Runtime) classifyGuideIntent(ctx context.Context, run domain.AgentRun, query string, recordTrace bool, fallback runPlan) runPlan {
 	startedAt := time.Now()
-	content, err := r.llm.Complete(ctx, r.llm.SmallModel(), []ChatMessage{
+	temperature := 0.1
+	messages := []ChatMessage{
 		{
 			Role:    "system",
 			Content: r.stringConfig(ctx, "agent.prompt.guide_intent", configcenter.DefaultGuideIntentPrompt),
@@ -236,16 +259,17 @@ func (r *Runtime) classifyGuideIntent(ctx context.Context, run domain.AgentRun, 
 			Role:    "user",
 			Content: "用户问题：" + query + "\n只输出字段：reasoning、is_guide、intent、level、secondary_level。",
 		},
-	}, 0.1)
+	}
+	content, err := r.llm.Complete(ctx, r.llm.SmallModel(), messages, temperature)
 	if err != nil {
 		r.logger.Warn("agent guide intent fallback", "error", err)
 		if recordTrace {
-			r.traceLLM(ctx, run, "planner.guide_intent", r.llm.SmallModel(), startedAt, err, nil)
+			r.traceLLM(ctx, run, "planner.guide_intent", r.llm.SmallModel(), startedAt, err, llmPromptMetadata(messages, temperature, nil))
 		}
 		return fallback
 	}
 	if recordTrace {
-		r.traceLLM(ctx, run, "planner.guide_intent", r.llm.SmallModel(), startedAt, nil, map[string]any{"raw_length": len([]rune(content))})
+		r.traceLLM(ctx, run, "planner.guide_intent", r.llm.SmallModel(), startedAt, nil, llmPromptMetadata(messages, temperature, map[string]any{"raw_length": len([]rune(content))}))
 	}
 
 	var guidePlan runPlan
@@ -371,16 +395,18 @@ func (r *Runtime) followups(ctx context.Context, run domain.AgentRun, query stri
 		return fallback
 	}
 	startedAt := time.Now()
-	content, err := r.llm.Complete(ctx, r.llm.SmallModel(), []ChatMessage{
+	temperature := 0.2
+	messages := []ChatMessage{
 		{Role: "system", Content: r.stringConfig(ctx, "agent.prompt.followups", configcenter.DefaultFollowupsPrompt)},
 		{Role: "user", Content: fmt.Sprintf("用户问题：%s\n候选商品：\n%s", query, formatProducts(products, 3))},
-	}, 0.2)
+	}
+	content, err := r.llm.Complete(ctx, r.llm.SmallModel(), messages, temperature)
 	if err != nil {
 		r.logger.Warn("agent followups fallback", "error", err)
-		r.traceLLM(ctx, run, "followups", r.llm.SmallModel(), startedAt, err, nil)
+		r.traceLLM(ctx, run, "followups", r.llm.SmallModel(), startedAt, err, llmPromptMetadata(messages, temperature, nil))
 		return fallback
 	}
-	r.traceLLM(ctx, run, "followups", r.llm.SmallModel(), startedAt, nil, map[string]any{"raw_length": len([]rune(content))})
+	r.traceLLM(ctx, run, "followups", r.llm.SmallModel(), startedAt, nil, llmPromptMetadata(messages, temperature, map[string]any{"raw_length": len([]rune(content))}))
 	var questions []string
 	if err := json.Unmarshal([]byte(extractJSONArray(content)), &questions); err != nil {
 		r.logger.Warn("agent followups json fallback", "error", err, "content", content)
@@ -536,12 +562,10 @@ func heuristicPlan(query string, smallModel string, largeModel string) runPlan {
 }
 
 func (r *Runtime) answerModelForPlan(plan runPlan) string {
-	switch plan.Intent {
-	case "compare_decide", "category_shop_complex", "scene_solution":
-		return r.llm.LargeModel()
-	default:
+	if plan.Route == "fast_product" || isToolIntent(plan.Intent) {
 		return r.llm.SmallModel()
 	}
+	return r.llm.LargeModel()
 }
 
 func buildAnswer(query string, plan runPlan, products []domain.ProductCard) string {
@@ -731,6 +755,56 @@ func metadataJSON(metadata map[string]any) string {
 		return "{}"
 	}
 	return string(payload)
+}
+
+func llmPromptMetadata(messages []ChatMessage, temperature float64, extra map[string]any) map[string]any {
+	metadata := map[string]any{
+		"temperature":  temperature,
+		"messages":     sanitizeTraceMessages(messages),
+		"prompt_chars": promptChars(messages),
+		"prompt_hash":  promptHash(messages),
+	}
+	for key, value := range extra {
+		metadata[key] = value
+	}
+	return metadata
+}
+
+func sanitizeTraceMessages(messages []ChatMessage) []map[string]string {
+	out := make([]map[string]string, 0, len(messages))
+	for _, message := range messages {
+		out = append(out, map[string]string{
+			"role":    message.Role,
+			"content": redactTraceText(message.Content),
+		})
+	}
+	return out
+}
+
+func promptChars(messages []ChatMessage) int {
+	total := 0
+	for _, message := range messages {
+		total += len([]rune(message.Content))
+	}
+	return total
+}
+
+func promptHash(messages []ChatMessage) string {
+	var builder strings.Builder
+	for _, message := range messages {
+		builder.WriteString(message.Role)
+		builder.WriteString("\n")
+		builder.WriteString(message.Content)
+		builder.WriteString("\n---\n")
+	}
+	sum := sha256.Sum256([]byte(builder.String()))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+var traceSecretPattern = regexp.MustCompile(`(?i)(authorization:\s*bearer\s+|api[_-]?key["']?\s*[:=]\s*["']?|token["']?\s*[:=]\s*["']?|password["']?\s*[:=]\s*["']?)[^"',\s]+`)
+
+func redactTraceText(text string) string {
+	return traceSecretPattern.ReplaceAllString(text, `${1}******`)
 }
 
 func splitText(text string, size int) []string {

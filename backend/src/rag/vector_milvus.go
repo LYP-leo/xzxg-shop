@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,10 +16,11 @@ import (
 )
 
 type Client struct {
-	cfg      Config
-	embedder Embedder
-	client   *http.Client
-	ready    bool
+	cfg        Config
+	embedder   Embedder
+	client     *http.Client
+	ready      bool
+	imageReady bool
 }
 
 func NewClient(cfg Config, embedder Embedder) *Client {
@@ -33,9 +35,21 @@ func (c *Client) Enabled() bool {
 	return c != nil && c.cfg.Enabled && c.ready
 }
 
-func (c *Client) Bootstrap(ctx context.Context, productRows []map[string]any, knowledgeRows []map[string]any) error {
+func (c *Client) Bootstrap(ctx context.Context, productRows []map[string]any, knowledgeRows []map[string]any, imageRows []map[string]any) error {
 	if c == nil || !c.cfg.Enabled {
 		return nil
+	}
+	if len(imageRows) > 0 {
+		if imageDim := vectorDimension(imageRows[0]["embedding"]); imageDim > 0 {
+			if err := c.ensureCollection(ctx, c.cfg.ImageCollection, "image_vector_id", imageDim); err != nil {
+				return err
+			}
+			if err := c.upsertVectorRows(ctx, c.cfg.ImageCollection, imageRows); err != nil {
+				return err
+			}
+			_ = c.loadCollection(ctx, c.cfg.ImageCollection)
+			c.imageReady = true
+		}
 	}
 	if c.embedder == nil {
 		return errors.New("embedder is nil")
@@ -74,10 +88,17 @@ func (c *Client) SearchKnowledge(ctx context.Context, query string, limit int) (
 	return c.search(ctx, c.cfg.KnowledgeCollection, "chunk_id", query, limit, []string{"chunk_id", "source"})
 }
 
+func (c *Client) SearchProductImages(ctx context.Context, vector []float32, limit int) ([]SearchHit, error) {
+	if c == nil || !c.cfg.Enabled {
+		return nil, errors.New("image vector client disabled")
+	}
+	return c.searchVector(ctx, c.cfg.ImageCollection, "image_vector_id", vector, limit, []string{"image_vector_id", "product_id", "image_url", "image_type"})
+}
+
 func (c *Client) Status(ctx context.Context) domain.VectorIndexStatus {
 	status := domain.VectorIndexStatus{
 		Enabled:   c != nil && c.cfg.Enabled,
-		Ready:     c != nil && c.ready,
+		Ready:     c != nil && (c.ready || c.imageReady),
 		UpdatedAt: time.Now(),
 	}
 	if c == nil {
@@ -91,6 +112,7 @@ func (c *Client) Status(ctx context.Context) domain.VectorIndexStatus {
 	}{
 		{c.cfg.ProductCollection, "products", "product_id"},
 		{c.cfg.KnowledgeCollection, "knowledge", "chunk_id"},
+		{c.cfg.ImageCollection, "product_images", "image_vector_id"},
 	}
 	for _, collection := range collections {
 		item, err := c.collectionStatus(ctx, collection.name, collection.kind, collection.primary)
@@ -241,6 +263,42 @@ func (c *Client) upsertRows(ctx context.Context, collection string, rows []map[s
 	return nil
 }
 
+func (c *Client) upsertVectorRows(ctx context.Context, collection string, rows []map[string]any) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	batchSize := c.cfg.EmbeddingBatchSize
+	if batchSize <= 0 {
+		batchSize = 16
+	}
+	for start := 0; start < len(rows); start += batchSize {
+		end := start + batchSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		entities := make([]map[string]any, 0, end-start)
+		for _, row := range rows[start:end] {
+			if vectorDimension(row["embedding"]) == 0 {
+				continue
+			}
+			entities = append(entities, cloneMap(row))
+		}
+		if len(entities) == 0 {
+			continue
+		}
+		payload := map[string]any{
+			"dbName":         c.cfg.Database,
+			"collectionName": collection,
+			"data":           entities,
+		}
+		var result milvusResponse
+		if err := c.post(ctx, "/v2/vectordb/entities/upsert", payload, &result); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (c *Client) search(ctx context.Context, collection string, idField string, query string, limit int, outputFields []string) ([]SearchHit, error) {
 	if c == nil || !c.Enabled() {
 		return nil, errors.New("vector client disabled")
@@ -252,10 +310,23 @@ func (c *Client) search(ctx context.Context, collection string, idField string, 
 	if err != nil {
 		return nil, err
 	}
+	return c.searchVector(ctx, collection, idField, embedding[0], limit, outputFields)
+}
+
+func (c *Client) searchVector(ctx context.Context, collection string, idField string, vector []float32, limit int, outputFields []string) ([]SearchHit, error) {
+	if c == nil || !c.cfg.Enabled {
+		return nil, errors.New("vector client disabled")
+	}
+	if len(vector) == 0 {
+		return nil, errors.New("empty vector")
+	}
+	if limit <= 0 {
+		limit = c.cfg.VectorTopN
+	}
 	payload := map[string]any{
 		"dbName":         c.cfg.Database,
 		"collectionName": collection,
-		"data":           embedding,
+		"data":           [][]float32{vector},
 		"annsField":      "embedding",
 		"limit":          limit,
 		"outputFields":   outputFields,
@@ -287,6 +358,19 @@ func (c *Client) search(ctx context.Context, collection string, idField string, 
 		hits = append(hits, SearchHit{ID: id, Score: score, Fields: row})
 	}
 	return hits, nil
+}
+
+func vectorDimension(value any) int {
+	switch vector := value.(type) {
+	case []float32:
+		return len(vector)
+	case []float64:
+		return len(vector)
+	case []any:
+		return len(vector)
+	default:
+		return 0
+	}
 }
 
 func (c *Client) post(ctx context.Context, path string, payload any, out any) error {
@@ -346,6 +430,12 @@ func number(value any) float64 {
 		return float64(v)
 	case int64:
 		return float64(v)
+	case string:
+		parsed, err := strconv.ParseFloat(v, 64)
+		if err == nil {
+			return parsed
+		}
+		return 0
 	default:
 		return 0
 	}
