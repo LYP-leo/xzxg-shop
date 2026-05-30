@@ -153,7 +153,8 @@ CREATE TABLE IF NOT EXISTS user_messages (
   created_at DATETIME NOT NULL,
   INDEX idx_user_messages_account_id (account_id),
   INDEX idx_user_messages_session_id (session_id),
-  INDEX idx_user_messages_client_message_id (client_message_id)
+  INDEX idx_user_messages_client_message_id (client_message_id),
+  UNIQUE KEY uk_user_messages_client_message (account_id, session_id, client_message_id)
 );
 
 CREATE TABLE IF NOT EXISTS agent_runs (
@@ -171,7 +172,8 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   updated_at DATETIME NOT NULL,
   INDEX idx_agent_runs_account_id (account_id),
   INDEX idx_agent_runs_session_id (session_id),
-  INDEX idx_agent_runs_message_id (message_id)
+  INDEX idx_agent_runs_message_id (message_id),
+  UNIQUE KEY uk_agent_runs_message (account_id, message_id)
 );
 
 CREATE TABLE IF NOT EXISTS agent_trace_events (

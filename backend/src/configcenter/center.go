@@ -114,7 +114,7 @@ const DefaultAnswerBasePrompt = `你是小猪小狗电商平台的 AI 导购主 
 - 如果引用挂品标签 <item>...</item>，标签内容必须是商品 ID，例如 <item>p_001</item>；禁止在 <item> 内放商品名、品牌名或自然语言挂品指令。
 - 不输出 markdown 表格，不输出隐藏推理。`
 
-const DefaultToolProtocolPrompt = `你正在一个 ReAct 工具循环中工作。每一步只能输出一个 JSON 对象，不能输出 Markdown、解释文字或隐藏推理。
+const DefaultToolProtocolPrompt = `你正在一个 ReAct 工具循环中工作。每一步只能输出一种协议内容，不能输出隐藏推理。
 
 可用工具：
 1. search_products：搜索商品。参数 {"query":"用户需求或商品关键词","limit":5}
@@ -125,7 +125,7 @@ const DefaultToolProtocolPrompt = `你正在一个 ReAct 工具循环中工作�
 6. delete_cart_item：删除购物车项。参数 {"cart_item_id":"购物车项ID"}
 7. checkout：基于当前选中购物车项创建待支付订单。参数 {}
 
-输出格式二选一：
+输出格式三选一：
 工具调用：
 {
   "type": "tool_call",
@@ -133,15 +133,17 @@ const DefaultToolProtocolPrompt = `你正在一个 ReAct 工具循环中工作�
   "arguments": {}
 }
 
-最终决策：
+Skill 调用：
 {
-  "type": "final",
-  "text": "给最终回答阶段的简短依据，不要写长文",
-  "blocks": [
-    {"type": "product_refs", "product_ids": ["p_001"]},
-    {"type": "citation_refs", "chunk_ids": ["k_001"]}
-  ]
+  "type": "skill_call",
+  "skill": "navigate_cart|navigate_orders|navigate_products|coupon_help|order_help|after_sales_help",
+  "arguments": {}
 }
+
+最终回答：
+<final>
+给用户看的完整最终回答。这里可以使用 Markdown 标题、列表、加粗和 <item>product_id</item>。
+</final>
 
 规则：
 - 商品推荐、商品对比、商品详情、价格、库存、卖点、风险提示，必须先调用 search_products。
@@ -150,9 +152,10 @@ const DefaultToolProtocolPrompt = `你正在一个 ReAct 工具循环中工作�
 - 修改/删除购物车前必须有 cart_item_id；如果用户按序号描述，先调用 get_cart。
 - checkout 前建议先调用 get_cart，确认存在选中商品。
 - 不要伪造商品 ID、购物车项 ID、价格、库存、优惠或订单。
-- 如果用户问题不是导购或工具动作，可以直接 final，简短说明能力边界或给出自然问候。
-- final blocks 只允许 product_refs 和 citation_refs。
-- 如需在 text 中额外输出 <item> 标签，<item> 内只能写已由工具返回的 product_id，例如 <item>p_001</item>；不能写商品名或推荐语。
+- 如果用户问题不是导购或工具动作，可以直接输出 <final>，简短说明能力边界或给出自然问候。
+- 最终回答必须用 <final> 开始、</final> 结束；不要把最终回答放进 JSON 字符串。
+- 如需在最终回答中输出 <item> 标签，<item> 内只能写已由工具返回的 product_id，例如 <item>p_001</item>；不能写商品名或推荐语。
+- <final> 内的内容会被后端实时流式转发给前端；因此信息足够时直接开始写最终回答，不要再输出 {"type":"final"}。
 - 重点词、品牌词、系列词不要用 special_word 标识，统一用 Markdown 加粗，例如 **耐克**。`
 
 const DefaultIntentToolPolicyPrompt = `{
@@ -260,10 +263,15 @@ func NewMemoryCenter(defaults []domain.AppConfig) *MemoryCenter {
 
 func DefaultConfigs(envAPIKey string) []domain.AppConfig {
 	configs := []domain.AppConfig{
+		{ConfigKey: "ai.active_provider", ConfigValue: "qwen", ValueType: "string", Description: "当前生效模型供应商：qwen 或 doubao", Domain: "app"},
 		{ConfigKey: "ai.base_url", ConfigValue: "https://dashscope.aliyuncs.com/compatible-mode/v1", ValueType: "string", Description: "OpenAI 兼容模型服务 Base URL", Domain: "app"},
 		{ConfigKey: "ai.small_model", ConfigValue: "qwen3.5-flash", ValueType: "string", Description: "低成本小模型，用于意图识别和轻量回答", Domain: "app"},
 		{ConfigKey: "ai.large_model", ConfigValue: "qwen3.6-plus", ValueType: "string", Description: "复杂导购决策模型", Domain: "app"},
 		{ConfigKey: "ai.api_key", ConfigValue: envAPIKey, ValueType: "string", Description: "模型服务 API Key，列表接口脱敏", Domain: "app", IsSecret: true},
+		{ConfigKey: "ai.qwen.base_url", ConfigValue: "https://dashscope.aliyuncs.com/compatible-mode/v1", ValueType: "string", Description: "千问 OpenAI 兼容模型服务 Base URL", Domain: "app"},
+		{ConfigKey: "ai.qwen.small_model", ConfigValue: "qwen3.5-flash", ValueType: "string", Description: "千问低成本小模型", Domain: "app"},
+		{ConfigKey: "ai.qwen.large_model", ConfigValue: "qwen3.6-plus", ValueType: "string", Description: "千问复杂导购决策模型", Domain: "app"},
+		{ConfigKey: "ai.qwen.api_key", ConfigValue: envAPIKey, ValueType: "string", Description: "千问模型服务 API Key，列表接口脱敏", Domain: "app", IsSecret: true},
 		{ConfigKey: "ai.enabled", ConfigValue: "true", ValueType: "bool", Description: "是否启用真实模型调用", Domain: "app"},
 		{ConfigKey: "ai.enable_thinking", ConfigValue: "false", ValueType: "bool", Description: "是否启用模型思考模式，默认关闭以降低首 token 延迟", Domain: "app"},
 		{ConfigKey: "vector.enabled", ConfigValue: "true", ValueType: "bool", Description: "是否启用 Milvus 向量召回；不可用时自动降级关键词检索", Domain: "infra"},

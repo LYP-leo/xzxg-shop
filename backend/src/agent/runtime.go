@@ -449,6 +449,21 @@ func (r *Runtime) refreshDynamicConfig(ctx context.Context) {
 	if value := strings.TrimSpace(values["ai.large_model"]); value != "" {
 		models.LargeModel = value
 	}
+	if provider := activeModelProvider(values); provider != "" {
+		prefix := "ai." + provider + "."
+		if value := strings.TrimSpace(values[prefix+"base_url"]); value != "" {
+			models.BaseURL = value
+		}
+		if value := strings.TrimSpace(values[prefix+"api_key"]); value != "" {
+			models.APIKey = value
+		}
+		if value := strings.TrimSpace(values[prefix+"small_model"]); value != "" {
+			models.SmallModel = value
+		}
+		if value := strings.TrimSpace(values[prefix+"large_model"]); value != "" {
+			models.LargeModel = value
+		}
+	}
 	if value := strings.TrimSpace(values["ai.enable_thinking"]); value != "" {
 		models.EnableThinking = parseBool(value, false)
 	}
@@ -464,6 +479,20 @@ func (r *Runtime) refreshDynamicConfig(ctx context.Context) {
 		}
 	}
 	r.configNext = time.Now().Add(time.Duration(refreshSeconds) * time.Second)
+}
+
+func activeModelProvider(values map[string]string) string {
+	provider := strings.ToLower(strings.TrimSpace(values["ai.active_provider"]))
+	if provider == "" {
+		return ""
+	}
+	provider = strings.ReplaceAll(provider, "-", "_")
+	for _, char := range provider {
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '_' {
+			return ""
+		}
+	}
+	return provider
 }
 
 func (r *Runtime) boolConfig(ctx context.Context, key string, fallback bool) bool {

@@ -2001,7 +2001,7 @@ func (s *Server) handleAgentSessionAction(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	message, err := s.store.CreateUserMessage(r.Context(), domain.UserMessage{
+	message, messageCreated, err := s.store.CreateUserMessage(r.Context(), domain.UserMessage{
 		SessionID:       sessionID,
 		AccountID:       account.AccountID,
 		ClientMessageID: request.ClientMessageID,
@@ -2013,9 +2013,13 @@ func (s *Server) handleAgentSessionAction(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	run, err := s.store.CreateRun(r.Context(), account.AccountID, sessionID, message.MessageID)
+	run, runCreated, err := s.store.CreateRun(r.Context(), account.AccountID, sessionID, message.MessageID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "create_run_failed", "创建 Agent 执行失败")
+		return
+	}
+	if !messageCreated || !runCreated {
+		writeSSESnapshot(w, run, "duplicate_message", "请求已提交过，已返回已有执行记录")
 		return
 	}
 
@@ -2119,6 +2123,31 @@ func (s *Server) streamAgentRun(w http.ResponseWriter, r *http.Request, run doma
 	followupsJSON, _ := json.Marshal(followups)
 	segmentsJSON, _ := json.Marshal(segments)
 	s.store.UpdateRunResult(r.Context(), run.AccountID, run.RunID, strings.TrimSpace(content.String()), string(blocksJSON), string(followupsJSON), string(segmentsJSON))
+}
+
+func writeSSESnapshot(w http.ResponseWriter, run domain.AgentRun, code string, message string) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "stream_unsupported", "当前环境不支持流式响应")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	events := []domain.SSEEvent{
+		{Type: "message_start", RunID: run.RunID, SessionID: run.SessionID, TraceID: run.TraceID},
+		{Type: "error", RunID: run.RunID, Code: code, Message: message},
+		{Type: "message_end", RunID: run.RunID},
+	}
+	for _, event := range events {
+		payload, err := json.Marshal(event)
+		if err != nil {
+			return
+		}
+		_, _ = w.Write([]byte("event: " + event.Type + "\n"))
+		_, _ = w.Write([]byte("data: " + string(payload) + "\n\n"))
+		flusher.Flush()
+	}
 }
 
 func (s *Server) withCORS(next http.Handler) http.Handler {

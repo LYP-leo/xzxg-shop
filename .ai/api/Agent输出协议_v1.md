@@ -40,6 +40,14 @@ Authorization: Bearer <token>
 }
 ```
 
+幂等要求：
+
+- `client_message_id` 是客户端生成的消息幂等键，同一账号、同一会话内必须唯一。
+- 客户端超时重试、断网重发、页面恢复重放时，必须复用同一个 `client_message_id`。
+- 后端按 `(account_id, session_id, client_message_id)` 做唯一约束；重复提交不会重新创建消息，也不会再次执行 Agent。
+- 如果重复提交命中已有 run，SSE 会返回已有 `run_id` 和 `duplicate_message` 事件，客户端应停止本次发送态，并通过会话详情或 run trace 刷新已有结果。
+- 新建消息时如果客户端未传 `client_message_id`，后端会生成服务端幂等键；但这种请求无法跨网络重试去重，正式客户端必须传。
+
 ## SSE 包格式
 
 后端每次发送：
