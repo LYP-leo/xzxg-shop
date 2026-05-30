@@ -87,6 +87,41 @@ P6 open_explore：有潜在购买意图，但没有明确品类，只由风格�
 - level=P4 时 secondary_level 必须是 P4A/P4B/P4C；非 P4 时 secondary_level=None。
 - 不输出任何 JSON 之外的内容。`
 
+const DefaultMemoryRetrievalPrompt = `你是电商导购的短期会话记忆检索器。你会收到当前用户问题和最近若干轮历史记录，只判断哪些历史信息对当前问题有帮助。
+
+任务：
+1. 只选择与当前问题直接相关的历史事实，例如用户提到的“刚才那个”“第二个”“这个价位”“继续看”等指代所需的商品、约束、偏好或动作上下文。
+2. 无关闲聊、已过期动作、和当前问题没有承接关系的记录不要选择。
+3. 如果当前问题是“第一个/第二个/第 N 个 + 品类词/系列词/商品词”，优先在最近一轮同品类、同系列或同主题的推荐记录中按“本轮商品顺序”解析商品 ID；不要被更近但不同品类或不同动作的记录覆盖。
+4. 如果当前问题是加购、删除、改数量等商品动作，且历史能确定商品 ID，必须输出 has_relevant_memory=true，并把确定的商品 ID 放入 referenced_product_ids。
+5. 如果没有相关记忆，输出 has_relevant_memory=false。
+
+输出 JSON：
+{
+  "has_relevant_memory": true,
+  "memory_summary": "中文，120字以内，概括当前问题需要继承的历史信息",
+  "referenced_product_ids": ["商品ID"],
+  "used_record_ids": ["record_id"]
+}
+
+字段约束：
+- referenced_product_ids 只能来自候选历史里的商品 ID。
+- used_record_ids 只能来自候选历史里的 record_id。
+- 不输出任何 JSON 之外的内容。`
+
+const DefaultSessionSummaryPrompt = `你是电商导购会话摘要器。根据旧摘要、最新用户问题和最新助手回答，生成会话级滚动摘要，供后续短期记忆检索使用。
+
+要求：
+- 保留用户稳定偏好、约束、已推荐或已操作的关键商品、未完成动作。
+- 删除寒暄、重复解释和无关细节。
+- 摘要不超过 200 字。
+- 只输出 JSON，不要输出解释文本。
+
+输出 JSON：
+{
+  "summary": "中文摘要"
+}`
+
 const DefaultAnswerBasePrompt = `你是小猪小狗电商平台的 AI 导购主 Agent。
 
 上下文信息：
@@ -112,7 +147,8 @@ const DefaultAnswerBasePrompt = `你是小猪小狗电商平台的 AI 导购主 
 - 最终回答先给结论，再给 2 到 4 条依据，最后给 1 到 2 个可执行追问或下一步建议。
 - 可使用 Markdown 的短标题、列表和加粗来突出重点词；禁止输出 "special_word"、"special word"、"（special_word）" 等内部标识。
 - 如果引用挂品标签 <item>...</item>，标签内容必须是商品 ID，例如 <item>p_001</item>；禁止在 <item> 内放商品名、品牌名或自然语言挂品指令。
-- 不输出 markdown 表格，不输出隐藏推理。`
+- 如果需要输出 Markdown 表格，必须把完整 Markdown 表格包在 <form>...</form> 中。
+- 不输出隐藏推理。`
 
 const DefaultToolProtocolPrompt = `你正在一个 ReAct 工具循环中工作。每一步只能输出一种协议内容，不能输出隐藏推理。
 
@@ -142,8 +178,17 @@ Skill 调用：
 
 最终回答：
 <final>
-给用户看的完整最终回答。这里可以使用 Markdown 标题、列表、加粗和 <item>product_id</item>。
+给用户看的完整最终回答。这里可以使用 Markdown 标题、列表、加粗、<item>product_id</item>，以及用 <form>...</form> 包裹的 Markdown 表格。
 </final>
+
+表格输出协议：
+如果最终回答需要表格，只能在 <final> 内输出 <form>...</form>，<form> 内必须是完整 Markdown 表格文本，例如：
+<form>
+| 维度 | 商品A | 商品B |
+| --- | --- | --- |
+| 价格 | 129元 | 199元 |
+| 适合人群 | 通勤 | 户外 |
+</form>
 
 规则：
 - 商品推荐、商品对比、商品详情、价格、库存、卖点、风险提示，必须先调用 search_products。
@@ -155,6 +200,8 @@ Skill 调用：
 - 如果用户问题不是导购或工具动作，可以直接输出 <final>，简短说明能力边界或给出自然问候。
 - 最终回答必须用 <final> 开始、</final> 结束；不要把最终回答放进 JSON 字符串。
 - 如需在最终回答中输出 <item> 标签，<item> 内只能写已由工具返回的 product_id，例如 <item>p_001</item>；不能写商品名或推荐语。
+- 如需在最终回答中输出表格，必须用 <form>...</form> 包裹 Markdown 表格；不要在 <form> 内输出 JSON，不要输出 HTML table。
+- 只要用户明确要求“用表格、表格输出、对比表”，最终回答必须包含 <form>...</form> 包裹的 Markdown 表格；不能改用纯列表替代。
 - <final> 内的内容会被后端实时流式转发给前端；因此信息足够时直接开始写最终回答，不要再输出 {"type":"final"}。
 - 重点词、品牌词、系列词不要用 special_word 标识，统一用 Markdown 加粗，例如 **耐克**。`
 
@@ -217,7 +264,7 @@ const DefaultIntentToolPolicyPrompt = `{
     "tools": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
     "skills": [],
     "disabled": ["search_knowledge"],
-    "focus": ["固定商品动作优先脚本化执行。", "缺少 product_id 或 cart_item_id 时先澄清或 get_cart，不要猜 ID。"]
+    "focus": ["固定商品动作优先脚本化执行。", "加购缺少明确 product_id 时必须澄清，禁止通过 get_cart、购物车第一项、列表位置或历史购物车内容猜测加购目标。", "get_cart 只用于查看、修改、删除或结算已有购物车项，不用于决定 add_cart_item 的 product_id。", "只有当前输入文本中明文出现 product_id，或本轮 search_products 返回了候选商品 ID，才允许 add_cart_item。"]
   }
 }`
 
@@ -290,6 +337,8 @@ func DefaultConfigs(envAPIKey string) []domain.AppConfig {
 		{ConfigKey: "retrieval.product.lexical_guard.min_evidence_count", ConfigValue: "1", ValueType: "int", Description: "商品候选至少需要命中的有效词面证据数", Domain: "rag"},
 		{ConfigKey: "retrieval.product.lexical_guard.min_match_ratio", ConfigValue: "0.35", ValueType: "float", Description: "商品候选有效词面命中比例阈值；低于阈值时降为弱相关", Domain: "rag"},
 		{ConfigKey: "retrieval.product.ok.max_results", ConfigValue: "10", ValueType: "int", Description: "商品检索相关结果最多进入 Agent 的数量", Domain: "rag"},
+		{ConfigKey: "retrieval.product.llm_filter.enabled", ConfigValue: "true", ValueType: "bool", Description: "是否用小模型过滤 search_products 召回候选；失败时回退词面保护", Domain: "rag"},
+		{ConfigKey: "retrieval.product.llm_filter.max_candidates", ConfigValue: "10", ValueType: "int", Description: "小模型商品相关性过滤的最大候选数", Domain: "rag"},
 		{ConfigKey: "retrieval.rerank.weight.title_match", ConfigValue: "0.30", ValueType: "float", Description: "RAG 重排：标题命中基础权重", Domain: "rag"},
 		{ConfigKey: "retrieval.rerank.weight.term_match", ConfigValue: "0.35", ValueType: "float", Description: "RAG 重排：query term 命中比例权重", Domain: "rag"},
 		{ConfigKey: "retrieval.rerank.weight.required_match", ConfigValue: "0.15", ValueType: "float", Description: "RAG 重排：强约束 term 命中权重", Domain: "rag"},
@@ -300,12 +349,19 @@ func DefaultConfigs(envAPIKey string) []domain.AppConfig {
 		{ConfigKey: "retrieval.rerank.generic_terms", ConfigValue: "推荐,怎么选,同类,区别,性价比,通勤,办公,好喝,不腻,续航,性能,修护", ValueType: "string", Description: "RAG 重排泛意图词，命中这些词不应主导召回", Domain: "rag"},
 		{ConfigKey: "agent.followups_enabled", ConfigValue: "true", ValueType: "bool", Description: "是否生成追问", Domain: "app"},
 		{ConfigKey: "agent.config_refresh_seconds", ConfigValue: "15", ValueType: "int", Description: "运行时动态配置刷新间隔秒数", Domain: "app"},
+		{ConfigKey: "memory.enabled", ConfigValue: "true", ValueType: "bool", Description: "是否启用短期多轮记忆", Domain: "app"},
+		{ConfigKey: "memory.window_hours", ConfigValue: "24", ValueType: "int", Description: "短期记忆候选时间窗口（小时）", Domain: "app"},
+		{ConfigKey: "memory.window_turns", ConfigValue: "5", ValueType: "int", Description: "短期记忆候选最近轮数", Domain: "app"},
+		{ConfigKey: "memory.max_turn_chars", ConfigValue: "1200", ValueType: "int", Description: "单轮候选记忆最大字符数", Domain: "app"},
+		{ConfigKey: "memory.summary_enabled", ConfigValue: "true", ValueType: "bool", Description: "是否在回答完成后更新会话摘要", Domain: "app"},
 		{ConfigKey: "agent.prompt.route", ConfigValue: DefaultRoutePrompt, ValueType: "text", Description: "一级路由 Prompt：guide/non_guide/fast_product", Domain: "prompt"},
 		{ConfigKey: "agent.prompt.guide_intent", ConfigValue: DefaultGuideIntentPrompt, ValueType: "text", Description: "导购细分 Prompt：P1-P6", Domain: "prompt"},
 		{ConfigKey: "agent.prompt.answer_base", ConfigValue: DefaultAnswerBasePrompt, ValueType: "text", Description: "主导购 Agent 基础系统 Prompt", Domain: "prompt"},
 		{ConfigKey: "agent.prompt.tool_protocol", ConfigValue: DefaultToolProtocolPrompt, ValueType: "text", Description: "主 Agent ReAct 工具协议 Prompt", Domain: "prompt"},
 		{ConfigKey: "agent.prompt.intent_tool_policy", ConfigValue: DefaultIntentToolPolicyPrompt, ValueType: "json", Description: "各子意图可用工具、skill、禁用能力和使用侧重", Domain: "prompt"},
 		{ConfigKey: "agent.prompt.followups", ConfigValue: DefaultFollowupsPrompt, ValueType: "text", Description: "追问生成 Agent 系统 Prompt", Domain: "prompt"},
+		{ConfigKey: "agent.prompt.memory_retrieval", ConfigValue: DefaultMemoryRetrievalPrompt, ValueType: "text", Description: "短期多轮记忆检索 Prompt", Domain: "prompt"},
+		{ConfigKey: "agent.prompt.session_summary", ConfigValue: DefaultSessionSummaryPrompt, ValueType: "text", Description: "会话滚动摘要 Prompt", Domain: "prompt"},
 	}
 	for _, intent := range DefaultIntentKeys() {
 		configs = append(configs, domain.AppConfig{
@@ -327,6 +383,8 @@ func PromptDefaults() []domain.AgentPromptInput {
 		{PromptKey: "agent.prompt.tool_protocol", Title: "工具协议 Prompt", Content: DefaultToolProtocolPrompt, Description: "ReAct 工具调用协议"},
 		{PromptKey: "agent.prompt.intent_tool_policy", Title: "意图工具策略 Prompt", Content: DefaultIntentToolPolicyPrompt, Description: "按 route/intent 注入可用工具、skill 和禁用能力"},
 		{PromptKey: "agent.prompt.followups", Title: "追问生成 Prompt", Content: DefaultFollowupsPrompt, Description: "导购追问生成"},
+		{PromptKey: "agent.prompt.memory_retrieval", Title: "短期记忆检索 Prompt", Content: DefaultMemoryRetrievalPrompt, Description: "从最近对话中抽取当前问题相关记忆"},
+		{PromptKey: "agent.prompt.session_summary", Title: "会话摘要 Prompt", Content: DefaultSessionSummaryPrompt, Description: "回答完成后生成会话滚动摘要"},
 	}
 	for _, intent := range DefaultIntentKeys() {
 		defaults = append(defaults, domain.AgentPromptInput{

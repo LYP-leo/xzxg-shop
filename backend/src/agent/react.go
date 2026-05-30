@@ -59,6 +59,7 @@ func (r *Runtime) runReactAgent(ctx context.Context, run domain.AgentRun, plan r
 	parseFailures := 0
 	searchProductCalls := 0
 	finalAction := reactAction{Type: "final"}
+	allowedAddProductIDs := productIDSetFromText(query)
 
 	// ReAct 决策循环。
 	// 这里的每一轮 trace 记为 react.step.N，模型输出有两种合法形态：
@@ -186,12 +187,17 @@ func (r *Runtime) runReactAgent(ctx context.Context, run domain.AgentRun, plan r
 		}
 		// 真正执行工具。executeTool 内部会根据 tool 名走商品检索、知识检索、购物车、
 		// 订单等后端能力，并统一返回 toolObservation。
-		observation := r.executeTool(ctx, run, action)
+		observation := r.executeTool(ctx, run, action, toolExecutionContext{
+			AllowedAddProductIDs: allowedAddProductIDs,
+		})
 		result.Observations = append(result.Observations, observation)
 		if observation.RelevanceStatus == "" || observation.RelevanceStatus == relevanceOK {
 			// 只有相关性通过的商品 ID 才进入最终允许挂品列表。
 			// 后续 <item> 过滤器会用这个白名单拦截模型编造或弱相关商品。
 			result.ProductIDs = appendUnique(result.ProductIDs, observation.ProductIDs...)
+			if action.Tool == toolSearchProducts {
+				addProductIDsToSet(allowedAddProductIDs, observation.ProductIDs...)
+			}
 		}
 		result.ChunkIDs = appendUnique(result.ChunkIDs, observation.ChunkIDs...)
 		// 工具 observation 尽量完整写入 trace：包含候选、剔除项、相关性原因和原始结果。

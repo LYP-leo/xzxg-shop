@@ -1068,6 +1068,99 @@ func (s *MySQLStore) UpdateRunResult(ctx context.Context, accountID string, runI
 	return err == nil
 }
 
+func (s *MySQLStore) ListRecentConversationRecords(ctx context.Context, accountID string, sessionID string, since time.Time, limit int) []domain.ConversationRecord {
+	if limit <= 0 || limit > 20 {
+		limit = 5
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			ar.run_id,
+			ar.session_id,
+			ar.message_id,
+			ar.account_id,
+			um.content,
+			COALESCE(ar.content, ''),
+			COALESCE(CAST(ar.blocks_json AS CHAR), ''),
+			ar.created_at,
+			ar.updated_at
+		FROM agent_runs ar
+		JOIN user_messages um ON um.message_id = ar.message_id AND um.account_id = ar.account_id
+		JOIN chat_sessions cs ON cs.session_id = ar.session_id AND cs.account_id = ar.account_id
+		WHERE ar.account_id = ?
+			AND ar.session_id = ?
+			AND ar.status = 'completed'
+			AND COALESCE(ar.content, '') <> ''
+			AND ar.created_at >= ?
+			AND cs.deleted_at IS NULL
+		ORDER BY ar.created_at DESC, ar.run_id DESC
+		LIMIT ?
+	`, accountID, sessionID, since, limit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	items := make([]domain.ConversationRecord, 0, limit)
+	for rows.Next() {
+		var item domain.ConversationRecord
+		var blocksJSON string
+		if err := rows.Scan(
+			&item.RunID,
+			&item.SessionID,
+			&item.MessageID,
+			&item.AccountID,
+			&item.UserQuery,
+			&item.FinalAnswer,
+			&blocksJSON,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil
+		}
+		item.ProductIDs, item.ProductRefs = productRefsFromBlocksJSON(blocksJSON)
+		items = append(items, item)
+	}
+	for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
+		items[i], items[j] = items[j], items[i]
+	}
+	return items
+}
+
+func productRefsFromBlocksJSON(blocksJSON string) ([]string, []domain.ProductCard) {
+	var blocks []domain.AgentBlock
+	if strings.TrimSpace(blocksJSON) == "" {
+		return nil, nil
+	}
+	if err := json.Unmarshal([]byte(blocksJSON), &blocks); err != nil {
+		return nil, nil
+	}
+	ids := make([]string, 0)
+	seen := map[string]bool{}
+	refs := make([]domain.ProductCard, 0)
+	for _, block := range blocks {
+		for _, id := range block.ProductIDs {
+			id = strings.TrimSpace(id)
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			ids = append(ids, id)
+		}
+		if block.Product != nil {
+			product := *block.Product
+			id := strings.TrimSpace(product.ProductID)
+			if id != "" && !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+			if id != "" {
+				refs = append(refs, product)
+			}
+		}
+	}
+	return ids, refs
+}
+
 func emptyJSON(value string) string {
 	if strings.TrimSpace(value) == "" {
 		return "[]"

@@ -67,6 +67,19 @@ type UserMessageWithRuns struct {
 	Runs []AgentRun `json:"runs"`
 }
 
+type ConversationRecord struct {
+	RunID       string        `json:"run_id"`
+	SessionID   string        `json:"session_id"`
+	MessageID   string        `json:"message_id"`
+	AccountID   string        `json:"account_id,omitempty"`
+	UserQuery   string        `json:"user_query"`
+	FinalAnswer string        `json:"final_answer"`
+	ProductIDs  []string      `json:"product_ids,omitempty"`
+	ProductRefs []ProductCard `json:"product_refs,omitempty"`
+	CreatedAt   time.Time     `json:"created_at"`
+	UpdatedAt   time.Time     `json:"updated_at"`
+}
+
 type AgentRun struct {
 	RunID     string         `json:"run_id"`
 	SessionID string         `json:"session_id"`

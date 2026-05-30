@@ -2122,7 +2122,9 @@ func (s *Server) streamAgentRun(w http.ResponseWriter, r *http.Request, run doma
 	blocksJSON, _ := json.Marshal(blocks)
 	followupsJSON, _ := json.Marshal(followups)
 	segmentsJSON, _ := json.Marshal(segments)
-	s.store.UpdateRunResult(r.Context(), run.AccountID, run.RunID, strings.TrimSpace(content.String()), string(blocksJSON), string(followupsJSON), string(segmentsJSON))
+	finalAnswer := strings.TrimSpace(content.String())
+	s.store.UpdateRunResult(r.Context(), run.AccountID, run.RunID, finalAnswer, string(blocksJSON), string(followupsJSON), string(segmentsJSON))
+	s.runtime.UpdateSessionSummaryAfterRun(r.Context(), run, message, finalAnswer)
 }
 
 func writeSSESnapshot(w http.ResponseWriter, run domain.AgentRun, code string, message string) {

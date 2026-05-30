@@ -107,8 +107,17 @@ func (r *Runtime) Stream(ctx context.Context, run domain.AgentRun, message domai
 	if err := r.emitStatus(ctx, run.RunID, "intent", "正在理解你的需求", emit); err != nil {
 		return err
 	}
+	memory := r.buildConversationMemory(ctx, run, message.Content)
+	effectiveQuery := r.formatQueryWithMemory(message.Content, memory)
+	if memory.HasRelevantMemory {
+		r.trace(ctx, run, "memory", "applied", "", "ok", 0, "", map[string]any{
+			"used_record_ids":        memory.UsedRecordIDs,
+			"referenced_product_ids": memory.ReferencedProductIDs,
+			"memory_summary":         memory.MemorySummary,
+		})
+	}
 	// planner 先做一级 route，再在 guide 路由内做 P1-P6 细分。
-	plan := r.plan(ctx, run, message.Content)
+	plan := r.plan(ctx, run, effectiveQuery)
 	r.logger.Info("agent plan selected", "run_id", run.RunID, "route", plan.Route, "intent", plan.ReferenceIntent(), "answer_model", plan.AnswerModel)
 	r.trace(ctx, run, "planner", "selected", plan.AnswerModel, "ok", 0, "", map[string]any{
 		"route":           plan.Route,
@@ -117,7 +126,7 @@ func (r *Runtime) Stream(ctx context.Context, run domain.AgentRun, message domai
 		"secondary_level": plan.SecondaryLevel,
 	})
 
-	result, err := r.runReactAgent(ctx, run, plan, message.Content, emit)
+	result, err := r.runReactAgent(ctx, run, plan, effectiveQuery, emit)
 	if err != nil {
 		return err
 	}
@@ -131,7 +140,7 @@ func (r *Runtime) Stream(ctx context.Context, run domain.AgentRun, message domai
 	if err := emit(domain.SSEEvent{
 		Type:      "followups",
 		RunID:     run.RunID,
-		Questions: r.followups(ctx, run, message.Content, nil),
+		Questions: r.followups(ctx, run, effectiveQuery, nil),
 	}); err != nil {
 		return err
 	}
@@ -500,6 +509,17 @@ func (r *Runtime) boolConfig(ctx context.Context, key string, fallback bool) boo
 	values := r.configs.GetMap(ctx)
 	if value, ok := values[key]; ok {
 		return parseBool(value, fallback)
+	}
+	return fallback
+}
+
+func (r *Runtime) intConfig(ctx context.Context, key string, fallback int) int {
+	r.refreshDynamicConfig(ctx)
+	values := r.configs.GetMap(ctx)
+	if value := strings.TrimSpace(values[key]); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			return parsed
+		}
 	}
 	return fallback
 }

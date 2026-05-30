@@ -42,10 +42,41 @@ func TestProductSearchRelevanceKeepsRelevantProduct(t *testing.T) {
 		},
 	})
 	if result.Status != relevanceOK {
-		t.Fatalf("status = %s, want %s", result.Status, relevanceOK)
+		t.Fatalf("status = %s, want %s; reason=%s", result.Status, relevanceOK, result.Reason)
 	}
 	if len(result.AllowedProductIDs) != 1 || result.AllowedProductIDs[0] != "p_phone_001" {
 		t.Fatalf("allowed product ids = %v, want p_phone_001", result.AllowedProductIDs)
+	}
+}
+
+func TestProductSearchRelevanceKeepsCategoryProductWhenQueryHasCoveredTerms(t *testing.T) {
+	runtime := &Runtime{configs: configcenter.NewMemoryCenter(configcenter.DefaultConfigs(""))}
+	result := runtime.classifyProductSearchRelevance(context.Background(), "化妆品 护肤 彩妆", []domain.ProductCard{
+		{
+			ProductID:     "p_dummyjson_001",
+			Name:          "Essence 卷翘浓密睫毛膏 Lash Princess",
+			Brand:         "Essence",
+			CategoryID:    "c_dataset_beauty_personal_care_makeup",
+			Tags:          []string{"美妆个护", "彩妆", "Essence"},
+			SellingPoints: []string{"彩妆", "Essence"},
+		},
+	})
+	if result.Status != relevanceOK {
+		t.Fatalf("status = %s, want %s; reason=%s", result.Status, relevanceOK, result.Reason)
+	}
+	if len(result.AllowedProductIDs) != 1 || result.AllowedProductIDs[0] != "p_dummyjson_001" {
+		t.Fatalf("allowed product ids = %v, want p_dummyjson_001", result.AllowedProductIDs)
+	}
+}
+
+func TestProductRelevanceTermsDropCoveredSubterms(t *testing.T) {
+	got := productRelevanceTerms("化妆品 护肤 彩妆", "")
+	for _, term := range []string{"化妆", "妆品"} {
+		for _, actual := range got {
+			if actual == term {
+				t.Fatalf("terms = %v, should not contain covered subterm %q", got, term)
+			}
+		}
 	}
 }
 
