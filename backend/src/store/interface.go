@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
 	"github.com/LYP-leo/xzxg-shop/backend/src/rag"
@@ -37,6 +38,7 @@ type Store interface {
 	CreateRun(ctx context.Context, accountID string, sessionID string, messageID string) (domain.AgentRun, bool, error)
 	UpdateRunStatus(ctx context.Context, accountID string, runID string, status domain.RunStatus) (domain.AgentRun, bool)
 	UpdateRunResult(ctx context.Context, accountID string, runID string, content string, blocksJSON string, followupsJSON string, segmentsJSON string) bool
+	ListRecentConversationRecords(ctx context.Context, accountID string, sessionID string, since time.Time, limit int) []domain.ConversationRecord
 	IsRunCanceled(ctx context.Context, runID string) bool
 	RecordAgentTrace(ctx context.Context, input domain.AgentTraceInput) error
 	ListAgentTrace(ctx context.Context, accountID string, runID string) []domain.AgentTraceEvent
