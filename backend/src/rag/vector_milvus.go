@@ -41,14 +41,9 @@ func (c *Client) Bootstrap(ctx context.Context, productRows []map[string]any, kn
 	}
 	if len(imageRows) > 0 {
 		if imageDim := vectorDimension(imageRows[0]["embedding"]); imageDim > 0 {
-			if err := c.ensureCollection(ctx, c.cfg.ImageCollection, "image_vector_id", imageDim); err != nil {
-				return err
+			if err := c.bootstrapImageVectors(ctx, imageRows, imageDim); err == nil {
+				c.imageReady = true
 			}
-			if err := c.upsertVectorRows(ctx, c.cfg.ImageCollection, imageRows); err != nil {
-				return err
-			}
-			_ = c.loadCollection(ctx, c.cfg.ImageCollection)
-			c.imageReady = true
 		}
 	}
 	if c.embedder == nil {
@@ -77,6 +72,17 @@ func (c *Client) Bootstrap(ctx context.Context, productRows []map[string]any, kn
 	_ = c.loadCollection(ctx, c.cfg.ProductCollection)
 	_ = c.loadCollection(ctx, c.cfg.KnowledgeCollection)
 	c.ready = true
+	return nil
+}
+
+func (c *Client) bootstrapImageVectors(ctx context.Context, imageRows []map[string]any, imageDim int) error {
+	if err := c.ensureCollection(ctx, c.cfg.ImageCollection, "image_vector_id", imageDim); err != nil {
+		return err
+	}
+	if err := c.upsertVectorRows(ctx, c.cfg.ImageCollection, imageRows); err != nil {
+		return err
+	}
+	_ = c.loadCollection(ctx, c.cfg.ImageCollection)
 	return nil
 }
 
@@ -142,10 +148,20 @@ func (c *Client) ensureCollection(ctx context.Context, collection string, primar
 	}
 	var result milvusResponse
 	err := c.post(ctx, "/v2/vectordb/collections/create", payload, &result)
-	if err == nil || strings.Contains(strings.ToLower(err.Error()), "already") || strings.Contains(strings.ToLower(err.Error()), "exist") {
+	if err == nil || isCollectionAlreadyExistsError(err) {
 		return nil
 	}
 	return err
+}
+
+func isCollectionAlreadyExistsError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "already") ||
+		strings.Contains(message, "exist") ||
+		strings.Contains(message, "duplicate collection")
 }
 
 func (c *Client) loadCollection(ctx context.Context, collection string) error {
