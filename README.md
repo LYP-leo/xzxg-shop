@@ -19,7 +19,7 @@ deployments/    Local middleware and deployment assets
 - Merchant: product management, order management, promotions, reviews, documents.
 - Administrator: platform data management, prompt/config management, Agent trace, vector status, quality reports.
 - Agent runtime: two-stage intent routing, ReAct tool loop, `<final>...</final>` streaming final protocol, multi-turn memory, risk blocking, tool/skill policy, full trace.
-- Retrieval: MySQL keyword retrieval plus Milvus vector retrieval for products, knowledge, and product images.
+- Retrieval: MySQL keyword retrieval plus Milvus vector retrieval for products, knowledge, and product images. Product image search currently supports JPEG, PNG, GIF, and WebP with a local 64-dimension color-histogram embedding; production semantic image search should use a multimodal embedding model.
 - Production hardening already in place for core flows: auth, rate limit, request logging, body limit, message/run idempotency, cart upsert, checkout transaction and stock reservation.
 
 ## Backend Quick Start

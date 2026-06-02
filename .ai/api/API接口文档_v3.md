@@ -589,6 +589,49 @@ Authorization: Bearer <token>
 
 用途：查询当前用户自己的 Agent trace。
 
+## 图片搜索
+
+### POST /search/image
+
+权限：用户
+
+用途：上传或引用一张图片，基于商品图片向量检索相似商品。当前支持 JPEG、PNG、GIF、WebP。
+
+请求：
+
+```json
+{
+  "file_id": "file_xxx",
+  "object_key": "uploads/xxx.webp",
+  "image_url": "/api/v1/assets/ecommerce_agent_dataset/...",
+  "top_k": 5
+}
+```
+
+字段说明：
+
+- `file_id`、`object_key`、`image_url` 三选一。
+- `file_id` 或 `object_key` 走 MinIO 对象存储。
+- `image_url` 支持数据集静态资源路径或外部 URL。
+- 当前图片向量使用 64 维本地颜色直方图，适合基础图搜；生产语义图搜建议升级到百炼多模态 Embedding，并新建匹配维度的 Milvus collection。
+
+响应：
+
+```json
+{
+  "relevance_status": "matched",
+  "match_status": "ok",
+  "items": [],
+  "durations": {
+    "total_ms": 12,
+    "download_ms": 0,
+    "embedding_ms": 2,
+    "vector_search_ms": 9,
+    "rerank_ms": 0
+  }
+}
+```
+
 ## 商家端
 
 ### POST /merchant/products
