@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -165,6 +166,14 @@ func (r *statusRecorder) Flush() {
 	}
 }
 
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	return hijacker.Hijack()
+}
+
 func routePolicy(method string, path string) (bool, []domain.AccountRole) {
 	// 公开接口只保留健康检查、登录、商品浏览等无需身份的入口。
 	if path == "/api/v1/health" || path == "/api/v1/auth/login" || path == "/api/v1/auth/register" {
@@ -180,7 +189,7 @@ func routePolicy(method string, path string) (bool, []domain.AccountRole) {
 		return true, []domain.AccountRole{domain.AccountRoleUser, domain.AccountRoleMerchant, domain.AccountRoleAdmin}
 	}
 	// 三端路由按前缀划分：用户端、商家端、管理员端分别校验对应角色。
-	if strings.HasPrefix(path, "/api/v1/cart") || strings.HasPrefix(path, "/api/v1/agent") || strings.HasPrefix(path, "/api/v1/orders") || strings.HasPrefix(path, "/api/v1/coupons") {
+	if strings.HasPrefix(path, "/api/v1/cart") || strings.HasPrefix(path, "/api/v1/agent") || strings.HasPrefix(path, "/api/v1/orders") || strings.HasPrefix(path, "/api/v1/coupons") || strings.HasPrefix(path, "/api/v1/speech") {
 		return true, []domain.AccountRole{domain.AccountRoleUser}
 	}
 	if strings.HasPrefix(path, "/api/v1/files") || strings.HasPrefix(path, "/api/v1/search/image") {

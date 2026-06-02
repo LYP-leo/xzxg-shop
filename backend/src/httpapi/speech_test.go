@@ -1,0 +1,80 @@
+package httpapi
+
+import (
+	"net/url"
+	"testing"
+)
+
+func TestParseXunfeiSpeechResult(t *testing.T) {
+	raw := []byte(`{
+		"msg_type":"result",
+		"res_type":"asr",
+		"sid":"sid-1",
+		"data":{
+			"ls":false,
+			"cn":{
+				"st":{
+					"type":"1",
+					"rt":[{
+						"ws":[
+							{"cw":[{"w":"你好"},{"w":"，"}]},
+							{"cw":[{"w":"世界"}]}
+						]
+					}]
+				}
+			}
+		}
+	}`)
+
+	result, ok := parseXunfeiSpeechResult(raw)
+	if !ok {
+		t.Fatal("expected result to parse")
+	}
+	if result.Text != "你好，世界" {
+		t.Fatalf("unexpected text: %q", result.Text)
+	}
+	if result.Stable {
+		t.Fatal("partial result should not be stable")
+	}
+	if result.Final {
+		t.Fatal("partial result should not be final")
+	}
+	if result.SessionID != "sid-1" {
+		t.Fatalf("unexpected session id: %q", result.SessionID)
+	}
+}
+
+func TestSpeechSignedURL(t *testing.T) {
+	cfg := speechRealtimeConfig{
+		AppID:       "app-id",
+		APIKey:      "api-key",
+		APISecret:   "secret",
+		BaseURL:     "wss://office-api-ast-dx.iflyaisol.com",
+		Path:        "/ast/communicate/v1",
+		Lang:        "autodialect",
+		AudioEncode: "pcm_s16le",
+		SampleRate:  "16000",
+	}
+
+	signedURL, err := cfg.SignedURL("req-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(signedURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := parsed.Query()
+	if parsed.Scheme != "wss" || parsed.Host != "office-api-ast-dx.iflyaisol.com" || parsed.Path != "/ast/communicate/v1" {
+		t.Fatalf("unexpected endpoint: %s", signedURL)
+	}
+	if query.Get("appId") != "app-id" || query.Get("accessKeyId") != "api-key" || query.Get("uuid") != "req-1" {
+		t.Fatalf("missing auth params: %s", signedURL)
+	}
+	if query.Get("audio_encode") != "pcm_s16le" || query.Get("lang") != "autodialect" || query.Get("samplerate") != "16000" {
+		t.Fatalf("missing audio params: %s", signedURL)
+	}
+	if query.Get("signature") == "" || query.Get("utc") == "" {
+		t.Fatalf("missing signature params: %s", signedURL)
+	}
+}

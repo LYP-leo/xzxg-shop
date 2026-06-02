@@ -112,6 +112,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/orders:checkout", s.handleCheckout)
 	mux.HandleFunc("GET /api/v1/orders/", s.handleUserOrderAction)
 	mux.HandleFunc("POST /api/v1/orders/", s.handleUserOrderAction)
+	mux.HandleFunc("GET /api/v1/speech/realtime", s.handleSpeechRealtime)
 	mux.HandleFunc("GET /api/v1/agent/sessions", s.handleListAgentSessions)
 	mux.HandleFunc("GET /api/v1/agent/sessions/search", s.handleSearchAgentSessions)
 	mux.HandleFunc("POST /api/v1/agent/sessions", s.handleCreateAgentSession)
