@@ -26,6 +26,41 @@
 
 注意：百炼多模态 Embedding 不走 OpenAI compatible `/embeddings` 接口，需要调用 DashScope 原生多模态 Embedding API。
 
+## 本项目推荐选型
+
+按“效果优先，但用户单次请求 RT 可控”的原则，推荐默认选：
+
+```text
+image_embedding.provider=dashscope
+image_embedding.model=qwen3-vl-embedding
+image_embedding.dimension=512
+image_embedding.mode=image
+milvus.collection.product_images=product_image_vectors_v2
+```
+
+原因：
+
+- `qwen3-vl-embedding` 是效果优先方案，适合图搜图、文搜图、商品图文混合检索。
+- 不使用默认 2560 维，先用 512 维平衡效果、Milvus 存储、检索速度和网络传输体积。
+- 256 维适合更强性能约束，但细粒度商品相似度会更容易损失。
+- 768/1024 维可作为二阶段评测升级项，如果 Top1/Top3 明显不足再提高维度。
+- 请求侧只对“用户上传/引用的查询图片”在线调用一次模型；商品库图片向量必须离线批量构建，不能在用户请求里现算商品侧向量。
+
+RT 控制目标：
+
+```text
+图片下载/读取 P95 <= 300ms
+DashScope 图片 embedding P95 <= 1500ms
+Milvus 检索 P95 <= 100ms
+后端整体图片搜索 P95 <= 2200ms
+```
+
+降级策略：
+
+- DashScope 调用失败或超时时，直接返回 `image_embedding_unavailable`，不要拿 64 维本地向量去查 512 维 v2 collection。
+- 保留旧的 `product_image_vectors` 64 维 collection 作为独立 fallback，只有显式切换 `image_embedding.provider=local_histogram` 时才使用。
+- 对用户上传图片计算 SHA-256，短期缓存图片 embedding，避免同一图片重复请求模型。
+
 ## 配置建议
 
 新增 Nacos 配置：
