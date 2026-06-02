@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"net/url"
+	"regexp"
 	"testing"
 
 	"github.com/LYP-leo/xzxg-shop/backend/src/configcenter"
@@ -80,6 +81,9 @@ func TestSpeechSignedURL(t *testing.T) {
 	}
 	if query.Get("signature") == "" || query.Get("utc") == "" {
 		t.Fatalf("missing signature params: %s", signedURL)
+	}
+	if !regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{4}$`).MatchString(query.Get("utc")) {
+		t.Fatalf("unexpected utc format: %q", query.Get("utc"))
 	}
 }
 

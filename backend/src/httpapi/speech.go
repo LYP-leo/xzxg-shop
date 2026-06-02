@@ -67,9 +67,14 @@ func (s *Server) handleSpeechRealtime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	websocket.Handler(func(client *websocket.Conn) {
-		s.proxySpeechRealtime(r.Context(), client, cfg)
-	}).ServeHTTP(w, r)
+	websocket.Server{
+		Handler: func(client *websocket.Conn) {
+			s.proxySpeechRealtime(r.Context(), client, cfg)
+		},
+		Handshake: func(config *websocket.Config, request *http.Request) error {
+			return nil
+		},
+	}.ServeHTTP(w, r)
 }
 
 func (s *Server) proxySpeechRealtime(ctx context.Context, client *websocket.Conn, cfg speechRealtimeConfig) {
@@ -88,7 +93,7 @@ func (s *Server) proxySpeechRealtime(ctx context.Context, client *websocket.Conn
 
 	xf, err := websocket.Dial(xfURL, "", "http://localhost/")
 	if err != nil {
-		s.logger.Warn("xunfei speech websocket dial failed", "request_id", requestID, "error", err)
+		s.logger.Warn("xunfei speech websocket dial failed", "request_id", requestID, "error", redactXunfeiDialError(err))
 		sendSpeechClientEvent(client, nil, speechClientEvent{
 			Type:    "error",
 			Code:    "speech_network_error",
@@ -97,9 +102,14 @@ func (s *Server) proxySpeechRealtime(ctx context.Context, client *websocket.Conn
 		return
 	}
 	defer xf.Close()
+	s.logger.Info("xunfei speech websocket connected", "request_id", requestID)
 
 	var clientWriteMu sync.Mutex
-	sendSpeechClientEvent(client, &clientWriteMu, speechClientEvent{Type: "ready"})
+	if err := sendSpeechClientEvent(client, &clientWriteMu, speechClientEvent{Type: "ready"}); err != nil {
+		s.logger.Warn("speech client ready send failed", "request_id", requestID, "error", err)
+		return
+	}
+	s.logger.Info("speech client ready sent", "request_id", requestID)
 
 	done := make(chan struct{})
 	sessionIDCh := make(chan string, 1)
@@ -117,6 +127,7 @@ func (s *Server) proxySpeechRealtime(ctx context.Context, client *websocket.Conn
 
 		var payload []byte
 		if err := websocket.Message.Receive(client, &payload); err != nil {
+			s.logger.Info("speech client websocket closed", "request_id", requestID, "error", err)
 			close(done)
 			return
 		}
@@ -278,7 +289,7 @@ func (c speechRealtimeConfig) SignedURL(uuid string) (string, error) {
 	values := url.Values{}
 	values.Set("appId", c.AppID)
 	values.Set("accessKeyId", c.APIKey)
-	values.Set("utc", strconv.FormatInt(time.Now().UTC().UnixMilli(), 10))
+	values.Set("utc", time.Now().Format("2006-01-02T15:04:05-0700"))
 	values.Set("audio_encode", c.AudioEncode)
 	values.Set("lang", c.Lang)
 	values.Set("samplerate", c.SampleRate)
@@ -291,6 +302,17 @@ func (c speechRealtimeConfig) SignedURL(uuid string) (string, error) {
 	values.Set("signature", base64.StdEncoding.EncodeToString(mac.Sum(nil)))
 	base.RawQuery = values.Encode()
 	return base.String(), nil
+}
+
+func redactXunfeiDialError(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := err.Error()
+	if index := strings.Index(message, "?"); index >= 0 {
+		message = message[:index] + "?<redacted>"
+	}
+	return message
 }
 
 func canonicalQuery(values url.Values) string {

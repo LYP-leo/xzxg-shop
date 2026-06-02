@@ -2,6 +2,8 @@ package com.xzxg.shop;
 
 import org.json.JSONObject;
 
+import android.util.Log;
+
 import java.util.concurrent.TimeUnit;
 
 import okhttp3.OkHttpClient;
@@ -12,6 +14,8 @@ import okhttp3.WebSocketListener;
 import okio.ByteString;
 
 class SpeechRealtimeClient {
+    private static final String TAG = "SpeechRealtimeClient";
+
     interface Listener {
         void onReady();
         void onPartial(String text);
@@ -46,6 +50,7 @@ class SpeechRealtimeClient {
         webSocket = client.newWebSocket(builder.build(), new WebSocketListener() {
             @Override
             public void onOpen(WebSocket webSocket, Response response) {
+                Log.i(TAG, "speech websocket opened status=" + response.code());
                 JSONObject start = new JSONObject();
                 try {
                     start.put("type", "start");
@@ -60,16 +65,19 @@ class SpeechRealtimeClient {
 
             @Override
             public void onMessage(WebSocket webSocket, String text) {
+                Log.i(TAG, "speech websocket message=" + text);
                 handleMessage(text);
             }
 
             @Override
             public void onClosing(WebSocket webSocket, int code, String reason) {
+                Log.i(TAG, "speech websocket closing code=" + code + " reason=" + reason);
                 webSocket.close(code, reason);
             }
 
             @Override
             public void onClosed(WebSocket webSocket, int code, String reason) {
+                Log.i(TAG, "speech websocket closed code=" + code + " reason=" + reason);
                 if (listener != null) {
                     listener.onClosed();
                 }
@@ -78,7 +86,15 @@ class SpeechRealtimeClient {
             @Override
             public void onFailure(WebSocket webSocket, Throwable t, Response response) {
                 int status = response == null ? 0 : response.code();
-                String code = status == 404 || status == 501 ? "speech_not_enabled" : "speech_network_error";
+                Log.w(TAG, "speech websocket failure status=" + status, t);
+                String code;
+                if (status == 401 || status == 403) {
+                    code = "unauthorized";
+                } else if (status == 404 || status == 501) {
+                    code = "speech_not_enabled";
+                } else {
+                    code = "speech_network_error";
+                }
                 String message = t == null || t.getMessage() == null ? "语音识别连接失败" : t.getMessage();
                 notifyError(code, message);
             }

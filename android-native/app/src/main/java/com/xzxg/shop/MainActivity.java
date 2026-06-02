@@ -1060,6 +1060,10 @@ public class MainActivity extends Activity {
             return;
         }
         cleanupRealtimeVoice();
+        if ("unauthorized".equals(code)) {
+            toastLine("请先登录后再使用语音输入");
+            return;
+        }
         if ("speech_not_enabled".equals(code) || "speech_network_error".equals(code)) {
             toastLine("当前语音识别不可用");
             return;
