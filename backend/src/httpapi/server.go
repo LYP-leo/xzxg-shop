@@ -678,6 +678,7 @@ func (s *Server) writeImageSearchResult(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) imageVectorFromSearchRequest(ctx context.Context, fileID string, objectKey string, imageURL string) ([]float32, error) {
+	embedder := imagevector.NewEmbedderFromMap(s.configs.GetMap(ctx), "")
 	if fileID != "" {
 		fileMeta, ok := s.store.GetStoredFile(ctx, fileID)
 		if !ok {
@@ -695,9 +696,9 @@ func (s *Server) imageVectorFromSearchRequest(ctx context.Context, fileID string
 			return nil, err
 		}
 		defer object.Close()
-		return imagevector.FromReader(object)
+		return embedder.EmbedReader(ctx, object)
 	}
-	return imagevector.FromSource(ctx, imageURL)
+	return embedder.EmbedSource(ctx, imageURL)
 }
 
 func (s *Server) handleCreateMerchantProduct(w http.ResponseWriter, r *http.Request) {

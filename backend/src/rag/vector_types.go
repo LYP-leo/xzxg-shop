@@ -11,7 +11,7 @@ const (
 	DefaultMilvusToken         = "root:Milvus"
 	DefaultProductCollection   = "product_text_vectors"
 	DefaultKnowledgeCollection = "knowledge_text_chunks"
-	DefaultImageCollection     = "product_image_vectors"
+	DefaultImageCollection     = "product_image_vectors_v2"
 	DefaultEmbeddingModel      = "text-embedding-v4"
 	DefaultEmbeddingBatchSize  = 10
 	MaxEmbeddingBatchSize      = 10

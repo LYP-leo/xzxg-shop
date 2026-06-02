@@ -7,6 +7,7 @@ dist/
 .logs/
 .gradle/
 build/
+backend/uploads/
 android-native/.gradle/
 android-native/build/
 android-native/app/build/

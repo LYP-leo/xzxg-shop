@@ -35,16 +35,17 @@ func (c *Client) Enabled() bool {
 	return c != nil && c.cfg.Enabled && c.ready
 }
 
-func (c *Client) Bootstrap(ctx context.Context, productRows []map[string]any, knowledgeRows []map[string]any, imageRows []map[string]any) error {
+func (c *Client) Bootstrap(ctx context.Context, productRows []map[string]any, knowledgeRows []map[string]any) error {
 	if c == nil || !c.cfg.Enabled {
 		return nil
 	}
-	if len(imageRows) > 0 {
-		if imageDim := vectorDimension(imageRows[0]["embedding"]); imageDim > 0 {
-			if err := c.bootstrapImageVectors(ctx, imageRows, imageDim); err == nil {
-				c.imageReady = true
-			}
-		}
+	productsReady := c.collectionReady(ctx, c.cfg.ProductCollection, "products", "product_id")
+	knowledgeReady := c.collectionReady(ctx, c.cfg.KnowledgeCollection, "knowledge", "chunk_id")
+	if productsReady && knowledgeReady {
+		_ = c.loadCollection(ctx, c.cfg.ProductCollection)
+		_ = c.loadCollection(ctx, c.cfg.KnowledgeCollection)
+		c.ready = true
+		return nil
 	}
 	if c.embedder == nil {
 		return errors.New("embedder is nil")
@@ -73,6 +74,33 @@ func (c *Client) Bootstrap(ctx context.Context, productRows []map[string]any, kn
 	_ = c.loadCollection(ctx, c.cfg.KnowledgeCollection)
 	c.ready = true
 	return nil
+}
+
+func (c *Client) BootstrapImages(ctx context.Context, imageRows []map[string]any) error {
+	if c == nil || !c.cfg.Enabled {
+		return nil
+	}
+	if c.collectionReady(ctx, c.cfg.ImageCollection, "product_images", "image_vector_id") {
+		_ = c.loadCollection(ctx, c.cfg.ImageCollection)
+		c.imageReady = true
+		return nil
+	}
+	if len(imageRows) > 0 {
+		if imageDim := vectorDimension(imageRows[0]["embedding"]); imageDim > 0 {
+			if err := c.bootstrapImageVectors(ctx, imageRows, imageDim); err == nil {
+				c.imageReady = true
+				return nil
+			} else {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (c *Client) collectionReady(ctx context.Context, collection string, kind string, primary string) bool {
+	status, err := c.collectionStatus(ctx, collection, kind, primary)
+	return err == nil && status.RowCount > 0
 }
 
 func (c *Client) bootstrapImageVectors(ctx context.Context, imageRows []map[string]any, imageDim int) error {

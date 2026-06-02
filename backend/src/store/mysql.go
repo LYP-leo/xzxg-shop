@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
@@ -19,8 +20,9 @@ import (
 )
 
 type MySQLStore struct {
-	db     *sql.DB
-	vector *rag.Client
+	db            *sql.DB
+	vector        *rag.Client
+	imageEmbedder imagevector.Embedder
 }
 
 func NewMySQLStore(db *sql.DB) *MySQLStore {
@@ -55,6 +57,10 @@ func (s *MySQLStore) SetVectorClient(client *rag.Client) {
 	s.vector = client
 }
 
+func (s *MySQLStore) SetImageEmbedder(embedder imagevector.Embedder) {
+	s.imageEmbedder = embedder
+}
+
 // Migrate 先执行基础 SQL，再执行兼容迁移。
 // 兼容迁移用于老库平滑升级，避免每次加字段都要求手动清库。
 func (s *MySQLStore) Migrate(ctx context.Context) error {
@@ -80,7 +86,14 @@ func (s *MySQLStore) BootstrapVectorIndex(ctx context.Context) error {
 	if s.vector == nil {
 		return nil
 	}
-	return s.vector.Bootstrap(ctx, s.productVectorRows(ctx), s.knowledgeVectorRows(ctx), s.productImageVectorRows(ctx))
+	return s.vector.Bootstrap(ctx, s.productVectorRows(ctx), s.knowledgeVectorRows(ctx))
+}
+
+func (s *MySQLStore) BootstrapImageVectorIndex(ctx context.Context) error {
+	if s.vector == nil {
+		return nil
+	}
+	return s.vector.BootstrapImages(ctx, s.productImageVectorRows(ctx))
 }
 
 func (s *MySQLStore) VectorIndexStatus(ctx context.Context) domain.VectorIndexStatus {
@@ -3194,7 +3207,16 @@ func (s *MySQLStore) productImageVectorRows(ctx context.Context) []map[string]an
 		return nil
 	}
 	defer rows.Close()
-	out := make([]map[string]any, 0)
+	type imageTask struct {
+		vectorID   string
+		productID  string
+		merchantID string
+		categoryID string
+		brand      string
+		source     string
+		imageType  string
+	}
+	tasks := make([]imageTask, 0)
 	for rows.Next() {
 		product, err := scanProductDetail(rows)
 		if err != nil {
@@ -3205,28 +3227,74 @@ func (s *MySQLStore) productImageVectorRows(ctx context.Context) []map[string]an
 			sources = []string{product.ImageURL}
 		}
 		for index, source := range sources {
-			vector, err := imagevector.FromSource(ctx, source)
-			if err != nil || len(vector) == 0 {
-				continue
-			}
 			imageType := "detail"
 			if index == 0 {
 				imageType = "main"
 			}
-			out = append(out, map[string]any{
-				"image_vector_id": fmt.Sprintf("img_%s_%d", product.ProductID, index),
-				"product_id":      product.ProductID,
-				"merchant_id":     product.MerchantID,
-				"category_id":     product.CategoryID,
-				"brand":           product.Brand,
-				"image_url":       source,
-				"image_type":      imageType,
-				"quality_score":   0.8,
-				"updated_at_ts":   time.Now().Unix(),
-				"embedding":       vector,
+			tasks = append(tasks, imageTask{
+				vectorID:   fmt.Sprintf("img_%s_%d", product.ProductID, index),
+				productID:  product.ProductID,
+				merchantID: product.MerchantID,
+				categoryID: product.CategoryID,
+				brand:      product.Brand,
+				source:     source,
+				imageType:  imageType,
 			})
 		}
 	}
+	embedder := s.imageEmbedder
+	if embedder == nil {
+		embedder = imagevector.NewLocalHistogramEmbedder()
+	}
+	out := make([]map[string]any, 0, len(tasks))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	jobs := make(chan imageTask)
+	workerCount := 4
+	if len(tasks) < workerCount {
+		workerCount = len(tasks)
+	}
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for task := range jobs {
+				vector, err := embedder.EmbedSource(ctx, task.source)
+				if err != nil || len(vector) == 0 {
+					continue
+				}
+				item := map[string]any{
+					"image_vector_id": task.vectorID,
+					"product_id":      task.productID,
+					"merchant_id":     task.merchantID,
+					"category_id":     task.categoryID,
+					"brand":           task.brand,
+					"image_url":       task.source,
+					"image_type":      task.imageType,
+					"quality_score":   0.8,
+					"updated_at_ts":   time.Now().Unix(),
+					"embedding":       vector,
+				}
+				mu.Lock()
+				out = append(out, item)
+				mu.Unlock()
+			}
+		}()
+	}
+	for _, task := range tasks {
+		select {
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return out
+		case jobs <- task:
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	sort.Slice(out, func(i, j int) bool {
+		return fmt.Sprint(out[i]["image_vector_id"]) < fmt.Sprint(out[j]["image_vector_id"])
+	})
 	return out
 }
 

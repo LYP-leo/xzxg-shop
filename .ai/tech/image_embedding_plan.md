@@ -4,11 +4,12 @@
 
 ## 当前状态
 
-- 当前图片向量链路已经接入 Milvus，collection 为 `product_image_vectors`。
-- 当前向量生成方式是后端本地 `imagevector.FromImage`：64 维颜色直方图。
+- 当前图片向量链路已经接入 Milvus，语义图片向量 collection 为 `product_image_vectors_v2`。
+- 当前默认向量生成方式是 DashScope `qwen3-vl-embedding`，维度 512。
+- 本地 `imagevector.FromImage` 64 维颜色直方图仍保留为 `local_histogram` 显式 fallback。
 - 当前支持格式：JPEG、PNG、GIF、WebP。
-- 当前优点：不依赖外部模型，速度快，成本为 0。
-- 当前缺点：只能表达颜色分布，不能理解商品语义、物体类别、风格、材质、品牌和场景，因此会出现颜色相近但语义无关的召回。
+- 当前图片查询侧只对用户上传/引用的查询图片在线调用一次模型；商品侧图片向量在后台索引任务中批量构建。
+- 当前验证样例：`p_dummyjson_043_live.jpg` 查询 RT 约 2.2s，Top1 命中原商品 `p_dummyjson_043`。
 
 ## 推荐升级目标
 

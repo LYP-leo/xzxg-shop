@@ -15,6 +15,7 @@ import (
 	"github.com/LYP-leo/xzxg-shop/backend/src/configcenter"
 	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
 	"github.com/LYP-leo/xzxg-shop/backend/src/httpapi"
+	"github.com/LYP-leo/xzxg-shop/backend/src/imagevector"
 	"github.com/LYP-leo/xzxg-shop/backend/src/rag"
 	"github.com/LYP-leo/xzxg-shop/backend/src/store"
 )
@@ -56,6 +57,7 @@ func main() {
 	}
 	vectorConfig := rag.ConfigFromMap(configCenter.GetMap(ctx), runtimeConfig.Models.APIKey, runtimeConfig.Models.BaseURL)
 	if vectorConfig.Enabled {
+		mysqlStore.SetImageEmbedder(imagevector.NewEmbedderFromMap(configCenter.GetMap(ctx), runtimeConfig.Models.APIKey))
 		vectorClient := rag.NewClient(vectorConfig, rag.NewOpenAIEmbedder(vectorConfig.EmbeddingBaseURL, vectorConfig.EmbeddingAPIKey, vectorConfig.EmbeddingModel))
 		mysqlStore.SetVectorClient(vectorClient)
 		go func() {
@@ -67,6 +69,14 @@ func main() {
 				return
 			}
 			logger.Info("vector index ready", "milvus", vectorConfig.MilvusAddress)
+			imageBootstrapCtx, imageCancel := context.WithTimeout(ctx, 20*time.Minute)
+			defer imageCancel()
+			logger.Info("image vector index bootstrap started", "milvus", vectorConfig.MilvusAddress, "collection", vectorConfig.ImageCollection)
+			if err := mysqlStore.BootstrapImageVectorIndex(imageBootstrapCtx); err != nil {
+				logger.Warn("image vector index unavailable", "error", err)
+				return
+			}
+			logger.Info("image vector index ready", "milvus", vectorConfig.MilvusAddress, "collection", vectorConfig.ImageCollection)
 		}()
 	}
 	runtime := agent.NewRuntime(mysqlStore, configCenter, logger, runtimeConfig)

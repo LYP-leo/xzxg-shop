@@ -382,9 +382,15 @@ func DefaultConfigs(envAPIKey string) []domain.AppConfig {
 		{ConfigKey: "milvus.database", ConfigValue: "", ValueType: "string", Description: "Milvus 数据库，空表示 default", Domain: "infra"},
 		{ConfigKey: "milvus.collection.products", ConfigValue: "product_text_vectors", ValueType: "string", Description: "商品文本向量 collection", Domain: "infra"},
 		{ConfigKey: "milvus.collection.knowledge", ConfigValue: "knowledge_text_chunks", ValueType: "string", Description: "知识片段文本向量 collection", Domain: "infra"},
+		{ConfigKey: "milvus.collection.product_images", ConfigValue: "product_image_vectors_v2", ValueType: "string", Description: "商品图片向量 collection；DashScope 多模态 Embedding 使用 v2", Domain: "infra"},
 		{ConfigKey: "embedding.base_url", ConfigValue: "https://dashscope.aliyuncs.com/compatible-mode/v1", ValueType: "string", Description: "Embedding OpenAI 兼容 Base URL", Domain: "infra"},
 		{ConfigKey: "embedding.model", ConfigValue: "text-embedding-v4", ValueType: "string", Description: "文本 Embedding 模型", Domain: "infra"},
 		{ConfigKey: "embedding.batch_size", ConfigValue: "10", ValueType: "int", Description: "Embedding 批量大小", Domain: "infra"},
+		{ConfigKey: "image_embedding.provider", ConfigValue: "dashscope", ValueType: "string", Description: "图片 Embedding 提供方：dashscope 或 local_histogram", Domain: "infra"},
+		{ConfigKey: "image_embedding.base_url", ConfigValue: "https://dashscope.aliyuncs.com", ValueType: "string", Description: "DashScope 多模态 Embedding Base URL", Domain: "infra"},
+		{ConfigKey: "image_embedding.api_key", ConfigValue: envAPIKey, ValueType: "string", Description: "图片 Embedding API Key，默认复用 ai.api_key", Domain: "infra", IsSecret: true},
+		{ConfigKey: "image_embedding.model", ConfigValue: "qwen3-vl-embedding", ValueType: "string", Description: "图片 Embedding 模型", Domain: "infra"},
+		{ConfigKey: "image_embedding.dimension", ConfigValue: "512", ValueType: "int", Description: "图片 Embedding 维度，效果/性能平衡默认 512", Domain: "infra"},
 		{ConfigKey: "retrieval.keyword.top_n", ConfigValue: "200", ValueType: "int", Description: "关键词召回候选数，宽 query 需要更大的候选池再重排", Domain: "rag"},
 		{ConfigKey: "retrieval.vector.top_n", ConfigValue: "80", ValueType: "int", Description: "向量召回候选数", Domain: "rag"},
 		{ConfigKey: "retrieval.vector.min_score", ConfigValue: "0.58", ValueType: "float", Description: "Milvus 向量召回最低相似度，低于该分数直接丢弃", Domain: "rag"},
@@ -524,7 +530,7 @@ func DomainForKey(key string) string {
 		return "prompt"
 	case strings.HasPrefix(key, "retrieval."):
 		return "rag"
-	case strings.HasPrefix(key, "vector."), strings.HasPrefix(key, "milvus."), strings.HasPrefix(key, "embedding."):
+	case strings.HasPrefix(key, "vector."), strings.HasPrefix(key, "milvus."), strings.HasPrefix(key, "embedding."), strings.HasPrefix(key, "image_embedding."):
 		return "infra"
 	default:
 		return "app"

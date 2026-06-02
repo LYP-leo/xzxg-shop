@@ -613,7 +613,7 @@ Authorization: Bearer <token>
 - `file_id`、`object_key`、`image_url` 三选一。
 - `file_id` 或 `object_key` 走 MinIO 对象存储。
 - `image_url` 支持数据集静态资源路径或外部 URL。
-- 当前图片向量使用 64 维本地颜色直方图，适合基础图搜；生产语义图搜建议升级到百炼多模态 Embedding，并新建匹配维度的 Milvus collection。
+- 当前默认图片向量使用 DashScope `qwen3-vl-embedding` 512 维语义向量，Milvus collection 为 `product_image_vectors_v2`；`local_histogram` 64 维颜色直方图仅作为显式 fallback。
 
 响应：
 
