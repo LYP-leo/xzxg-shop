@@ -4,6 +4,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -267,14 +268,36 @@ public class ApiClient {
     }
 
     public JSONArray sessions() throws Exception {
-        JSONObject response = get("/agent/sessions");
-        return response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
+        return sessionsPage(1, 10).items;
+    }
+
+    public SessionPage sessionsPage(int page, int pageSize) throws Exception {
+        int safePage = Math.max(1, page);
+        int safePageSize = Math.max(1, pageSize);
+        JSONObject response = get("/agent/sessions?page=" + safePage + "&page_size=" + safePageSize);
+        return sessionPageFromResponse(response, safePage, safePageSize);
     }
 
     public JSONArray searchSessions(String keyword) throws Exception {
-        JSONObject response = get("/agent/sessions/search?q=" + urlEncode(keyword == null ? "" : keyword.trim()));
-        return response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
+        return searchSessionsPage(keyword, 1, 10).items;
     }
+
+    public SessionPage searchSessionsPage(String keyword, int page, int pageSize) throws Exception {
+        int safePage = Math.max(1, page);
+        int safePageSize = Math.max(1, pageSize);
+        JSONObject response = get("/agent/sessions/search?q=" + urlEncode(keyword == null ? "" : keyword.trim()) + "&page=" + safePage + "&page_size=" + safePageSize);
+        return sessionPageFromResponse(response, safePage, safePageSize);
+    }
+
+    private SessionPage sessionPageFromResponse(JSONObject response, int page, int pageSize) {
+        JSONArray items = response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
+        int currentPage = response.optInt("page", Math.max(1, page));
+        int currentPageSize = response.optInt("page_size", pageSize);
+        int total = response.optInt("total", items.length());
+        boolean hasMore = currentPageSize > 0 && currentPage * currentPageSize < total;
+        return new SessionPage(items, currentPage + 1, hasMore, total);
+    }
+
 
     public JSONObject sessionDetail(String sessionId) throws Exception {
         return get("/agent/sessions/" + urlEncode(sessionId));
@@ -373,11 +396,15 @@ public class ApiClient {
                     if (data.isEmpty()) {
                         continue;
                     }
-                    callback.onEvent(new JSONObject(data));
+                    try {
+                        callback.onEvent(new JSONObject(data));
+                    } catch (Exception parseError) {
+                        throw new IOException("流式响应解析失败", parseError);
+                    }
                 }
             } catch (Exception error) {
                 if (!call.canceled) {
-                    callback.onError(error);
+                    callback.onError(withReadableMessage(error, "流式连接中断"));
                 }
             } finally {
                 if (conn != null) {
@@ -458,6 +485,17 @@ public class ApiClient {
         return new ApiException(statusCode, code, message);
     }
 
+    private Exception withReadableMessage(Exception error, String fallback) {
+        if (error == null) {
+            return new IOException(fallback);
+        }
+        String message = error.getMessage();
+        if (message != null && !message.trim().isEmpty()) {
+            return error;
+        }
+        return new IOException(fallback + "：" + error.getClass().getSimpleName(), error);
+    }
+
     private String readText(InputStream stream) throws Exception {
         if (stream == null) {
             return "";
@@ -527,6 +565,20 @@ public class ApiClient {
         public final int total;
 
         ProductPage(JSONArray items, int nextPage, boolean hasMore, int total) {
+            this.items = items;
+            this.nextPage = nextPage;
+            this.hasMore = hasMore;
+            this.total = total;
+        }
+    }
+
+    public static class SessionPage {
+        public final JSONArray items;
+        public final int nextPage;
+        public final boolean hasMore;
+        public final int total;
+
+        SessionPage(JSONArray items, int nextPage, boolean hasMore, int total) {
             this.items = items;
             this.nextPage = nextPage;
             this.hasMore = hasMore;

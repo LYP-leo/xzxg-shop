@@ -144,7 +144,7 @@ public class LocalChatStore extends SQLiteOpenHelper {
         }
         String safeRole = role == null || role.trim().isEmpty() ? "user" : role.trim();
         String safeContent = content == null ? "" : content;
-        if (safeContent.isEmpty()) {
+        if (safeContent.isEmpty() && isEmptyJsonArray(blocksJson) && isEmptyJsonArray(followupsJson) && isEmptyJsonArray(segmentsJson)) {
             return;
         }
         long messageTime = createdAt > 0 ? createdAt : 1;
@@ -163,6 +163,11 @@ public class LocalChatStore extends SQLiteOpenHelper {
         values.put("status", status == null || status.isEmpty() ? "synced" : status);
         values.put("created_at", messageTime);
         getWritableDatabase().insertWithOnConflict("messages", null, values, SQLiteDatabase.CONFLICT_IGNORE);
+    }
+
+    private boolean isEmptyJsonArray(String value) {
+        String text = value == null ? "" : value.trim();
+        return text.isEmpty() || "[]".equals(text);
     }
 
     public List<SessionSummary> recentSessions() {
