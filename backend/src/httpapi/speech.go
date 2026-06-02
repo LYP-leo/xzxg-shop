@@ -57,7 +57,7 @@ type speechAccumulator struct {
 }
 
 func (s *Server) handleSpeechRealtime(w http.ResponseWriter, r *http.Request) {
-	cfg := speechRealtimeConfigFromEnv()
+	cfg := s.speechRealtimeConfig(r.Context())
 	if !cfg.Enabled() {
 		writeError(w, http.StatusNotImplemented, "speech_not_enabled", "当前后端未配置讯飞语音识别")
 		return
@@ -234,21 +234,31 @@ func isSpeechControlPayload(payload []byte) bool {
 	return strings.HasPrefix(trimmed, "{") && json.Valid([]byte(trimmed))
 }
 
-func speechRealtimeConfigFromEnv() speechRealtimeConfig {
+func (s *Server) speechRealtimeConfig(ctx context.Context) speechRealtimeConfig {
+	values := map[string]string{}
+	if s != nil && s.configs != nil {
+		values = s.configs.GetMap(ctx)
+	}
 	return speechRealtimeConfig{
-		AppID:       strings.TrimSpace(os.Getenv("XUNFEI_APP_ID")),
-		APIKey:      strings.TrimSpace(os.Getenv("XUNFEI_API_KEY")),
-		APISecret:   strings.TrimSpace(os.Getenv("XUNFEI_API_SECRET")),
-		BaseURL:     speechEnvDefault("XUNFEI_RTASR_BASE_URL", "wss://office-api-ast-dx.iflyaisol.com"),
-		Path:        speechEnvDefault("XUNFEI_RTASR_PATH", "/ast/communicate/v1"),
-		Lang:        speechEnvDefault("XUNFEI_RTASR_LANG", "autodialect"),
-		AudioEncode: speechEnvDefault("XUNFEI_RTASR_AUDIO_ENCODE", "pcm_s16le"),
-		SampleRate:  speechEnvDefault("XUNFEI_RTASR_SAMPLE_RATE", "16000"),
+		AppID:       speechConfigValue(values, "XUNFEI_APP_ID", "xunfei.app_id", ""),
+		APIKey:      speechConfigValue(values, "XUNFEI_API_KEY", "xunfei.api_key", ""),
+		APISecret:   speechConfigValue(values, "XUNFEI_API_SECRET", "xunfei.api_secret", ""),
+		BaseURL:     speechConfigValue(values, "XUNFEI_RTASR_BASE_URL", "xunfei.rtasr.base_url", "wss://office-api-ast-dx.iflyaisol.com"),
+		Path:        speechConfigValue(values, "XUNFEI_RTASR_PATH", "xunfei.rtasr.path", "/ast/communicate/v1"),
+		Lang:        speechConfigValue(values, "XUNFEI_RTASR_LANG", "xunfei.rtasr.lang", "autodialect"),
+		AudioEncode: speechConfigValue(values, "XUNFEI_RTASR_AUDIO_ENCODE", "xunfei.rtasr.audio_encode", "pcm_s16le"),
+		SampleRate:  speechConfigValue(values, "XUNFEI_RTASR_SAMPLE_RATE", "xunfei.rtasr.sample_rate", "16000"),
 	}
 }
 
-func speechEnvDefault(key string, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+func speechConfigValue(values map[string]string, envKey string, configKey string, fallback string) string {
+	if value := strings.TrimSpace(values[envKey]); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(values[configKey]); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(os.Getenv(envKey)); value != "" {
 		return value
 	}
 	return fallback

@@ -1,8 +1,12 @@
 package httpapi
 
 import (
+	"context"
 	"net/url"
 	"testing"
+
+	"github.com/LYP-leo/xzxg-shop/backend/src/configcenter"
+	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
 )
 
 func TestParseXunfeiSpeechResult(t *testing.T) {
@@ -76,5 +80,28 @@ func TestSpeechSignedURL(t *testing.T) {
 	}
 	if query.Get("signature") == "" || query.Get("utc") == "" {
 		t.Fatalf("missing signature params: %s", signedURL)
+	}
+}
+
+func TestSpeechRealtimeConfigReadsNacosFirst(t *testing.T) {
+	server := &Server{configs: configcenter.NewMemoryCenter([]domain.AppConfig{
+		{ConfigKey: "XUNFEI_APP_ID", ConfigValue: "nacos-app", ValueType: "string"},
+		{ConfigKey: "XUNFEI_API_KEY", ConfigValue: "nacos-key", ValueType: "string", IsSecret: true},
+		{ConfigKey: "XUNFEI_API_SECRET", ConfigValue: "nacos-secret", ValueType: "string", IsSecret: true},
+		{ConfigKey: "XUNFEI_RTASR_SAMPLE_RATE", ConfigValue: "8000", ValueType: "string"},
+	})}
+	t.Setenv("XUNFEI_APP_ID", "env-app")
+	t.Setenv("XUNFEI_API_KEY", "env-key")
+	t.Setenv("XUNFEI_API_SECRET", "env-secret")
+
+	cfg := server.speechRealtimeConfig(context.Background())
+	if cfg.AppID != "nacos-app" || cfg.APIKey != "nacos-key" || cfg.APISecret != "nacos-secret" {
+		t.Fatalf("expected nacos credentials first, got %#v", cfg)
+	}
+	if cfg.SampleRate != "8000" {
+		t.Fatalf("expected nacos sample rate, got %q", cfg.SampleRate)
+	}
+	if cfg.BaseURL != "wss://office-api-ast-dx.iflyaisol.com" {
+		t.Fatalf("expected default base url, got %q", cfg.BaseURL)
 	}
 }
