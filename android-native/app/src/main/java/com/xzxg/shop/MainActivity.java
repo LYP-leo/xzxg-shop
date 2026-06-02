@@ -1059,12 +1059,9 @@ public class MainActivity extends Activity {
         if (!realtimeVoiceActive || realtimeVoiceFinalSent) {
             return;
         }
-        boolean shouldFallback = currentSpeechMode() == SpeechMode.AUTO
-                && ("speech_not_enabled".equals(code) || "speech_network_error".equals(code));
         cleanupRealtimeVoice();
-        if (shouldFallback) {
-            toastLine("当前语音识别不可用，已切换系统语音");
-            startAndroidInlineSpeech();
+        if ("speech_not_enabled".equals(code) || "speech_network_error".equals(code)) {
+            toastLine("当前语音识别不可用");
             return;
         }
         toastLine((message == null || message.trim().isEmpty()) ? "语音识别失败，请重试" : message);
