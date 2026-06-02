@@ -11,6 +11,7 @@ Agent 与前端之间只通过 SSE 事件和结构化 block 通信。前端不�
 3. 推荐追问走 `followups`。
 4. 本轮生命周期由 `message_start` 和 `message_end` 标记。
 5. 错误统一走 `error`。
+6. 新客户端应优先消费 `content_delta`，用来按生成顺序渲染文本片段和商品卡片；旧客户端继续使用 `text_delta` + `block_delta`。
 
 ## 请求
 
@@ -39,6 +40,14 @@ Authorization: Bearer <token>
   ]
 }
 ```
+
+幂等要求：
+
+- `client_message_id` 是客户端生成的消息幂等键，同一账号、同一会话内必须唯一。
+- 客户端超时重试、断网重发、页面恢复重放时，必须复用同一个 `client_message_id`。
+- 后端按 `(account_id, session_id, client_message_id)` 做唯一约束；重复提交不会重新创建消息，也不会再次执行 Agent。
+- 如果重复提交命中已有 run，SSE 会返回已有 `run_id` 和 `duplicate_message` 事件，客户端应停止本次发送态，并通过会话详情或 run trace 刷新已有结果。
+- 新建消息时如果客户端未传 `client_message_id`，后端会生成服务端幂等键；但这种请求无法跨网络重试去重，正式客户端必须传。
 
 ## SSE 包格式
 
@@ -129,6 +138,41 @@ data: {"type":"text_delta","run_id":"run_xxx","delta":"你好"}
 - `turn.text += delta`。
 - 不解析 markdown 外的隐藏结构。
 
+### content_delta
+
+用途：输出按生成顺序排列的内容片段。它解决“正文底部一次性挂多张商品卡”的问题，支持“先讲商品 A -> 插入商品 A 卡片 -> 再讲商品 B -> 插入商品 B 卡片”。
+
+```json
+{
+  "type": "content_delta",
+  "run_id": "run_xxx",
+  "part": {
+    "type": "text",
+    "content": "这款更适合通勤，"
+  }
+}
+```
+
+商品卡片片段：
+
+```json
+{
+  "type": "content_delta",
+  "run_id": "run_xxx",
+  "part": {
+    "type": "product_card",
+    "product": {}
+  }
+}
+```
+
+前端处理：
+
+- 新客户端维护 `turn.contentParts`，按 `content_delta.part` 到达顺序追加渲染。
+- `part.type = text` 时追加文本片段；`part.type = product_card` 时渲染商品卡。
+- 为兼容旧客户端，后端仍会同时发送 `text_delta`；不要把 `content_delta.text` 和 `text_delta` 同时拼进同一个文本区域。
+- 旧 React 前端当前仍主要消费 `text_delta` / `block_delta`，Android 新版建议优先接 `content_delta`。
+
 ### block_delta
 
 用途：输出结构化展示块。
@@ -170,6 +214,23 @@ data: {"type":"text_delta","run_id":"run_xxx","delta":"你好"}
 ### message_end
 
 用途：标记本轮结束。
+
+## Agent 内部最终输出协议
+
+Agent ReAct 最后一轮不再使用 `{"type":"final","text":"..."}` 包装最终文案，而是使用自定义标签协议：
+
+```text
+<final>
+最终回答正文，可以使用 Markdown 和 <item>product_id</item>
+</final>
+```
+
+后端行为：
+
+- 看到 `<final>` 后立即开始流式转发正文。
+- `<item>product_id</item>` 会被后端校验，只允许工具返回过的商品 ID。
+- 合法 `<item>` 会转换为 `content_delta/product_card`，标签本身不会透传给前端。
+- `<buyer>`、Markdown fence 包裹等内部格式会被过滤。
 
 ```json
 {
