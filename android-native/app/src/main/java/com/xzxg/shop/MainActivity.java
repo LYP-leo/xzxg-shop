@@ -18,6 +18,8 @@ import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.speech.RecognitionListener;
@@ -99,6 +101,16 @@ public class MainActivity extends Activity {
     private SpeechRecognizer speechRecognizer;
     private String lastPartialSpeech = "";
     private boolean voiceResultSent;
+    private SpeechMode speechMode = SpeechMode.AUTO;
+    private SpeechRealtimeClient speechRealtimeClient;
+    private PcmRecorder pcmRecorder;
+    private boolean realtimeVoiceActive;
+    private boolean realtimeVoiceEnding;
+    private boolean realtimeVoiceFinalSent;
+    private boolean realtimeRecorderStarted;
+    private String realtimePartialText = "";
+    private long realtimeVoiceStartedAt;
+    private Handler voiceHandler = new Handler(Looper.getMainLooper());
     private FrameLayout drawerLayer;
     private LinearLayout drawerPanel;
     private LinearLayout drawerHistoryList;
@@ -537,8 +549,10 @@ public class MainActivity extends Activity {
             setActionButtonText("■");
         } else if (!text.isEmpty()) {
             setActionButtonText("➤");
+        } else if (voiceMode) {
+            setActionButtonText(realtimeVoiceEnding ? "…" : "■");
         } else {
-            setActionButtonText(voiceMode ? "⌨" : "🎙");
+            setActionButtonText("🎙");
         }
     }
 
@@ -798,12 +812,115 @@ public class MainActivity extends Activity {
     }
 
     private void enterVoiceMode() {
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            startSpeechRecognizerActivity();
-            return;
-        }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQUEST_RECORD_AUDIO);
+            return;
+        }
+        SpeechMode mode = currentSpeechMode();
+        if (mode == SpeechMode.XUNFEI_REALTIME || mode == SpeechMode.AUTO) {
+            startRealtimeSpeech();
+            return;
+        }
+        if (mode == SpeechMode.ANDROID_INLINE) {
+            startAndroidInlineSpeech();
+            return;
+        }
+        startSpeechRecognizerActivity();
+    }
+
+    private SpeechMode currentSpeechMode() {
+        return speechMode == null ? SpeechMode.AUTO : speechMode;
+    }
+
+    private void startRealtimeSpeech() {
+        voiceMode = true;
+        voiceResultSent = false;
+        realtimeVoiceActive = true;
+        realtimeVoiceEnding = false;
+        realtimeVoiceFinalSent = false;
+        realtimeRecorderStarted = false;
+        realtimePartialText = "";
+        realtimeVoiceStartedAt = System.currentTimeMillis();
+        if (input != null) {
+            input.setText("");
+            input.setHint("正在连接语音识别...");
+            input.clearFocus();
+        }
+        hideKeyboard();
+        updateInputActionButtonState();
+        pcmRecorder = new PcmRecorder();
+        speechRealtimeClient = new SpeechRealtimeClient(sessionStore, new SpeechRealtimeClient.Listener() {
+            @Override
+            public void onReady() {
+                runOnUiThread(() -> {
+                    if (!realtimeVoiceActive) {
+                        return;
+                    }
+                    if (input != null) {
+                        input.setHint("正在聆听...");
+                    }
+                    try {
+                        realtimeRecorderStarted = true;
+                        pcmRecorder.start(new PcmRecorder.FrameListener() {
+                            @Override
+                            public void onFrame(byte[] frame) {
+                                SpeechRealtimeClient client = speechRealtimeClient;
+                                if (realtimeVoiceActive && client != null) {
+                                    client.sendAudio(frame);
+                                }
+                            }
+
+                            @Override
+                            public void onError(Exception error) {
+                                runOnUiThread(() -> handleRealtimeSpeechError("speech_recognition_failed", "录音失败，请重试"));
+                            }
+                        });
+                    } catch (Exception error) {
+                        handleRealtimeSpeechError("speech_recognition_failed", "录音失败，请重试");
+                    }
+                });
+            }
+
+            @Override
+            public void onPartial(String text) {
+                runOnUiThread(() -> {
+                    realtimePartialText = text == null ? "" : text.trim();
+                    if (input != null && realtimeVoiceActive && !realtimePartialText.isEmpty()) {
+                        input.setHint(realtimePartialText);
+                    }
+                });
+            }
+
+            @Override
+            public void onFinal(String text) {
+                runOnUiThread(() -> sendRealtimeSpeechFinal(text));
+            }
+
+            @Override
+            public void onError(String code, String message) {
+                runOnUiThread(() -> handleRealtimeSpeechError(code, message));
+            }
+
+            @Override
+            public void onClosed() {
+            }
+        });
+        speechRealtimeClient.connect();
+        voiceHandler.postDelayed(() -> {
+            if (realtimeVoiceActive && !realtimeRecorderStarted && !realtimeVoiceEnding) {
+                handleRealtimeSpeechError("speech_network_error", "语音识别连接超时");
+            }
+        }, 8000);
+        voiceHandler.postDelayed(() -> {
+            if (realtimeVoiceActive && !realtimeVoiceEnding) {
+                finishRealtimeVoice(false);
+            }
+        }, 60000);
+    }
+
+    private void startAndroidInlineSpeech() {
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            startSpeechRecognizerActivity();
             return;
         }
         voiceMode = true;
@@ -842,6 +959,10 @@ public class MainActivity extends Activity {
     }
 
     private void exitVoiceMode() {
+        if (realtimeVoiceActive) {
+            finishRealtimeVoice(true);
+            return;
+        }
         voiceResultSent = true;
         stopSpeechRecognition();
         voiceMode = false;
@@ -852,6 +973,101 @@ public class MainActivity extends Activity {
             input.setHint("输入问题或直接发送...");
         }
         updateInputActionButtonState();
+    }
+
+    private void finishRealtimeVoice(boolean userStop) {
+        if (!realtimeVoiceActive || realtimeVoiceEnding) {
+            return;
+        }
+        long duration = System.currentTimeMillis() - realtimeVoiceStartedAt;
+        if (userStop && duration < 800) {
+            toastLine("说话时间太短");
+            cancelRealtimeVoice();
+            return;
+        }
+        realtimeVoiceEnding = true;
+        if (pcmRecorder != null) {
+            pcmRecorder.stop();
+        }
+        if (speechRealtimeClient != null) {
+            speechRealtimeClient.sendEnd();
+        }
+        if (input != null) {
+            input.setHint("正在识别语音...");
+        }
+        updateInputActionButtonState();
+        voiceHandler.postDelayed(() -> {
+            if (realtimeVoiceActive && realtimeVoiceEnding && !realtimeVoiceFinalSent) {
+                sendRealtimeSpeechFinal(realtimePartialText);
+            }
+        }, 3000);
+    }
+
+    private void cancelRealtimeVoice() {
+        if (pcmRecorder != null) {
+            pcmRecorder.stop();
+            pcmRecorder = null;
+        }
+        if (speechRealtimeClient != null) {
+            speechRealtimeClient.cancel();
+            speechRealtimeClient = null;
+        }
+        cleanupRealtimeVoice();
+    }
+
+    private void cleanupRealtimeVoice() {
+        realtimeVoiceActive = false;
+        realtimeVoiceEnding = false;
+        realtimeRecorderStarted = false;
+        realtimePartialText = "";
+        voiceMode = false;
+        voiceHandler.removeCallbacksAndMessages(null);
+        if (pcmRecorder != null) {
+            pcmRecorder.stop();
+            pcmRecorder = null;
+        }
+        if (speechRealtimeClient != null) {
+            speechRealtimeClient.close();
+            speechRealtimeClient = null;
+        }
+        if (input != null) {
+            input.setHint("输入问题或直接发送...");
+            input.setGravity(Gravity.CENTER_VERTICAL);
+        }
+        updateInputActionButtonState();
+    }
+
+    private void sendRealtimeSpeechFinal(String text) {
+        if (realtimeVoiceFinalSent) {
+            return;
+        }
+        String value = text == null ? "" : text.trim();
+        if (value.isEmpty()) {
+            value = realtimePartialText == null ? "" : realtimePartialText.trim();
+        }
+        if (value.isEmpty()) {
+            toastLine("没有识别到内容");
+            cleanupRealtimeVoice();
+            return;
+        }
+        realtimeVoiceFinalSent = true;
+        cleanupRealtimeVoice();
+        sendMessage(value);
+    }
+
+    private void handleRealtimeSpeechError(String code, String message) {
+        if (!realtimeVoiceActive || realtimeVoiceFinalSent) {
+            return;
+        }
+        boolean shouldFallback = currentSpeechMode() == SpeechMode.AUTO
+                && ("speech_not_enabled".equals(code) || "speech_network_error".equals(code));
+        cleanupRealtimeVoice();
+        if (shouldFallback) {
+            toastLine("当前语音识别不可用，已切换系统语音");
+            startAndroidInlineSpeech();
+            return;
+        }
+        toastLine((message == null || message.trim().isEmpty()) ? "语音识别失败，请重试" : message);
     }
 
     private void startSpeechRecognition() {
@@ -6258,6 +6474,16 @@ public class MainActivity extends Activity {
         window.getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
     }
 
+    @Override
+    protected void onDestroy() {
+        cancelRealtimeVoice();
+        if (speechRecognizer != null) {
+            speechRecognizer.destroy();
+            speechRecognizer = null;
+        }
+        super.onDestroy();
+    }
+
     private int statusBarHeight() {
         int resourceId = getResources().getIdentifier("status_bar_height", "dimen", "android");
         return resourceId > 0 ? getResources().getDimensionPixelSize(resourceId) : 0;
@@ -6272,6 +6498,13 @@ public class MainActivity extends Activity {
         SpaceView(Activity activity) {
             super(activity);
         }
+    }
+
+    private enum SpeechMode {
+        AUTO,
+        XUNFEI_REALTIME,
+        ANDROID_INLINE,
+        ANDROID_ACTIVITY
     }
 
     private static class HistoricalMessageRenderContext {

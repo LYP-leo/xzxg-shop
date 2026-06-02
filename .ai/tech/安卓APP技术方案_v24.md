@@ -11,11 +11,14 @@
 - 服务名称：实时语音转写大模型
 - 服务接口类型：WebSocket
 - 接口地址：`wss://office-api-ast-dx.iflyaisol.com/`
+- 推荐完整接口：`wss://office-api-ast-dx.iflyaisol.com/ast/communicate/v1?{请求参数}`
 - 文档：
   - `https://www.xfyun.cn/doc/spark/asr_llm/rtasr_llm.html`
   - `https://www.xfyun.cn/doc/asr/rtasr/Android.html`
 
-注意：问题文档中已经出现明文 `APIKey` / `APISecret`。v24 实施前应把这组密钥视为已泄露密钥处理，至少在生产环境中轮换，并且不得继续把密钥写入 Android APK。
+根据讯飞文档，实时语音转写大模型采用 WebSocket 实时通信，音频要求为 `16kHz`、`16bit`、单声道，`pcm` 格式；建议每 `40ms` 发送 `1280` 字节音频流。接口鉴权使用签名机制，请求参数包含 `appId`、`accessKeyId`、`utc`、`signature`、`audio_encode`、`lang`、`samplerate` 等。
+
+注意：问题文档中已经出现明文 `APIKey` / `APISecret`。v24 实施前应把这组密钥视为已泄露密钥处理，至少在生产环境中轮换，并且不得继续把密钥写入 Android APK、Gradle、资源文件或日志。
 
 ## 2. 当前实现核对
 
@@ -105,10 +108,22 @@ RECORD_AUDIO 权限
 
 关键实现要点：
 
-- WebSocket 接口建议路径按文档使用 `/ast/communicate/v1`，完整地址由后端配置拼接，例如 `wss://office-api-ast-dx.iflyaisol.com/ast/communicate/v1`。
+- WebSocket 接口按文档使用 `/ast/communicate/v1`，完整地址由后端配置拼接，例如 `wss://office-api-ast-dx.iflyaisol.com/ast/communicate/v1?{请求参数}`。
+- 握手参数至少包含：
+  - `appId`：讯飞应用 ID。
+  - `accessKeyId`：讯飞 APIKey。
+  - `utc`：当前时间，按文档格式生成。
+  - `signature`：用 APISecret 对排序后的参数 baseString 做 `HmacSHA1`，再 `Base64`。
+  - `audio_encode=pcm_s16le`。
+  - `lang=autodialect`，支持中英和方言混合识别。
+  - `samplerate=16000`。
+- 参数需要 URL encode；签名参数本身不参与 baseString 排序。
 - 音频建议使用 PCM：`16kHz`、`16bit`、单声道。
 - Android 端使用 `AudioRecord` 采集 PCM，比 `MediaRecorder` 更适合实时 WebSocket 分片。
 - 常见发送节奏按 `40ms` 一帧，即 `1280 bytes` 左右的 PCM 数据。
+- 握手成功后持续发送 binary message，内容为音频二进制数据。
+- 音频发送完成后发送结束 JSON：`{"end": true, "sessionId": "<sid>"}`。
+- 讯飞结果中 `data.cn.st.type=1` 表示中间结果，`type=0` 表示确定性结果；`data.ls=true` 表示最后一帧。
 - 连接鉴权需要 `APPID`、`APIKey`、`APISecret` 等凭证参与签名，凭证必须放后端。
 
 优点：
@@ -240,6 +255,12 @@ Android 发送控制消息：
 {"type":"cancel"}
 ```
 
+后端收到 `end` 后负责向讯飞发送：
+
+```json
+{"end": true, "sessionId": "<xunfei_sid>"}
+```
+
 后端返回事件：
 
 ```json
@@ -273,10 +294,37 @@ XUNFEI_API_KEY=...
 XUNFEI_API_SECRET=...
 XUNFEI_RTASR_BASE_URL=wss://office-api-ast-dx.iflyaisol.com
 XUNFEI_RTASR_PATH=/ast/communicate/v1
+XUNFEI_RTASR_AUDIO_ENCODE=pcm_s16le
+XUNFEI_RTASR_LANG=autodialect
 SPEECH_LANGUAGE=zh-CN
 SPEECH_SAMPLE_RATE=16000
 SPEECH_MAX_DURATION_SECONDS=60
 SPEECH_FRAME_MS=40
+```
+
+签名生成规则：
+
+```text
+1. 组织请求参数，排除 signature。
+2. 参数名升序排序。
+3. 对 key/value 分别 URL encode。
+4. 拼接为 key=value&key=value 形式，得到 baseString。
+5. 使用 APISecret 对 baseString 做 HmacSHA1。
+6. 对 HmacSHA1 结果做 Base64，得到 signature。
+7. 将 signature URL encode 后放入 WebSocket URL。
+```
+
+建议请求参数：
+
+```text
+appId=<XUNFEI_APP_ID>
+accessKeyId=<XUNFEI_API_KEY>
+uuid=<account_id_or_request_id>
+utc=<current_time>
+audio_encode=pcm_s16le
+lang=autodialect
+samplerate=16000
+signature=<generated_signature>
 ```
 
 密钥要求：
@@ -284,6 +332,7 @@ SPEECH_FRAME_MS=40
 - 不把 `APIKey` / `APISecret` 写入 Android 代码、Gradle、资源文件、日志或崩溃上报。
 - 问题文档里出现过的密钥应尽快在讯飞控制台轮换。
 - 后端日志只打印 request id、耗时、错误码，不打印签名明文、音频内容和完整鉴权 URL。
+- 如果短期没有后端，只允许 debug 包通过本机配置注入密钥直连讯飞；release 包必须禁用直连。
 
 ### 5.3 后端错误码
 
@@ -298,6 +347,19 @@ SPEECH_FRAME_MS=40
 | `speech_no_text` | final 为空 | toast “没有识别到内容” |
 | `speech_too_long` | 超过最大录音时长 | 自动结束并尝试发送已有 final |
 | `speech_recognition_failed` | 其他识别失败 | toast “语音识别失败，请重试” |
+
+讯飞错误码映射建议：
+
+| 讯飞错误码 | 含义 | 本项目 code |
+| --- | --- | --- |
+| `35001` / `100002` | 鉴权或签名失败 | `speech_auth_failed` |
+| `35002` / `35022` | 用量不足或超限 | `speech_quota_exceeded` |
+| `35004` / `35005` | appId 不存在或被禁用 | `speech_auth_failed` |
+| `35006` / `37002` | 并发路数已满 | `speech_too_many_connections` |
+| `35014` / `35030` | 时间戳或签名重复问题 | `speech_auth_failed` |
+| `37005` | 长时间未传音频 | `speech_timeout` |
+| `37007` | 单次音频时长到上限 | `speech_too_long` |
+| `100001` | 音频上传过快 | `speech_upload_too_fast` |
 
 ## 6. Android 端实现设计
 
@@ -639,6 +701,25 @@ Android connect /speech/realtime
 ```
 
 Android 只消费本项目协议，不感知识别供应商细节。
+
+讯飞文本解析规则：
+
+```text
+1. 只处理 msg_type=result 且 res_type=asr 的消息。
+2. 从 data.cn.st.rt[].ws[].cw[].w 取词文本并拼接。
+3. 忽略或按需处理 wp=s 的顺滑词、wp=p 的标点、wp=g 的分段标识。
+4. data.cn.st.type=1 -> partial。
+5. data.cn.st.type=0 -> stable/final segment。
+6. data.ls=true -> 本轮转写结束，可向 Android 发 final。
+```
+
+后端需要维护会话内文本累积：
+
+```text
+partial_text: 当前中间结果，仅用于 Android 展示
+stable_segments: 已确定句段
+final_text: stable_segments + 最后一段确定结果
+```
 
 ### 7.4 限流与安全
 
