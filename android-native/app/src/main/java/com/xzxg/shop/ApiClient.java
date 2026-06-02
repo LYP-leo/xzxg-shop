@@ -4,6 +4,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -58,6 +59,14 @@ public class ApiClient {
         return post("/auth/password:change", body);
     }
 
+    public JSONObject logout() throws Exception {
+        return post("/auth/logout", new JSONObject());
+    }
+
+    public JSONObject me() throws Exception {
+        return get("/auth/me");
+    }
+
     public JSONObject profile() throws Exception {
         return get("/account/profile");
     }
@@ -71,6 +80,32 @@ public class ApiClient {
         body.put("nickname", nickname);
         body.put("avatar_url", avatarUrl == null ? "" : avatarUrl);
         return patch("/account/profile", body);
+    }
+
+    public JSONObject updateContact(String phone, String email) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("phone", phone == null ? "" : phone);
+        body.put("email", email == null ? "" : email);
+        return patch("/account/contact", body);
+    }
+
+    public JSONObject deleteAccount() throws Exception {
+        HttpURLConnection conn = open("/account", "DELETE");
+        return readJSON(conn);
+    }
+
+    public JSONObject uploadAvatar(String name, String mimeType, byte[] data) throws Exception {
+        String boundary = "----xzxgAvatar" + System.currentTimeMillis();
+        HttpURLConnection conn = openRaw("/uploads/avatar", "POST");
+        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+        try (OutputStream out = conn.getOutputStream()) {
+            out.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
+            out.write(("Content-Disposition: form-data; name=\"file\"; filename=\"" + safeFileName(name) + "\"\r\n").getBytes(StandardCharsets.UTF_8));
+            out.write(("Content-Type: " + (mimeType == null || mimeType.isEmpty() ? "image/jpeg" : mimeType) + "\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+            out.write(data);
+            out.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+        }
+        return readJSON(conn);
     }
 
     public JSONArray categoriesTree() throws Exception {
@@ -233,9 +268,36 @@ public class ApiClient {
     }
 
     public JSONArray sessions() throws Exception {
-        JSONObject response = get("/agent/sessions");
-        return response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
+        return sessionsPage(1, 10).items;
     }
+
+    public SessionPage sessionsPage(int page, int pageSize) throws Exception {
+        int safePage = Math.max(1, page);
+        int safePageSize = Math.max(1, pageSize);
+        JSONObject response = get("/agent/sessions?page=" + safePage + "&page_size=" + safePageSize);
+        return sessionPageFromResponse(response, safePage, safePageSize);
+    }
+
+    public JSONArray searchSessions(String keyword) throws Exception {
+        return searchSessionsPage(keyword, 1, 10).items;
+    }
+
+    public SessionPage searchSessionsPage(String keyword, int page, int pageSize) throws Exception {
+        int safePage = Math.max(1, page);
+        int safePageSize = Math.max(1, pageSize);
+        JSONObject response = get("/agent/sessions/search?q=" + urlEncode(keyword == null ? "" : keyword.trim()) + "&page=" + safePage + "&page_size=" + safePageSize);
+        return sessionPageFromResponse(response, safePage, safePageSize);
+    }
+
+    private SessionPage sessionPageFromResponse(JSONObject response, int page, int pageSize) {
+        JSONArray items = response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
+        int currentPage = response.optInt("page", Math.max(1, page));
+        int currentPageSize = response.optInt("page_size", pageSize);
+        int total = response.optInt("total", items.length());
+        boolean hasMore = currentPageSize > 0 && currentPage * currentPageSize < total;
+        return new SessionPage(items, currentPage + 1, hasMore, total);
+    }
+
 
     public JSONObject sessionDetail(String sessionId) throws Exception {
         return get("/agent/sessions/" + urlEncode(sessionId));
@@ -246,6 +308,21 @@ public class ApiClient {
         body.put("title", title == null ? "" : title);
         body.put("summary", summary == null ? "" : summary);
         return patch("/agent/sessions/" + urlEncode(sessionId), body);
+    }
+
+    public JSONObject summarizeSession(String sessionId) throws Exception {
+        return post("/agent/sessions/" + urlEncode(sessionId) + ":summarize", new JSONObject());
+    }
+
+    public JSONObject pinSession(String sessionId, boolean pinned) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("pinned", pinned);
+        return post("/agent/sessions/" + urlEncode(sessionId) + ":pin", body);
+    }
+
+    public JSONObject deleteSession(String sessionId) throws Exception {
+        HttpURLConnection conn = open("/agent/sessions/" + urlEncode(sessionId), "DELETE");
+        return readJSON(conn);
     }
 
     public JSONObject cancelAgentRun(String runId) throws Exception {
@@ -305,7 +382,7 @@ public class ApiClient {
                 int code = conn.getResponseCode();
                 if (code < 200 || code >= 300) {
                     if (!call.canceled) {
-                        callback.onError(new RuntimeException(readText(conn.getErrorStream())));
+                        callback.onError(apiException(code, readText(conn.getErrorStream())));
                     }
                     return;
                 }
@@ -319,11 +396,15 @@ public class ApiClient {
                     if (data.isEmpty()) {
                         continue;
                     }
-                    callback.onEvent(new JSONObject(data));
+                    try {
+                        callback.onEvent(new JSONObject(data));
+                    } catch (Exception parseError) {
+                        throw new IOException("流式响应解析失败", parseError);
+                    }
                 }
             } catch (Exception error) {
                 if (!call.canceled) {
-                    callback.onError(error);
+                    callback.onError(withReadableMessage(error, "流式连接中断"));
                 }
             } finally {
                 if (conn != null) {
@@ -387,9 +468,32 @@ public class ApiClient {
         InputStream stream = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
         String text = readText(stream);
         if (code < 200 || code >= 300) {
-            throw new RuntimeException(text.isEmpty() ? ("HTTP " + code) : text);
+            throw apiException(code, text);
         }
         return text.isEmpty() ? new JSONObject() : new JSONObject(text);
+    }
+
+    private ApiException apiException(int statusCode, String text) {
+        String message = text == null || text.isEmpty() ? ("HTTP " + statusCode) : text;
+        String code = "";
+        try {
+            JSONObject body = new JSONObject(message);
+            code = body.optString("code", "");
+            message = body.optString("message", message);
+        } catch (Exception ignored) {
+        }
+        return new ApiException(statusCode, code, message);
+    }
+
+    private Exception withReadableMessage(Exception error, String fallback) {
+        if (error == null) {
+            return new IOException(fallback);
+        }
+        String message = error.getMessage();
+        if (message != null && !message.trim().isEmpty()) {
+            return error;
+        }
+        return new IOException(fallback + "：" + error.getClass().getSimpleName(), error);
     }
 
     private String readText(InputStream stream) throws Exception {
@@ -421,6 +525,17 @@ public class ApiClient {
         void onError(Throwable error);
     }
 
+    public static class ApiException extends RuntimeException {
+        public final int statusCode;
+        public final String code;
+
+        ApiException(int statusCode, String code, String message) {
+            super(message);
+            this.statusCode = statusCode;
+            this.code = code == null ? "" : code;
+        }
+    }
+
     public static class StreamCall {
         private volatile boolean canceled;
         private volatile HttpURLConnection connection;
@@ -450,6 +565,20 @@ public class ApiClient {
         public final int total;
 
         ProductPage(JSONArray items, int nextPage, boolean hasMore, int total) {
+            this.items = items;
+            this.nextPage = nextPage;
+            this.hasMore = hasMore;
+            this.total = total;
+        }
+    }
+
+    public static class SessionPage {
+        public final JSONArray items;
+        public final int nextPage;
+        public final boolean hasMore;
+        public final int total;
+
+        SessionPage(JSONArray items, int nextPage, boolean hasMore, int total) {
             this.items = items;
             this.nextPage = nextPage;
             this.hasMore = hasMore;
