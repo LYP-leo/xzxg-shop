@@ -1041,6 +1041,16 @@ button {
   box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
 }
 
+.trace-run-title {
+  color: #0f172a;
+  display: -webkit-box;
+  font-size: 14px;
+  line-height: 1.35;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 .trace-run-row span {
   align-items: center;
   display: flex;

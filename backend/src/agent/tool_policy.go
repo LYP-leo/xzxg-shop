@@ -38,6 +38,60 @@ func (r *Runtime) intentToolPolicyPrompt(ctx context.Context, plan runPlan) stri
 	return builder.String()
 }
 
+func (r *Runtime) availableToolsPrompt(ctx context.Context, plan runPlan) string {
+	policy := r.policyForPlan(ctx, plan)
+	return namedListText(policy.Tools, toolDescriptions())
+}
+
+func (r *Runtime) availableSkillsPrompt(ctx context.Context, plan runPlan) string {
+	policy := r.policyForPlan(ctx, plan)
+	return namedListText(policy.Skills, skillDescriptions())
+}
+
+func (r *Runtime) toolFocusPrompt(ctx context.Context, plan runPlan) string {
+	policy := r.policyForPlan(ctx, plan)
+	lines := append([]string{}, policy.Focus...)
+	if containsString(policy.Tools, toolSearchProducts) {
+		lines = append(lines,
+			"商品推荐、商品对比、商品详情、价格、库存、卖点、风险提示，必须先调用 search_products。",
+			"调用 search_products 时，query 优先使用品牌/产品线/核心品类/明确型号，保持短而稳定；写代码、做演示、办公、通勤、送礼等使用场景不要塞进首次检索 query。",
+		)
+	}
+	if containsString(policy.Tools, toolSearchKnowledge) {
+		lines = append(lines, "平台规则、选购知识、材料解释、售后边界，必要时调用 search_knowledge。")
+	}
+	if containsString(policy.Tools, toolAddCartItem) {
+		lines = append(lines, "加购前必须有明确 product_id；不能根据购物车内容、列表位置或猜测的 product_id 加购。")
+	}
+	if containsString(policy.Tools, toolUpdateCartItem) || containsString(policy.Tools, toolDeleteCartItem) {
+		lines = append(lines, "修改或删除购物车前必须有 cart_item_id；如果用户按序号描述，先调用 get_cart。")
+	}
+	if containsString(policy.Tools, toolCheckout) {
+		lines = append(lines, "checkout 前先调用 get_cart，确认存在选中商品。")
+	}
+	lines = append(lines,
+		"本轮只能调用“可用工具”列表中的工具；禁止调用未列出的工具。",
+		"如果需要的能力不在可用工具或可用 skill 中，输出 final 澄清或说明能力边界。",
+	)
+	return plainListText(uniqueNonEmpty(lines))
+}
+
+func (r *Runtime) finalOutputRulesPrompt(ctx context.Context, plan runPlan) string {
+	rules := strings.TrimSpace(r.stringConfig(ctx, "agent.prompt.final_output_rules", configcenter.DefaultFinalOutputRulesPrompt))
+	policy := r.policyForPlan(ctx, plan)
+	extras := make([]string, 0, 2)
+	if containsString(policy.Tools, toolSearchKnowledge) {
+		extras = append(extras, "search_knowledge 返回的资料片段只能作为依据引用，不要编造未出现在工具结果中的内容。")
+	}
+	if containsString(policy.Tools, toolSearchProducts) {
+		extras = append(extras, "商品检索结果如果没有可靠命中，不得把候选商品当作推荐或挂品；只能用用户能理解的话说明当前商品库暂时没有找到符合条件的商品。")
+	}
+	if len(extras) > 0 {
+		rules = strings.TrimSpace(rules + "\n" + plainListText(extras))
+	}
+	return rules
+}
+
 func (r *Runtime) toolAllowedForPlan(ctx context.Context, plan runPlan, tool string) bool {
 	tool = strings.TrimSpace(tool)
 	if tool == "" {
@@ -126,6 +180,12 @@ func writeNamedList(builder *strings.Builder, items []string, descriptions map[s
 	}
 }
 
+func namedListText(items []string, descriptions map[string]string) string {
+	var builder strings.Builder
+	writeNamedList(&builder, items, descriptions)
+	return strings.TrimSpace(builder.String())
+}
+
 func writePlainList(builder *strings.Builder, items []string) {
 	if len(items) == 0 {
 		builder.WriteString("- 无\n")
@@ -134,6 +194,12 @@ func writePlainList(builder *strings.Builder, items []string) {
 	for _, item := range items {
 		builder.WriteString(fmt.Sprintf("- %s\n", item))
 	}
+}
+
+func plainListText(items []string) string {
+	var builder strings.Builder
+	writePlainList(&builder, items)
+	return strings.TrimSpace(builder.String())
 }
 
 func uniqueNonEmpty(items []string) []string {
@@ -150,15 +216,24 @@ func uniqueNonEmpty(items []string) []string {
 	return out
 }
 
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
+}
+
 func toolDescriptions() map[string]string {
 	return map[string]string{
-		toolSearchProducts:  "搜索当前商品库，用于查找可推荐商品、价格、库存、卖点和风险；只允许推荐 relevance_status=ok 的商品。",
-		toolSearchKnowledge: "搜索知识库资料，用于查找选购依据、场景清单、平台规则、材料解释和售后边界。",
-		toolGetCart:         "读取当前用户购物车，用于确认 cart_item_id、选中状态和数量。",
-		toolAddCartItem:     "加入购物车；必须已有明确 product_id。",
-		toolUpdateCartItem:  "修改购物车项数量或选中状态；必须已有 cart_item_id。",
-		toolDeleteCartItem:  "删除购物车项；必须已有 cart_item_id。",
-		toolCheckout:        "基于当前选中购物车项创建待支付订单。",
+		toolSearchProducts:  `搜索当前商品库，用于查找可推荐商品、价格、库存、卖点和风险；只允许推荐 relevance_status=ok 的商品。参数 {"query":"商品关键词，可以是2-4个","limit":5}。`,
+		toolSearchKnowledge: `搜索知识库资料，用于查找选购依据、场景清单、平台规则、材料解释和售后边界。参数 {"query":"需要查证的问题","limit":3}。`,
+		toolGetCart:         `读取当前用户购物车，用于确认 cart_item_id、选中状态和数量。参数 {}。`,
+		toolAddCartItem:     `加入购物车；必须已有明确 product_id。参数 {"product_id":"商品ID","sku_id":"SKU ID，可为空","quantity":1}。`,
+		toolUpdateCartItem:  `修改购物车项数量或选中状态；必须已有 cart_item_id。参数 {"cart_item_id":"购物车项ID","quantity":2,"selected":true}。`,
+		toolDeleteCartItem:  `删除购物车项；必须已有 cart_item_id。参数 {"cart_item_id":"购物车项ID"}。`,
+		toolCheckout:        `基于当前选中购物车项创建待支付订单。参数 {}。`,
 	}
 }
 

@@ -44,9 +44,12 @@ Current main chain:
 
 ```text
 user message
+  -> risk check / photo-search fallback
+  -> multi-turn memory retrieval
   -> small-model planner
-  -> product / knowledge retrieval
-  -> small or large answer model
+  -> ReAct tool loop using large answer model for guide/non-guide
+  -> tools / skills / product retrieval / knowledge retrieval / cart / order
+  -> <final>...</final> single-call streaming answer
   -> small-model follow-up generation
   -> SSE events for frontend rendering
 ```
@@ -77,13 +80,19 @@ agent.followups_enabled
 agent.config_refresh_seconds
 agent.prompt.route
 agent.prompt.guide_intent
-agent.prompt.answer_base
-agent.prompt.tool_protocol
+agent.prompt.main_template
+agent.prompt.tool_call_protocol
+agent.prompt.final_output_rules
+agent.prompt.intent_tool_policy
 agent.prompt.followups
 agent.prompt.intent.*
+retrieval.keyword.top_n
+retrieval.vector.top_n
+retrieval.rerank.weight.*
+risk.blocked_terms
 ```
 
-Secret config values such as `ai.api_key` are masked in list responses. The Agent runtime refreshes dynamic config on demand with a default 15-second cache.
+Secret config values such as `ai.api_key` are masked in list responses. The Agent runtime refreshes dynamic config on demand with a default 15-second cache. The main Agent prompt is assembled from `agent.prompt.main_template`, runtime-selected tools/skills, `agent.prompt.final_output_rules`, and the active `agent.prompt.intent.*` content.
 
 Nacos connection env:
 
@@ -105,3 +114,11 @@ NACOS_DATA_ID=xzxg-shop-app-config.json
 The API uses MySQL for sessions, runs, products, SKUs, cart items, and knowledge chunks. On startup it applies `migrations/001_mysql_schema.sql`, which creates the required tables and inserts initial demo catalog data if missing.
 
 Agent trace events are stored in `agent_trace_events` and include planner, retrieval, answer, follow-up, and run completion events. Use `run_id` from the SSE `message_start` event to query the trace endpoint.
+
+## Idempotency and Transactions
+
+- `POST /api/v1/agent/sessions/{session_id}/messages:stream` requires a client-generated `client_message_id`.
+- The store enforces `(account_id, session_id, client_message_id)` uniqueness for user messages and `(account_id, message_id)` uniqueness for runs.
+- Duplicate message submissions return the existing run snapshot and do not execute the Agent again.
+- Cart add uses atomic upsert on `(account_id, product_id, sku_id)`.
+- Checkout locks selected cart rows in a transaction, reserves product/SKU stock, creates orders/payments/items, and clears selected cart rows atomically.

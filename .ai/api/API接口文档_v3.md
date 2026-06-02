@@ -851,20 +851,31 @@ Query：`page`、`page_size`
   "items": [
     {
       "prompt_id": "prm_xxx",
-      "prompt_key": "agent.prompt.answer_base",
-      "title": "主 Agent 基础 Prompt",
+      "prompt_key": "agent.prompt.main_template",
+      "title": "主 Agent 模板 Prompt",
       "content": "...",
       "status": "active",
       "version": 1,
-      "description": "主导购 Agent 系统提示词"
+      "description": "模板化组装主 Agent 系统提示词"
     }
   ],
   "page": 1,
   "page_size": 10,
-  "total": 14,
+  "total": 15,
   "publish_records": []
 }
 ```
+
+当前运行时 Prompt 主要配置项：
+
+- `agent.prompt.main_template`：主 Agent 系统 Prompt 模板，支持 `{intent_brief}`、`{tool_call_protocol}`、`{available_tools}`、`{available_skills}`、`{tool_focus}`、`{final_output_rules}`、`{intent_output_rules}` 占位符。
+- `agent.prompt.tool_call_protocol`：ReAct 阶段工具和 skill 调用 JSON 协议。
+- `agent.prompt.final_output_rules`：最终回答通用规范，包括 `<final>` 流式输出、`<item>product_id</item>` 挂品、Markdown 表格 `<form>` 等约束。
+- `agent.prompt.intent_tool_policy`：按 route/intent 声明可用工具、可用 skill、禁用能力和工具使用侧重。
+- `agent.prompt.intent.*`：各导购/非导购子意图内容范式和输出要求。
+- `agent.prompt.route`、`agent.prompt.guide_intent`：意图识别 Prompt。
+
+运行时会根据当前意图从 `agent.prompt.intent_tool_policy` 计算可用工具和 skill，再注入 `agent.prompt.main_template`；旧的 `agent.prompt.answer_base`、`agent.prompt.tool_protocol` 不再使用。
 
 ### PATCH /admin/prompts/{prompt_key}
 
@@ -876,8 +887,8 @@ Query：`page`、`page_size`
 
 ```json
 {
-  "title": "主 Agent 基础 Prompt",
-  "description": "主导购 Agent 系统提示词",
+  "title": "主 Agent 模板 Prompt",
+  "description": "模板化组装主 Agent 系统提示词",
   "content": "..."
 }
 ```

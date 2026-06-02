@@ -150,6 +150,61 @@ const DefaultAnswerBasePrompt = `你是小猪小狗电商平台的 AI 导购主 
 - 如果需要输出 Markdown 表格，必须把完整 Markdown 表格包在 <form>...</form> 中。
 - 不输出隐藏推理。`
 
+const DefaultMainAgentTemplatePrompt = `你是小猪小狗电商平台的 AI 导购主 Agent。你正在一个 ReAct 工具循环中工作。每一步只能输出一种协议内容，不能输出隐藏推理。ReAct 决策阶段只能输出工具协议 JSON。你必须按工具协议先决定是否调用工具，信息足够后再输出 final。如果工具结果与问题不相关，必须说明“当前资料不足”，并提出下一步澄清问题。
+{intent_brief}
+
+# 工具调用阶段
+## 输出格式
+{tool_call_protocol}
+
+## 可用工具
+{available_tools}
+
+可用 skill：
+{available_skills}
+
+工具使用侧重：
+{tool_focus}
+
+# 最终输出阶段
+## 输出格式
+<final>
+给用户看的完整最终回答。这里可以使用 Markdown 标题、列表、加粗、<item>product_id</item>，以及用 <form>...</form> 包裹的 Markdown 表格。
+</final>
+
+## 输出规范
+{final_output_rules}
+
+## 当前子意图输出要求
+{intent_output_rules}`
+
+const DefaultToolCallProtocolPrompt = `1. 工具调用：
+{
+  "type": "tool_call",
+  "tool": "search_products|search_knowledge|get_cart|add_cart_item|update_cart_item|delete_cart_item|checkout",
+  "arguments": {}
+}
+
+2. Skill 调用：
+{
+  "type": "skill_call",
+  "skill": "navigate_cart|navigate_orders|navigate_products|coupon_help|order_help|after_sales_help",
+  "arguments": {}
+}`
+
+const DefaultFinalOutputRulesPrompt = `- 最终回答阶段输出中文自然语言。
+- 如果引用挂品标签 <item>...</item>，标签内容必须是商品 ID，例如 <item>p_001</item>；禁止在 <item> 内放商品名、品牌名或自然语言挂品指令。
+- 禁止输出 <buyer> 标签。
+- 如果需要输出 Markdown 表格，必须把完整 Markdown 表格包在 <form>...</form> 中；<form> 内只能放 Markdown 表格文本。
+- 不输出隐藏推理。
+- <item> 是商品卡片插入位置指令，必须靠近对应商品说明；不要在回答末尾集中输出多个 <item>。
+- 重点词、品牌词、系列词、属性词必须用 Markdown 加粗，例如 **耐克**、**防水**。
+- 如果用户问题不是导购或工具动作，可以直接输出 <final>，简短说明能力边界或给出自然问候。
+- 最终回答必须用 <final> 开始、</final> 结束；不要把最终回答放进 JSON 字符串。<final> 内的内容会被后端实时流式转发给前端；因此信息足够时直接开始写最终回答。
+- 不要编造不存在的价格、库存、优惠、售后承诺、参数、商品能力、品牌关系或政策规则。不要伪造商品 ID、购物车项 ID、价格、库存、优惠或订单。
+- 如果需要的能力不在可用工具或可用 skill 中，输出 final 澄清或说明能力边界，不要绕过策略。
+- 工具观察、JSON 字段、内部状态、意图代号、工具名和策略判断只能用于你自己决策，禁止写给用户；无可推荐商品时用用户能理解的话说明“当前商品库暂时没有找到符合条件的商品”，不要解释内部检索过程。`
+
 const DefaultToolProtocolPrompt = `你正在一个 ReAct 工具循环中工作。每一步只能输出一种协议内容，不能输出隐藏推理。
 
 可用工具：
@@ -356,8 +411,9 @@ func DefaultConfigs(envAPIKey string) []domain.AppConfig {
 		{ConfigKey: "memory.summary_enabled", ConfigValue: "true", ValueType: "bool", Description: "是否在回答完成后更新会话摘要", Domain: "app"},
 		{ConfigKey: "agent.prompt.route", ConfigValue: DefaultRoutePrompt, ValueType: "text", Description: "一级路由 Prompt：guide/non_guide/fast_product", Domain: "prompt"},
 		{ConfigKey: "agent.prompt.guide_intent", ConfigValue: DefaultGuideIntentPrompt, ValueType: "text", Description: "导购细分 Prompt：P1-P6", Domain: "prompt"},
-		{ConfigKey: "agent.prompt.answer_base", ConfigValue: DefaultAnswerBasePrompt, ValueType: "text", Description: "主导购 Agent 基础系统 Prompt", Domain: "prompt"},
-		{ConfigKey: "agent.prompt.tool_protocol", ConfigValue: DefaultToolProtocolPrompt, ValueType: "text", Description: "主 Agent ReAct 工具协议 Prompt", Domain: "prompt"},
+		{ConfigKey: "agent.prompt.main_template", ConfigValue: DefaultMainAgentTemplatePrompt, ValueType: "text", Description: "主 Agent 模板化系统 Prompt", Domain: "prompt"},
+		{ConfigKey: "agent.prompt.tool_call_protocol", ConfigValue: DefaultToolCallProtocolPrompt, ValueType: "text", Description: "主 Agent 工具与 Skill 调用协议", Domain: "prompt"},
+		{ConfigKey: "agent.prompt.final_output_rules", ConfigValue: DefaultFinalOutputRulesPrompt, ValueType: "text", Description: "主 Agent 最终回答通用规范", Domain: "prompt"},
 		{ConfigKey: "agent.prompt.intent_tool_policy", ConfigValue: DefaultIntentToolPolicyPrompt, ValueType: "json", Description: "各子意图可用工具、skill、禁用能力和使用侧重", Domain: "prompt"},
 		{ConfigKey: "agent.prompt.followups", ConfigValue: DefaultFollowupsPrompt, ValueType: "text", Description: "追问生成 Agent 系统 Prompt", Domain: "prompt"},
 		{ConfigKey: "agent.prompt.memory_retrieval", ConfigValue: DefaultMemoryRetrievalPrompt, ValueType: "text", Description: "短期多轮记忆检索 Prompt", Domain: "prompt"},
@@ -379,8 +435,9 @@ func PromptDefaults() []domain.AgentPromptInput {
 	defaults := []domain.AgentPromptInput{
 		{PromptKey: "agent.prompt.route", Title: "一级路由 Prompt", Content: DefaultRoutePrompt, Description: "guide/non_guide/fast_product 路由"},
 		{PromptKey: "agent.prompt.guide_intent", Title: "导购细分 Prompt", Content: DefaultGuideIntentPrompt, Description: "P1-P6 导购意图识别"},
-		{PromptKey: "agent.prompt.answer_base", Title: "主 Agent 基础 Prompt", Content: DefaultAnswerBasePrompt, Description: "主导购 Agent 系统提示词"},
-		{PromptKey: "agent.prompt.tool_protocol", Title: "工具协议 Prompt", Content: DefaultToolProtocolPrompt, Description: "ReAct 工具调用协议"},
+		{PromptKey: "agent.prompt.main_template", Title: "主 Agent 模板 Prompt", Content: DefaultMainAgentTemplatePrompt, Description: "模板化组装主 Agent 系统提示词"},
+		{PromptKey: "agent.prompt.tool_call_protocol", Title: "工具调用协议 Prompt", Content: DefaultToolCallProtocolPrompt, Description: "ReAct 工具与 Skill 调用 JSON 协议"},
+		{PromptKey: "agent.prompt.final_output_rules", Title: "最终回答规范 Prompt", Content: DefaultFinalOutputRulesPrompt, Description: "主 Agent 最终回答通用规范"},
 		{PromptKey: "agent.prompt.intent_tool_policy", Title: "意图工具策略 Prompt", Content: DefaultIntentToolPolicyPrompt, Description: "按 route/intent 注入可用工具、skill 和禁用能力"},
 		{PromptKey: "agent.prompt.followups", Title: "追问生成 Prompt", Content: DefaultFollowupsPrompt, Description: "导购追问生成"},
 		{PromptKey: "agent.prompt.memory_retrieval", Title: "短期记忆检索 Prompt", Content: DefaultMemoryRetrievalPrompt, Description: "从最近对话中抽取当前问题相关记忆"},

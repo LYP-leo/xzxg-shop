@@ -252,9 +252,15 @@ export function AdminPage({ token, view = 'platform' }: AdminPageProps) {
     setEvalLoading(true);
     try {
       const data = await getEvalDashboard(token);
-      setEvalDashboard(data);
-      if (!selectedEvalReportId && data.reports.length > 0) {
-        await loadEvalReportDetail(data.reports[0].id);
+      const normalized = {
+        ...data,
+        tools: data.tools ?? [],
+        datasets: data.datasets ?? [],
+        reports: data.reports ?? []
+      };
+      setEvalDashboard(normalized);
+      if (!selectedEvalReportId && normalized.reports.length > 0) {
+        await loadEvalReportDetail(normalized.reports[0].id);
       }
     } finally {
       setEvalLoading(false);
@@ -508,6 +514,7 @@ export function AdminPage({ token, view = 'platform' }: AdminPageProps) {
                       key={run.run_id}
                       onClick={() => loadTrace(run.run_id)}
                     >
+                      <strong className="trace-run-title">{run.query_title || '未记录用户 Query'}</strong>
                       <span>
                         <strong>{run.run_id}</strong>
                         <em>{run.status}</em>

@@ -111,6 +111,7 @@ export type AgentRun = {
   account_id: string;
   status: string;
   trace_id: string;
+  query_title?: string;
   created_at: string;
   updated_at: string;
 };

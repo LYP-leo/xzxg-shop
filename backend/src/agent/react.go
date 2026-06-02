@@ -526,25 +526,33 @@ func (r *Runtime) emitReactFinalBlocks(runID string, blocks []domain.AgentBlock,
 }
 
 func (r *Runtime) reactSystemPromptForPlan(ctx context.Context, plan runPlan) string {
-	parts := []string{
-		r.stringConfig(ctx, "agent.prompt.answer_base", configcenter.DefaultAnswerBasePrompt),
-		r.stringConfig(ctx, "agent.prompt.tool_protocol", configcenter.DefaultToolProtocolPrompt),
-	}
+	template := r.stringConfig(ctx, "agent.prompt.main_template", configcenter.DefaultMainAgentTemplatePrompt)
 	intent := plan.ReferenceIntent()
-	if prompt := r.stringConfig(ctx, "agent.prompt.intent."+intent, configcenter.DefaultIntentPrompt(intent)); prompt != "" {
-		parts = append(parts, prompt)
+	intentPrompt := r.stringConfig(ctx, "agent.prompt.intent."+intent, configcenter.DefaultIntentPrompt(intent))
+	brief, outputRules := splitIntentPrompt(intentPrompt)
+	replacements := map[string]string{
+		"intent_brief":        brief,
+		"tool_call_protocol":  r.stringConfig(ctx, "agent.prompt.tool_call_protocol", configcenter.DefaultToolCallProtocolPrompt),
+		"available_tools":     r.availableToolsPrompt(ctx, plan),
+		"available_skills":    r.availableSkillsPrompt(ctx, plan),
+		"tool_focus":          r.toolFocusPrompt(ctx, plan),
+		"final_output_rules":  r.finalOutputRulesPrompt(ctx, plan),
+		"intent_output_rules": outputRules,
 	}
-	parts = append(parts, r.intentToolPolicyPrompt(ctx, plan))
-	return strings.Join(parts, "\n\n")
+	return renderPromptTemplate(template, replacements)
 }
 
 func (r *Runtime) finalSystemPromptForPlan(ctx context.Context, plan runPlan) string {
-	parts := []string{
-		r.stringConfig(ctx, "agent.prompt.answer_base", configcenter.DefaultAnswerBasePrompt),
-	}
 	intent := plan.ReferenceIntent()
-	if prompt := r.stringConfig(ctx, "agent.prompt.intent."+intent, configcenter.DefaultIntentPrompt(intent)); prompt != "" {
-		parts = append(parts, prompt)
+	intentPrompt := r.stringConfig(ctx, "agent.prompt.intent."+intent, configcenter.DefaultIntentPrompt(intent))
+	brief, outputRules := splitIntentPrompt(intentPrompt)
+	parts := []string{
+		"你是小猪小狗电商平台的 AI 导购主 Agent。最终回答阶段只输出中文自然语言，不输出隐藏推理。",
+		brief,
+		"输出规范：\n" + r.finalOutputRulesPrompt(ctx, plan),
+	}
+	if strings.TrimSpace(outputRules) != "" {
+		parts = append(parts, "当前子意图输出要求：\n"+outputRules)
 	}
 	return strings.Join(parts, "\n\n")
 }
@@ -558,6 +566,41 @@ func reactUserPrompt(query string, plan runPlan) string {
 二级层级：%s
 
 请按工具协议输出下一步：需要工具时输出 JSON；信息足够时输出 <final>最终回答</final>。`, query, plan.Route, plan.ReferenceIntent(), plan.Level, plan.SecondaryLevel)
+}
+
+func renderPromptTemplate(template string, replacements map[string]string) string {
+	out := template
+	for key, value := range replacements {
+		out = strings.ReplaceAll(out, "{"+key+"}", strings.TrimSpace(value))
+	}
+	return strings.TrimSpace(out)
+}
+
+func splitIntentPrompt(raw string) (string, string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", ""
+	}
+	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+	if index := strings.Index(raw, "\n【输出硬约束】"); index >= 0 {
+		raw = strings.TrimSpace(raw[:index])
+	}
+	lines := strings.Split(raw, "\n")
+	briefIndex := -1
+	for index, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			briefIndex = index
+			break
+		}
+	}
+	if briefIndex < 0 {
+		return "", ""
+	}
+	brief := strings.TrimSpace(lines[briefIndex])
+	if briefIndex+1 >= len(lines) {
+		return brief, ""
+	}
+	return brief, strings.TrimSpace(strings.Join(lines[briefIndex+1:], "\n"))
 }
 
 func statusTextForTool(tool string) string {

@@ -12,6 +12,14 @@
 node quality/evals/run_agent_e2e.mjs quality/data/eval/agent_e2e_queries.jsonl
 ```
 
+补充场景集：
+
+```bash
+node quality/evals/run_agent_e2e.mjs quality/data/eval/agent_e2e_20_scenarios.jsonl
+```
+
+`agent_e2e_20_scenarios.jsonl` 覆盖导购、非导购、购物车动作、库存不足、图片降级、售后/优惠/订单等 20 类常见入口，用于快速冒烟当前 Agent 主链路。
+
 ## 2. Agent 意图分类单项测评
 
 输入：用户 query + 预期一级路由 + 预期意图。

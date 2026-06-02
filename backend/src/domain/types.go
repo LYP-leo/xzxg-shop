@@ -81,18 +81,19 @@ type ConversationRecord struct {
 }
 
 type AgentRun struct {
-	RunID     string         `json:"run_id"`
-	SessionID string         `json:"session_id"`
-	MessageID string         `json:"message_id"`
-	AccountID string         `json:"account_id,omitempty"`
-	Status    RunStatus      `json:"status"`
-	TraceID   string         `json:"trace_id"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
-	Content   string         `json:"content"`
-	Blocks    []AgentBlock   `json:"blocks,omitempty"`
-	Followups []string       `json:"followups,omitempty"`
-	Segments  []AgentSegment `json:"segments,omitempty"`
+	RunID      string         `json:"run_id"`
+	SessionID  string         `json:"session_id"`
+	MessageID  string         `json:"message_id"`
+	AccountID  string         `json:"account_id,omitempty"`
+	Status     RunStatus      `json:"status"`
+	TraceID    string         `json:"trace_id"`
+	QueryTitle string         `json:"query_title,omitempty"`
+	CreatedAt  time.Time      `json:"created_at"`
+	UpdatedAt  time.Time      `json:"updated_at"`
+	Content    string         `json:"content"`
+	Blocks     []AgentBlock   `json:"blocks,omitempty"`
+	Followups  []string       `json:"followups,omitempty"`
+	Segments   []AgentSegment `json:"segments,omitempty"`
 }
 
 type AgentSegment struct {

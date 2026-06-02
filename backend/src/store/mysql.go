@@ -945,9 +945,14 @@ func (s *MySQLStore) ListRecentAgentRuns(ctx context.Context, limit int) []domai
 		limit = 30
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT run_id, session_id, message_id, account_id, status, trace_id, COALESCE(content, ''), COALESCE(CAST(blocks_json AS CHAR), ''), COALESCE(CAST(followups_json AS CHAR), ''), COALESCE(CAST(segments_json AS CHAR), ''), created_at, updated_at
-		FROM agent_runs
-		ORDER BY created_at DESC, run_id DESC
+		SELECT
+			ar.run_id, ar.session_id, ar.message_id, ar.account_id, ar.status, ar.trace_id,
+			COALESCE(um.content, ''),
+			COALESCE(ar.content, ''), COALESCE(CAST(ar.blocks_json AS CHAR), ''), COALESCE(CAST(ar.followups_json AS CHAR), ''), COALESCE(CAST(ar.segments_json AS CHAR), ''),
+			ar.created_at, ar.updated_at
+		FROM agent_runs ar
+		LEFT JOIN user_messages um ON um.message_id = ar.message_id AND um.account_id = ar.account_id
+		ORDER BY ar.created_at DESC, ar.run_id DESC
 		LIMIT ?
 	`, limit)
 	if err != nil {
@@ -970,9 +975,14 @@ func (s *MySQLStore) ListAgentRunsPage(ctx context.Context, page int, pageSize i
 	page, pageSize = normalizePage(page, pageSize)
 	total := s.countRows(ctx, "agent_runs")
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT run_id, session_id, message_id, account_id, status, trace_id, COALESCE(content, ''), COALESCE(CAST(blocks_json AS CHAR), ''), COALESCE(CAST(followups_json AS CHAR), ''), COALESCE(CAST(segments_json AS CHAR), ''), created_at, updated_at
-		FROM agent_runs
-		ORDER BY created_at DESC, run_id DESC
+		SELECT
+			ar.run_id, ar.session_id, ar.message_id, ar.account_id, ar.status, ar.trace_id,
+			COALESCE(um.content, ''),
+			COALESCE(ar.content, ''), COALESCE(CAST(ar.blocks_json AS CHAR), ''), COALESCE(CAST(ar.followups_json AS CHAR), ''), COALESCE(CAST(ar.segments_json AS CHAR), ''),
+			ar.created_at, ar.updated_at
+		FROM agent_runs ar
+		LEFT JOIN user_messages um ON um.message_id = ar.message_id AND um.account_id = ar.account_id
+		ORDER BY ar.created_at DESC, ar.run_id DESC
 		LIMIT ? OFFSET ?
 	`, pageSize, pageOffset(page, pageSize))
 	if err != nil {
@@ -982,7 +992,7 @@ func (s *MySQLStore) ListAgentRunsPage(ctx context.Context, page int, pageSize i
 
 	items := make([]domain.AgentRun, 0)
 	for rows.Next() {
-		item, err := scanAgentRun(rows)
+		item, err := scanAgentRunWithQueryTitle(rows)
 		if err != nil {
 			return nil, 0
 		}
@@ -1020,7 +1030,7 @@ func (s *MySQLStore) CreateRun(ctx context.Context, accountID string, sessionID 
 
 func (s *MySQLStore) getRunByMessage(ctx context.Context, accountID string, messageID string) (domain.AgentRun, bool) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT run_id, session_id, message_id, account_id, status, trace_id, created_at, updated_at
+		SELECT run_id, session_id, message_id, account_id, status, trace_id, COALESCE(content, ''), COALESCE(CAST(blocks_json AS CHAR), ''), COALESCE(CAST(followups_json AS CHAR), ''), COALESCE(CAST(segments_json AS CHAR), ''), created_at, updated_at
 		FROM agent_runs
 		WHERE account_id = ? AND message_id = ?
 		ORDER BY created_at, run_id
@@ -2914,6 +2924,30 @@ func scanAgentRun(rows *sql.Rows) (domain.AgentRun, error) {
 		&item.AccountID,
 		&status,
 		&item.TraceID,
+		&item.Content,
+		&blocksJSON,
+		&followupsJSON,
+		&segmentsJSON,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	)
+	item.Status = domain.RunStatus(status)
+	decodeRunJSON(&item, blocksJSON, followupsJSON, segmentsJSON)
+	return item, err
+}
+
+func scanAgentRunWithQueryTitle(rows *sql.Rows) (domain.AgentRun, error) {
+	var item domain.AgentRun
+	var status string
+	var blocksJSON, followupsJSON, segmentsJSON string
+	err := rows.Scan(
+		&item.RunID,
+		&item.SessionID,
+		&item.MessageID,
+		&item.AccountID,
+		&status,
+		&item.TraceID,
+		&item.QueryTitle,
 		&item.Content,
 		&blocksJSON,
 		&followupsJSON,

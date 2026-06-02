@@ -1291,7 +1291,7 @@ func listEvalDatasets() []adminEvalDataset {
 	root := projectPath("quality", "data", "eval")
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return nil
+		return []adminEvalDataset{}
 	}
 	items := make([]adminEvalDataset, 0, len(entries))
 	for _, entry := range entries {
@@ -1318,7 +1318,7 @@ func listEvalReports() []adminEvalReport {
 	root := projectPath("quality", "reports")
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return nil
+		return []adminEvalReport{}
 	}
 	items := make([]adminEvalReport, 0)
 	for _, runDir := range entries {
@@ -1510,6 +1510,21 @@ func projectPath(parts ...string) string {
 	path := filepath.Join(parts...)
 	if _, err := os.Stat(path); err == nil {
 		return path
+	}
+	current, err := os.Getwd()
+	if err != nil {
+		return filepath.Join(append([]string{".."}, parts...)...)
+	}
+	for {
+		candidate := filepath.Join(append([]string{current}, parts...)...)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		current = parent
 	}
 	return filepath.Join(append([]string{".."}, parts...)...)
 }
