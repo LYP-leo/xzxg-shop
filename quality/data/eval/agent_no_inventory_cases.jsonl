@@ -1,0 +1,5 @@
+{"id":"noinv_toilet_001","case_type":"no_inventory","query":"给我推荐一款好用的马桶","expected_no_product_refs":true,"forbidden_terms":["<item>","p_digital_","手机","平板","电脑"],"expected_ack_terms":["暂无","没有找到","当前商品库"]}
+{"id":"noinv_toilet_002","case_type":"no_inventory","query":"智能马桶怎么选，顺便推荐几个商品","expected_no_product_refs":true,"forbidden_terms":["<item>","p_digital_","手机","平板","电脑"],"expected_ack_terms":["暂无","没有找到","当前商品库"]}
+{"id":"noinv_toilet_003","case_type":"no_inventory","query":"家用坐便器有没有推荐","expected_no_product_refs":true,"forbidden_terms":["<item>","p_digital_","手机","平板","电脑"],"expected_ack_terms":["暂无","没有找到","当前商品库"]}
+{"id":"noinv_bath_001","case_type":"no_inventory","query":"浴室柜推荐一下","expected_no_product_refs":true,"forbidden_terms":["<item>","p_digital_","手机","平板","电脑"],"expected_ack_terms":["暂无","没有找到","当前商品库"]}
+{"id":"noinv_bath_002","case_type":"no_inventory","query":"有没有恒温花洒套装","expected_no_product_refs":true,"forbidden_terms":["<item>","p_digital_","手机","平板","电脑"],"expected_ack_terms":["暂无","没有找到","当前商品库"]}
