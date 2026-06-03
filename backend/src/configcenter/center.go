@@ -185,6 +185,19 @@ const DefaultToolCallProtocolPrompt = `1. 工具调用：
   "arguments": {}
 }
 
+search_products 参数示例：
+{
+  "query": "电脑",
+  "limit": 5,
+  "constraints": {"brands": [], "terms": [], "categories": ["笔记本电脑"]},
+  "negative": {"brands": ["苹果", "Apple"], "terms": ["MacBook"], "categories": []}
+}
+
+约束规则：
+- query 只写正向商品关键词，不要把“不要/不买/排除/非”等否定词塞进 query。
+- 用户明确不要的品牌、属性、型号或类目必须写入 negative。
+- 用户明确需要的品牌、属性、型号或类目可以写入 constraints。
+
 2. Skill 调用：
 {
   "type": "skill_call",

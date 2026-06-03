@@ -589,6 +589,35 @@ Authorization: Bearer <token>
 
 用途：查询当前用户自己的 Agent trace。
 
+### Agent 工具协议：search_products
+
+`search_products` 用于搜索当前商品库。主 Agent 应把正向需求和否定约束拆开，不要把“不要/不买/排除/非”等否定词直接塞进 `query`。
+
+参数：
+
+```json
+{
+  "query": "电脑",
+  "limit": 5,
+  "constraints": {
+    "brands": [],
+    "terms": [],
+    "categories": ["笔记本电脑"]
+  },
+  "negative": {
+    "brands": ["苹果", "Apple"],
+    "terms": ["MacBook"],
+    "categories": []
+  }
+}
+```
+
+字段说明：
+
+- `query`：正向商品关键词，建议 2-4 个词。
+- `constraints`：用户明确需要的品牌、属性、型号、类目。
+- `negative`：用户明确不要的品牌、属性、型号、类目；这是硬约束，命中商品会被工具层剔除。
+
 ## 图片搜索
 
 ### POST /search/image

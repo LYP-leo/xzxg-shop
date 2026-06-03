@@ -227,7 +227,7 @@ func containsString(items []string, target string) bool {
 
 func toolDescriptions() map[string]string {
 	return map[string]string{
-		toolSearchProducts:  `搜索当前商品库，用于查找可推荐商品、价格、库存、卖点和风险；只允许推荐 relevance_status=ok 的商品。参数 {"query":"商品关键词，可以是2-4个","limit":5}。`,
+		toolSearchProducts:  `搜索当前商品库，用于查找可推荐商品、价格、库存、卖点和风险；只允许推荐 relevance_status=ok 的商品。参数 {"query":"正向商品关键词，2-4个词，不要包含否定词","limit":5,"constraints":{"brands":[],"terms":[],"categories":[]},"negative":{"brands":[],"terms":[],"categories":[]}}。用户说“不要/不买/排除/非 某品牌或属性”时，query 只放正向需求，把被排除项放到 negative。`,
 		toolSearchKnowledge: `搜索知识库资料，用于查找选购依据、场景清单、平台规则、材料解释和售后边界。参数 {"query":"需要查证的问题","limit":3}。`,
 		toolGetCart:         `读取当前用户购物车，用于确认 cart_item_id、选中状态和数量。参数 {}。`,
 		toolAddCartItem:     `加入购物车；必须已有明确 product_id。参数 {"product_id":"商品ID","sku_id":"SKU ID，可为空","quantity":1}。`,

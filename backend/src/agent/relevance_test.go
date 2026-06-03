@@ -49,6 +49,39 @@ func TestProductSearchRelevanceKeepsRelevantProduct(t *testing.T) {
 	}
 }
 
+func TestProductSearchRelevanceDropsStructuredNegativeBrand(t *testing.T) {
+	runtime := &Runtime{configs: configcenter.NewMemoryCenter(configcenter.DefaultConfigs(""))}
+	result := runtime.classifyProductSearchRelevanceWithRun(context.Background(), domain.AgentRun{}, "电脑", []domain.ProductCard{
+		{
+			ProductID:     "p_apple_mac",
+			Name:          "Apple MacBook Air 13英寸 M5 芯片",
+			Brand:         "Apple 苹果",
+			CategoryID:    "c_dataset_digital_laptop",
+			Tags:          []string{"笔记本电脑", "Apple 苹果"},
+			SellingPoints: []string{"轻薄便携"},
+		},
+		{
+			ProductID:     "p_huawei_pc",
+			Name:          "华为 MateBook 14 笔记本电脑",
+			Brand:         "华为",
+			CategoryID:    "c_dataset_digital_laptop",
+			Tags:          []string{"笔记本电脑", "华为"},
+			SellingPoints: []string{"轻薄办公"},
+		},
+	}, productSearchStructuredArguments{
+		Negative: productSearchArguments{Brands: []string{"苹果", "Apple"}},
+	})
+	if result.Status != relevanceOK {
+		t.Fatalf("status = %s, want %s; reason=%s", result.Status, relevanceOK, result.Reason)
+	}
+	if len(result.AllowedProductIDs) != 1 || result.AllowedProductIDs[0] != "p_huawei_pc" {
+		t.Fatalf("allowed product ids = %v, want p_huawei_pc", result.AllowedProductIDs)
+	}
+	if len(result.DroppedProductIDs) != 1 || result.DroppedProductIDs[0] != "p_apple_mac" {
+		t.Fatalf("dropped product ids = %v, want p_apple_mac", result.DroppedProductIDs)
+	}
+}
+
 func TestProductSearchRelevanceKeepsCategoryProductWhenQueryHasCoveredTerms(t *testing.T) {
 	runtime := &Runtime{configs: configcenter.NewMemoryCenter(configcenter.DefaultConfigs(""))}
 	result := runtime.classifyProductSearchRelevance(context.Background(), "化妆品 护肤 彩妆", []domain.ProductCard{

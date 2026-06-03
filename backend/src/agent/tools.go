@@ -69,6 +69,17 @@ type toolExecutionContext struct {
 
 var productIDPattern = regexp.MustCompile(`\bp_[A-Za-z0-9_]+\b`)
 
+type productSearchArguments struct {
+	Brands     []string `json:"brands,omitempty"`
+	Terms      []string `json:"terms,omitempty"`
+	Categories []string `json:"categories,omitempty"`
+}
+
+type productSearchStructuredArguments struct {
+	Constraints productSearchArguments `json:"constraints,omitempty"`
+	Negative    productSearchArguments `json:"negative,omitempty"`
+}
+
 func productIDSetFromText(text string) map[string]bool {
 	ids := make(map[string]bool)
 	for _, id := range productIDPattern.FindAllString(text, -1) {
@@ -128,8 +139,10 @@ func (r *Runtime) executeTool(ctx context.Context, run domain.AgentRun, call rea
 
 func (r *Runtime) toolSearchProducts(ctx context.Context, run domain.AgentRun, raw json.RawMessage) toolObservation {
 	var args struct {
-		Query string `json:"query"`
-		Limit int    `json:"limit"`
+		Query       string                 `json:"query"`
+		Limit       int                    `json:"limit"`
+		Constraints productSearchArguments `json:"constraints"`
+		Negative    productSearchArguments `json:"negative"`
 	}
 	_ = json.Unmarshal(raw, &args)
 	args.Query = strings.TrimSpace(args.Query)
@@ -138,7 +151,9 @@ func (r *Runtime) toolSearchProducts(ctx context.Context, run domain.AgentRun, r
 	}
 	limit := clampLimit(args.Limit, 5, 10)
 	products := r.store.SearchProducts(ctx, args.Query)
-	relevance := r.classifyProductSearchRelevanceWithRun(ctx, run, args.Query, products)
+	structured := normalizeProductSearchArguments(args.Constraints, args.Negative)
+	products = rerankProductsWithStructuredConstraints(args.Query, products, structured)
+	relevance := r.classifyProductSearchRelevanceWithRun(ctx, run, args.Query, products, structured)
 	products = relevance.AllowedProducts
 	if len(products) > limit {
 		products = products[:limit]
@@ -169,7 +184,7 @@ func (r *Runtime) toolSearchProducts(ctx context.Context, run domain.AgentRun, r
 		Tool:                toolSearchProducts,
 		OK:                  true,
 		Message:             productSearchMessage(relevance.Status, len(items)),
-		Result:              map[string]any{"items": items},
+		Result:              map[string]any{"items": items, "constraints": structured.Constraints, "negative": structured.Negative},
 		ProductIDs:          productIDs,
 		CandidateProductIDs: relevance.CandidateProductIDs,
 		DroppedProductIDs:   relevance.DroppedProductIDs,
@@ -424,10 +439,10 @@ type productRelevanceResult struct {
 }
 
 func (r *Runtime) classifyProductSearchRelevance(ctx context.Context, query string, products []domain.ProductCard) productRelevanceResult {
-	return r.classifyProductSearchRelevanceWithRun(ctx, domain.AgentRun{}, query, products)
+	return r.classifyProductSearchRelevanceWithRun(ctx, domain.AgentRun{}, query, products, productSearchStructuredArguments{})
 }
 
-func (r *Runtime) classifyProductSearchRelevanceWithRun(ctx context.Context, run domain.AgentRun, query string, products []domain.ProductCard) productRelevanceResult {
+func (r *Runtime) classifyProductSearchRelevanceWithRun(ctx context.Context, run domain.AgentRun, query string, products []domain.ProductCard, structured productSearchStructuredArguments) productRelevanceResult {
 	result := productRelevanceResult{
 		Status:              relevanceNoMatch,
 		Reason:              "没有召回到商品",
@@ -436,10 +451,21 @@ func (r *Runtime) classifyProductSearchRelevanceWithRun(ctx context.Context, run
 	if len(products) == 0 {
 		return result
 	}
+	products, negativeDropped := filterProductsByStructuredNegative(products, structured.Negative)
+	if len(products) == 0 {
+		return productRelevanceResult{
+			Status:              relevanceWeak,
+			Reason:              "候选商品全部命中用户否定约束",
+			CandidateProductIDs: result.CandidateProductIDs,
+			DroppedProductIDs:   negativeDropped,
+		}
+	}
 
 	values := r.configs.GetMap(ctx)
 	if r.llm != nil && r.llm.Enabled() && boolFromMap(values, "retrieval.product.llm_filter.enabled", true) {
-		if llmResult, ok := r.classifyProductSearchRelevanceByLLM(ctx, run, query, products); ok {
+		if llmResult, ok := r.classifyProductSearchRelevanceByLLM(ctx, run, query, products, structured); ok {
+			llmResult.CandidateProductIDs = result.CandidateProductIDs
+			llmResult.DroppedProductIDs = appendUnique(llmResult.DroppedProductIDs, negativeDropped...)
 			return llmResult
 		}
 	}
@@ -454,7 +480,8 @@ func (r *Runtime) classifyProductSearchRelevanceWithRun(ctx context.Context, run
 			Reason:              "未启用词面保护或 query 缺少有效词面证据，保留原始检索结果",
 			AllowedProducts:     allowed,
 			AllowedProductIDs:   productCardIDs(allowed),
-			CandidateProductIDs: productCardIDs(products),
+			CandidateProductIDs: result.CandidateProductIDs,
+			DroppedProductIDs:   negativeDropped,
 		}
 	}
 
@@ -497,8 +524,8 @@ func (r *Runtime) classifyProductSearchRelevanceWithRun(ctx context.Context, run
 		return productRelevanceResult{
 			Status:              relevanceWeak,
 			Reason:              fmt.Sprintf("召回到 %d 个候选，但没有商品达到词面证据要求；有效词：%s", len(products), strings.Join(terms, ",")),
-			CandidateProductIDs: productCardIDs(products),
-			DroppedProductIDs:   dropped,
+			CandidateProductIDs: result.CandidateProductIDs,
+			DroppedProductIDs:   appendUnique(dropped, negativeDropped...),
 		}
 	}
 	allowed = limitProductCards(allowed, intFromMap(values, "retrieval.product.ok.max_results", len(allowed)))
@@ -512,8 +539,8 @@ func (r *Runtime) classifyProductSearchRelevanceWithRun(ctx context.Context, run
 		Reason:              reason,
 		AllowedProducts:     allowed,
 		AllowedProductIDs:   productCardIDs(allowed),
-		CandidateProductIDs: productCardIDs(products),
-		DroppedProductIDs:   dropped,
+		CandidateProductIDs: result.CandidateProductIDs,
+		DroppedProductIDs:   appendUnique(dropped, negativeDropped...),
 	}
 }
 
@@ -522,7 +549,7 @@ type productRelevanceLLMOutput struct {
 	Reason             string   `json:"reason"`
 }
 
-func (r *Runtime) classifyProductSearchRelevanceByLLM(ctx context.Context, run domain.AgentRun, query string, products []domain.ProductCard) (productRelevanceResult, bool) {
+func (r *Runtime) classifyProductSearchRelevanceByLLM(ctx context.Context, run domain.AgentRun, query string, products []domain.ProductCard, structured productSearchStructuredArguments) (productRelevanceResult, bool) {
 	limit := r.intConfig(ctx, "retrieval.product.llm_filter.max_candidates", 10)
 	if limit <= 0 {
 		limit = 10
@@ -533,7 +560,7 @@ func (r *Runtime) classifyProductSearchRelevanceByLLM(ctx context.Context, run d
 	}
 	messages := []ChatMessage{
 		{Role: "system", Content: productRelevanceLLMSystemPrompt()},
-		{Role: "user", Content: productRelevanceLLMUserPrompt(query, candidates)},
+		{Role: "user", Content: productRelevanceLLMUserPrompt(query, candidates, structured)},
 	}
 	startedAt := time.Now()
 	temperature := 0.0
@@ -608,17 +635,23 @@ func productRelevanceLLMSystemPrompt() string {
 1. 只保留与用户品类、品牌、型号、场景或属性直接相关的商品。
 2. 宽泛品类词可以匹配其合理子类，例如“化妆品”可以保留护肤、彩妆、香水等；“手机数码”可以保留手机、耳机、充电配件等。
 3. 如果用户同时给出硬约束，例如品牌、预算、材质、适用对象，候选商品必须不明显违背这些约束。
-4. 不要因为商品标题没有逐字出现所有检索词就剔除，只要类目/标签/卖点语义匹配即可保留。
-5. 输出只能使用候选里的 product_id，不能编造。
+4. negative 是用户明确不要的品牌、词或类目，是硬约束；命中 negative 的商品必须剔除，不能出现在 relevant_product_ids。
+5. 不要因为商品标题没有逐字出现所有检索词就剔除，只要类目/标签/卖点语义匹配即可保留。
+6. 输出只能使用候选里的 product_id，不能编造。
 
 只输出 JSON：
 {"relevant_product_ids":["商品ID"],"reason":"中文，80字以内，说明保留/剔除依据"}`
 }
 
-func productRelevanceLLMUserPrompt(query string, products []domain.ProductCard) string {
+func productRelevanceLLMUserPrompt(query string, products []domain.ProductCard, structured productSearchStructuredArguments) string {
 	var b strings.Builder
 	b.WriteString("用户检索词：")
 	b.WriteString(strings.TrimSpace(query))
+	if !emptyProductSearchArguments(structured.Constraints) || !emptyProductSearchArguments(structured.Negative) {
+		raw, _ := json.Marshal(structured)
+		b.WriteString("\n结构化约束：")
+		b.Write(raw)
+	}
 	b.WriteString("\n\n候选商品：\n")
 	for i, product := range products {
 		b.WriteString(fmt.Sprintf("%d. product_id=%s\n", i+1, product.ProductID))
@@ -643,6 +676,91 @@ func productRelevanceLLMUserPrompt(query string, products []domain.ProductCard) 
 		b.WriteString("\n\n")
 	}
 	return b.String()
+}
+
+func normalizeProductSearchArguments(constraints productSearchArguments, negative productSearchArguments) productSearchStructuredArguments {
+	return productSearchStructuredArguments{
+		Constraints: normalizeProductSearchArgument(constraints),
+		Negative:    normalizeProductSearchArgument(negative),
+	}
+}
+
+func normalizeProductSearchArgument(input productSearchArguments) productSearchArguments {
+	return productSearchArguments{
+		Brands:     uniqueNonEmpty(input.Brands),
+		Terms:      uniqueNonEmpty(input.Terms),
+		Categories: uniqueNonEmpty(input.Categories),
+	}
+}
+
+func emptyProductSearchArguments(input productSearchArguments) bool {
+	return len(input.Brands) == 0 && len(input.Terms) == 0 && len(input.Categories) == 0
+}
+
+func rerankProductsWithStructuredConstraints(query string, products []domain.ProductCard, structured productSearchStructuredArguments) []domain.ProductCard {
+	if len(products) == 0 || (emptyProductSearchArguments(structured.Constraints) && emptyProductSearchArguments(structured.Negative)) {
+		return products
+	}
+	type scoredProduct struct {
+		product domain.ProductCard
+		score   int
+		index   int
+	}
+	scored := make([]scoredProduct, 0, len(products))
+	for index, product := range products {
+		score := 0
+		text := strings.ToLower(productSearchText(product))
+		for _, term := range append(append([]string{}, structured.Constraints.Brands...), append(structured.Constraints.Terms, structured.Constraints.Categories...)...) {
+			if term != "" && strings.Contains(text, strings.ToLower(term)) {
+				score += 12
+			}
+		}
+		for _, term := range append(append([]string{}, structured.Negative.Brands...), append(structured.Negative.Terms, structured.Negative.Categories...)...) {
+			if term != "" && strings.Contains(text, strings.ToLower(term)) {
+				score -= 100
+			}
+		}
+		if score == 0 && query != "" && strings.Contains(text, strings.ToLower(query)) {
+			score++
+		}
+		scored = append(scored, scoredProduct{product: product, score: score, index: index})
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].score == scored[j].score {
+			return scored[i].index < scored[j].index
+		}
+		return scored[i].score > scored[j].score
+	})
+	out := make([]domain.ProductCard, 0, len(scored))
+	for _, item := range scored {
+		out = append(out, item.product)
+	}
+	return out
+}
+
+func filterProductsByStructuredNegative(products []domain.ProductCard, negative productSearchArguments) ([]domain.ProductCard, []string) {
+	if len(products) == 0 || emptyProductSearchArguments(negative) {
+		return products, nil
+	}
+	terms := append(append([]string{}, negative.Brands...), append(negative.Terms, negative.Categories...)...)
+	allowed := make([]domain.ProductCard, 0, len(products))
+	dropped := make([]string, 0)
+	for _, product := range products {
+		text := strings.ToLower(productSearchText(product))
+		blocked := false
+		for _, term := range terms {
+			if strings.TrimSpace(term) != "" && strings.Contains(text, strings.ToLower(term)) {
+				blocked = true
+				break
+			}
+		}
+		if blocked {
+			dropped = append(dropped, product.ProductID)
+			continue
+		}
+		allowed = append(allowed, product)
+	}
+	return allowed, dropped
 }
 
 func productRelevanceTerms(query string, genericConfig string) []string {
