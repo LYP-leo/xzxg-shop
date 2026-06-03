@@ -382,6 +382,10 @@ func (s *MySQLStore) GetAccountByUsername(ctx context.Context, username string) 
 	return account, passwordHash, err == nil
 }
 
+func (s *MySQLStore) GetAccount(ctx context.Context, accountID string) (domain.Account, bool) {
+	return s.getAccountByID(ctx, accountID)
+}
+
 func (s *MySQLStore) GetAccountByToken(ctx context.Context, token string) (domain.Account, bool) {
 	var account domain.Account
 	var role string
@@ -389,7 +393,7 @@ func (s *MySQLStore) GetAccountByToken(ctx context.Context, token string) (domai
 		SELECT a.account_id, a.username, a.display_name, a.avatar_url, a.phone, a.email, a.role, a.merchant_id, a.status, a.created_at
 		FROM auth_tokens t
 		JOIN accounts a ON a.account_id = t.account_id
-		WHERE t.token = ? AND t.expires_at > ? AND a.status = 'active'
+		WHERE t.token = ? AND t.expires_at > ? AND a.status IN ('active', 'risk')
 	`, token, time.Now()).Scan(
 		&account.AccountID,
 		&account.Username,
@@ -475,7 +479,7 @@ func (s *MySQLStore) CreateAccount(ctx context.Context, input domain.AccountCrea
 		Email:       strings.TrimSpace(input.Email),
 		Role:        domain.AccountRole(role),
 		MerchantID:  strings.TrimSpace(input.MerchantID),
-		Status:      "active",
+		Status:      domain.AccountStatusActive,
 		CreatedAt:   now,
 	}
 	_, err := s.db.ExecContext(ctx, `
@@ -1475,6 +1479,7 @@ func (s *MySQLStore) ListMerchants(ctx context.Context) []domain.Merchant {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT merchant_id, name, logo_url, description, service_phone, status
 		FROM merchants
+		WHERE status = 'active'
 		ORDER BY merchant_id
 	`)
 	if err != nil {
@@ -1493,9 +1498,59 @@ func (s *MySQLStore) ListMerchants(ctx context.Context) []domain.Merchant {
 	return items
 }
 
+func (s *MySQLStore) ListAllMerchantsPage(ctx context.Context, page int, pageSize int) ([]domain.Merchant, int) {
+	page, pageSize = normalizePage(page, pageSize)
+	total := s.countRows(ctx, "merchants")
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT merchant_id, name, logo_url, description, service_phone, status
+		FROM merchants
+		ORDER BY merchant_id
+		LIMIT ? OFFSET ?
+	`, pageSize, pageOffset(page, pageSize))
+	if err != nil {
+		return nil, 0
+	}
+	defer rows.Close()
+
+	items := make([]domain.Merchant, 0)
+	for rows.Next() {
+		var item domain.Merchant
+		if err := rows.Scan(&item.MerchantID, &item.Name, &item.LogoURL, &item.Description, &item.ServicePhone, &item.Status); err != nil {
+			return nil, 0
+		}
+		items = append(items, item)
+	}
+	return items, total
+}
+
+func (s *MySQLStore) UpdateMerchantStatus(ctx context.Context, merchantID string, status string) (domain.Merchant, bool) {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE merchants
+		SET status = ?, updated_at = ?
+		WHERE merchant_id = ?
+	`, status, time.Now(), merchantID)
+	if err != nil {
+		return domain.Merchant{}, false
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return domain.Merchant{}, false
+	}
+	var merchant domain.Merchant
+	err = s.db.QueryRowContext(ctx, `
+		SELECT merchant_id, name, logo_url, description, service_phone, status
+		FROM merchants
+		WHERE merchant_id = ?
+	`, merchantID).Scan(&merchant.MerchantID, &merchant.Name, &merchant.LogoURL, &merchant.Description, &merchant.ServicePhone, &merchant.Status)
+	if err != nil {
+		return domain.Merchant{}, false
+	}
+	return merchant, true
+}
+
 func (s *MySQLStore) ListProducts(ctx context.Context, keyword string, categoryID string) []domain.ProductCard {
 	args := make([]any, 0, 3)
-	query := productCardSelect() + ` WHERE p.status = 'active'`
+	query := productCardSelect() + ` WHERE ` + activeProductCardPredicate()
 	if categoryID != "" {
 		query += " AND (p.category_id = ? OR c.parent_id = ?)"
 		args = append(args, categoryID, categoryID)
@@ -3111,7 +3166,7 @@ func (s *MySQLStore) productCardsByIDs(ctx context.Context, productIDs []string)
 	for _, id := range productIDs {
 		args = append(args, id)
 	}
-	items := s.queryProductCards(ctx, productCardSelect()+` WHERE p.product_id IN (`+placeholders+`)`, args...)
+	items := s.queryProductCards(ctx, productCardSelect()+` WHERE `+activeProductCardPredicate()+` AND p.product_id IN (`+placeholders+`)`, args...)
 	byID := make(map[string]domain.ProductCard, len(items))
 	for _, item := range items {
 		byID[item.ProductID] = item
@@ -3175,7 +3230,7 @@ func (s *MySQLStore) knowledgeChunksByIDs(ctx context.Context, chunkIDs []string
 }
 
 func (s *MySQLStore) productVectorRows(ctx context.Context) []map[string]any {
-	rows, err := s.db.QueryContext(ctx, productDetailSelect()+` WHERE p.status = 'active' ORDER BY p.product_id`)
+	rows, err := s.db.QueryContext(ctx, productDetailSelect()+` WHERE `+activeProductCardPredicate()+` ORDER BY p.product_id`)
 	if err != nil {
 		return nil
 	}
@@ -3202,7 +3257,7 @@ func (s *MySQLStore) productVectorRows(ctx context.Context) []map[string]any {
 }
 
 func (s *MySQLStore) productImageVectorRows(ctx context.Context) []map[string]any {
-	rows, err := s.db.QueryContext(ctx, productDetailSelect()+` WHERE p.status = 'active' ORDER BY p.product_id`)
+	rows, err := s.db.QueryContext(ctx, productDetailSelect()+` WHERE `+activeProductCardPredicate()+` ORDER BY p.product_id`)
 	if err != nil {
 		return nil
 	}
@@ -3654,6 +3709,7 @@ func scanProductCard(scanner productCardScanner) (domain.ProductCard, error) {
 		&item.Price,
 		&item.MarketPrice,
 		&item.StockStatus,
+		&item.Status,
 		&tagsJSON,
 		&sellingPointsJSON,
 		&item.RecommendReason,
@@ -3689,6 +3745,7 @@ func scanProductDetail(scanner productCardScanner) (domain.ProductDetail, error)
 		&product.Price,
 		&product.MarketPrice,
 		&product.StockStatus,
+		&product.Status,
 		&tagsJSON,
 		&sellingPointsJSON,
 		&product.RecommendReason,
@@ -3728,7 +3785,7 @@ func productCardSelect() string {
 	return `
 		SELECT p.product_id, COALESCE(ps.sku_id, ''), p.merchant_id, m.name,
 			p.name, p.brand, p.category_id, p.image_url, p.price, p.market_price,
-			p.stock_status, p.tags_json, p.selling_points_json, p.recommend_reason,
+			p.stock_status, p.status, p.tags_json, p.selling_points_json, p.recommend_reason,
 			p.risk_notes_json
 		FROM products p
 		JOIN merchants m ON m.merchant_id = p.merchant_id
@@ -3741,7 +3798,7 @@ func productDetailSelect() string {
 	return `
 		SELECT p.product_id, COALESCE(ps.sku_id, ''), p.merchant_id, m.name,
 			p.name, p.brand, p.category_id, p.image_url, p.price, p.market_price,
-			p.stock_status, p.tags_json, p.selling_points_json, p.recommend_reason,
+			p.stock_status, p.status, p.tags_json, p.selling_points_json, p.recommend_reason,
 			p.risk_notes_json, p.image_urls_json, p.stock_quantity,
 			p.attributes_json, p.suitable_for_json, p.not_suitable_for_json, p.description
 		FROM products p
@@ -3749,6 +3806,10 @@ func productDetailSelect() string {
 		LEFT JOIN categories c ON c.category_id = p.category_id
 		LEFT JOIN product_skus ps ON ps.product_id = p.product_id AND ps.is_default = TRUE
 	`
+}
+
+func activeProductCardPredicate() string {
+	return "p.status = '" + domain.ProductStatusActive + "' AND m.status = '" + domain.MerchantStatusActive + "'"
 }
 
 func uniqueTerms(input []string, limit int) []string {

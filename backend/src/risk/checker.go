@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+
+	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
 )
 
 type Rule struct {
@@ -48,6 +50,42 @@ func CheckText(text string, values map[string]string) Result {
 		}
 	}
 	return Result{}
+}
+
+func CheckAccount(account domain.Account, values map[string]string) Result {
+	if !configBool(values, "risk.enabled", true) {
+		return Result{}
+	}
+	if !isConfiguredRiskStatus(account.Status, values["risk.account_statuses"]) {
+		return Result{}
+	}
+	message := strings.TrimSpace(values["risk.account_message"])
+	if message == "" {
+		message = "当前账号命中平台风控限制，暂时无法继续使用导购 Agent。"
+	}
+	return Result{
+		Blocked: true,
+		Code:    "risk_account",
+		Message: message,
+		Matched: account.Status,
+	}
+}
+
+func isConfiguredRiskStatus(status string, raw string) bool {
+	status = strings.TrimSpace(strings.ToLower(status))
+	if status == "" {
+		return false
+	}
+	statuses := []string{domain.AccountStatusRisk}
+	if strings.TrimSpace(raw) != "" {
+		statuses = strings.Split(raw, ",")
+	}
+	for _, item := range statuses {
+		if strings.TrimSpace(strings.ToLower(item)) == status {
+			return true
+		}
+	}
+	return false
 }
 
 func parseRules(raw string) []Rule {

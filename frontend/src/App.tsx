@@ -11,7 +11,19 @@ import { ProductListPage } from './pages/ProductListPage';
 import { UserHomePage } from './pages/UserHomePage';
 import type { AuthSession } from './types/auth';
 
-type Route = 'home' | 'agent' | 'products' | 'cart' | 'orders' | 'merchant' | 'admin' | 'adminPrompts' | 'adminDebug' | 'adminEval' | 'detail';
+type Route =
+  | 'home'
+  | 'agent'
+  | 'products'
+  | 'cart'
+  | 'orders'
+  | 'merchant'
+  | 'admin'
+  | 'adminPrompts'
+  | 'adminDebug'
+  | 'adminEval'
+  | 'adminRisk'
+  | 'detail';
 
 export function App() {
   const [session, setSession] = useState<AuthSession | undefined>(() => loadSession());
@@ -113,6 +125,9 @@ export function App() {
               <button className={route === 'adminEval' ? 'active' : ''} onClick={() => setRoute('adminEval')}>
                 质量评测
               </button>
+              <button className={route === 'adminRisk' ? 'active' : ''} onClick={() => setRoute('adminRisk')}>
+                风控管理
+              </button>
               <button className={route === 'products' || route === 'detail' ? 'active' : ''} onClick={() => setRoute('products')}>
                 商品巡检
               </button>
@@ -150,6 +165,7 @@ export function App() {
         {route === 'adminPrompts' && isAdmin ? <AdminPage token={session.token} view="prompts" /> : null}
         {route === 'adminDebug' && isAdmin ? <AdminPage token={session.token} view="debug" /> : null}
         {route === 'adminEval' && isAdmin ? <AdminPage token={session.token} view="eval" /> : null}
+        {route === 'adminRisk' && isAdmin ? <AdminPage token={session.token} view="risk" /> : null}
       </main>
     </div>
   );

@@ -820,13 +820,33 @@ Query：`page`、`page_size`
 
 ### PATCH /admin/accounts/{account_id}
 
-用途：启用或禁用账号。
+用途：启用、禁用或标记风险账号。账号状态为 `risk` 时，已登录用户调用 Agent 会被风控拦截。
 
 请求：
 
 ```json
-{"status": "inactive"}
+{"status": "risk"}
 ```
+
+状态允许：`active`、`inactive`、`risk`。
+
+### PATCH /admin/merchants/{merchant_id}
+
+用途：更新商家状态。商家状态为 `risk` 或非 `active` 时，其商品不会进入商品搜索和 Agent 商品召回。
+
+请求：
+
+```json
+{"status": "risk"}
+```
+
+状态允许：`active`、`inactive`、`risk`。
+
+### GET /admin/merchants
+
+用途：分页查询所有商家，包括 `risk` 和 `inactive` 状态，供管理员风控页面使用。
+
+Query：`page`、`page_size`
 
 ### GET /admin/products
 
@@ -834,15 +854,15 @@ Query：`page`、`page_size`
 
 ### PATCH /admin/products/{product_id}
 
-用途：更新商品状态。
+用途：更新商品状态。商品状态为 `risk` 或非 `active` 时，不会进入商品搜索和 Agent 商品召回。
 
 请求：
 
 ```json
-{"status": "inactive"}
+{"status": "risk"}
 ```
 
-状态允许：`active`、`inactive`、`deleted`。
+状态允许：`active`、`inactive`、`deleted`、`risk`。
 
 ### GET /admin/orders
 

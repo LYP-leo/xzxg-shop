@@ -1,6 +1,6 @@
 import type { Account } from '../types/auth';
 import type { Order } from '../types/order';
-import type { ProductCard } from '../types/product';
+import type { Merchant, ProductCard } from '../types/product';
 import { requestJSON } from './http';
 
 export type DocumentItem = {
@@ -165,6 +165,10 @@ export type PagedResponse<T> = {
   total: number;
 };
 
+export type AccountStatus = 'active' | 'inactive' | 'risk';
+export type ProductStatus = 'active' | 'inactive' | 'deleted' | 'risk';
+export type MerchantStatus = 'active' | 'inactive' | 'risk';
+
 export async function listAccounts(token: string): Promise<Account[]> {
   const data = await requestJSON<{ items: Account[] }>('/admin/accounts', {
     headers: authHeaders(token)
@@ -178,7 +182,7 @@ export async function listAccountsPage(token: string, page = 1, pageSize = 10): 
   });
 }
 
-export async function updateAccountStatus(token: string, accountId: string, status: 'active' | 'inactive'): Promise<Account> {
+export async function updateAccountStatus(token: string, accountId: string, status: AccountStatus): Promise<Account> {
   return requestJSON<Account>(`/admin/accounts/${accountId}`, {
     method: 'PATCH',
     headers: authHeaders(token),
@@ -192,8 +196,22 @@ export async function listAdminProducts(token: string, page = 1, pageSize = 10):
   });
 }
 
-export async function updateAdminProductStatus(token: string, productId: string, status: 'active' | 'inactive' | 'deleted'): Promise<ProductCard> {
+export async function updateAdminProductStatus(token: string, productId: string, status: ProductStatus): Promise<ProductCard> {
   return requestJSON<ProductCard>(`/admin/products/${productId}`, {
+    method: 'PATCH',
+    headers: authHeaders(token),
+    body: JSON.stringify({ status })
+  });
+}
+
+export async function listAdminMerchants(token: string, page = 1, pageSize = 10): Promise<PagedResponse<Merchant>> {
+  return requestJSON<PagedResponse<Merchant>>(`/admin/merchants?page=${page}&page_size=${pageSize}`, {
+    headers: authHeaders(token)
+  });
+}
+
+export async function updateAdminMerchantStatus(token: string, merchantId: string, status: MerchantStatus): Promise<Merchant> {
+  return requestJSON<Merchant>(`/admin/merchants/${merchantId}`, {
     method: 'PATCH',
     headers: authHeaders(token),
     body: JSON.stringify({ status })

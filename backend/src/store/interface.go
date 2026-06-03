@@ -12,6 +12,7 @@ import (
 // HTTP handler 和 Agent runtime 都只面向这个接口，避免直接绑定 MySQL 细节。
 type Store interface {
 	// 账号与鉴权。
+	GetAccount(ctx context.Context, accountID string) (domain.Account, bool)
 	GetAccountByUsername(ctx context.Context, username string) (domain.Account, string, bool)
 	GetAccountByToken(ctx context.Context, token string) (domain.Account, bool)
 	ListAccounts(ctx context.Context) []domain.Account
@@ -55,6 +56,8 @@ type Store interface {
 	SearchProducts(ctx context.Context, query string) []domain.ProductCard
 	ListCategories(ctx context.Context) []domain.Category
 	ListMerchants(ctx context.Context) []domain.Merchant
+	ListAllMerchantsPage(ctx context.Context, page int, pageSize int) ([]domain.Merchant, int)
+	UpdateMerchantStatus(ctx context.Context, merchantID string, status string) (domain.Merchant, bool)
 	ListProducts(ctx context.Context, keyword string, categoryID string) []domain.ProductCard
 	ListAllProducts(ctx context.Context) []domain.ProductCard
 	ListAllProductsPage(ctx context.Context, page int, pageSize int) ([]domain.ProductCard, int)

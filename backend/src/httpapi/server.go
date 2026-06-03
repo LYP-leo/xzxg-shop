@@ -98,8 +98,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/admin/promotions/", s.handleUpdateAdminPromotion)
 	mux.HandleFunc("GET /api/v1/admin/reviews", s.handleListAdminReviews)
 	mux.HandleFunc("PATCH /api/v1/admin/reviews/", s.handleUpdateAdminReview)
+	mux.HandleFunc("GET /api/v1/admin/merchants", s.handleListAdminMerchants)
 	mux.HandleFunc("GET /api/v1/admin/products", s.handleListAdminProducts)
 	mux.HandleFunc("PATCH /api/v1/admin/products/", s.handleUpdateAdminProduct)
+	mux.HandleFunc("PATCH /api/v1/admin/merchants/", s.handleUpdateAdminMerchant)
 	mux.HandleFunc("POST /api/v1/eval/intent", s.handleEvalIntent)
 	mux.HandleFunc("POST /api/v1/eval/rag", s.handleEvalRAGRecall)
 	mux.HandleFunc("POST /api/v1/eval/image-search", s.handleEvalImageSearch)
@@ -954,7 +956,7 @@ func (s *Server) handleUpdateAdminAccount(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
 		return
 	}
-	if request.Status != "active" && request.Status != "inactive" {
+	if !allowedAccountStatus(request.Status) {
 		writeError(w, http.StatusBadRequest, "bad_status", "账号状态不合法")
 		return
 	}
@@ -1666,6 +1668,15 @@ func (s *Server) handleListAdminProducts(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
+func (s *Server) handleListAdminMerchants(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	page, pageSize := readPagination(r)
+	items, total := s.store.ListAllMerchantsPage(r.Context(), page, pageSize)
+	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
+}
+
 func (s *Server) handleUpdateAdminProduct(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
@@ -1678,7 +1689,7 @@ func (s *Server) handleUpdateAdminProduct(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
 		return
 	}
-	if request.Status != "active" && request.Status != "inactive" && request.Status != "deleted" {
+	if !allowedProductStatus(request.Status) {
 		writeError(w, http.StatusBadRequest, "bad_status", "商品状态不合法")
 		return
 	}
@@ -1688,6 +1699,30 @@ func (s *Server) handleUpdateAdminProduct(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, product)
+}
+
+func (s *Server) handleUpdateAdminMerchant(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	merchantID := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/merchants/")
+	var request struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	if !allowedMerchantStatus(request.Status) {
+		writeError(w, http.StatusBadRequest, "bad_status", "商家状态不合法")
+		return
+	}
+	merchant, ok := s.store.UpdateMerchantStatus(r.Context(), merchantID, request.Status)
+	if !ok {
+		writeError(w, http.StatusNotFound, "merchant_not_found", "商家不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, merchant)
 }
 
 func (s *Server) handleGetCart(w http.ResponseWriter, r *http.Request) {
@@ -2141,7 +2176,21 @@ func (s *Server) streamAgentRun(w http.ResponseWriter, r *http.Request, run doma
 	segmentsJSON, _ := json.Marshal(segments)
 	finalAnswer := strings.TrimSpace(content.String())
 	s.store.UpdateRunResult(r.Context(), run.AccountID, run.RunID, finalAnswer, string(blocksJSON), string(followupsJSON), string(segmentsJSON))
-	s.runtime.UpdateSessionSummaryAfterRun(r.Context(), run, message, finalAnswer)
+	if !skipSessionSummaryAfterRun(blocks) {
+		s.runtime.UpdateSessionSummaryAfterRun(r.Context(), run, message, finalAnswer)
+	}
+}
+
+func skipSessionSummaryAfterRun(blocks []domain.AgentBlock) bool {
+	for _, block := range blocks {
+		if block.Type == "warning" {
+			switch block.Code {
+			case "unsafe_request", "risk_account", "risk_blocked", "vlm_not_configured":
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func writeSSESnapshot(w http.ResponseWriter, run domain.AgentRun, code string, message string) {
@@ -2291,7 +2340,34 @@ func allowedOrderStatus(status string) bool {
 }
 
 func allowedEnabledStatus(status string) bool {
-	return status == "active" || status == "inactive"
+	return status == domain.ProductStatusActive || status == domain.ProductStatusInactive
+}
+
+func allowedAccountStatus(status string) bool {
+	switch status {
+	case domain.AccountStatusActive, domain.AccountStatusInactive, domain.AccountStatusRisk:
+		return true
+	default:
+		return false
+	}
+}
+
+func allowedProductStatus(status string) bool {
+	switch status {
+	case domain.ProductStatusActive, domain.ProductStatusInactive, domain.ProductStatusDeleted, domain.ProductStatusRisk:
+		return true
+	default:
+		return false
+	}
+}
+
+func allowedMerchantStatus(status string) bool {
+	switch status {
+	case domain.MerchantStatusActive, domain.MerchantStatusInactive, domain.MerchantStatusRisk:
+		return true
+	default:
+		return false
+	}
 }
 
 func readPositiveIntQuery(r *http.Request, key string, fallback int, min int, max int) int {

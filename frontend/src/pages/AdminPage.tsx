@@ -8,6 +8,8 @@ import {
   DocumentItem,
   EvalDashboard,
   EvalReportDetail,
+  MerchantStatus,
+  ProductStatus,
   VectorIndexStatus,
   getAdminAgentRunTrace,
   getEvalDashboard,
@@ -17,6 +19,7 @@ import {
   listAgentPromptsPage,
   listAdminAgentRunsPage,
   listAppConfigsPage,
+  listAdminMerchants,
   listAdminOrdersPage,
   listAdminProducts,
   listDocumentsPage,
@@ -24,16 +27,17 @@ import {
   saveAgentPromptDraft,
   updateAccountStatus,
   updateAppConfig,
+  updateAdminMerchantStatus,
   updateAdminProductStatus
 } from '../api/admin';
 import type { Account } from '../types/auth';
 import type { Order } from '../types/order';
-import type { ProductCard } from '../types/product';
+import type { Merchant, ProductCard } from '../types/product';
 import { orderStatusText } from './OrderPage';
 
 type AdminPageProps = {
   token: string;
-  view?: 'platform' | 'debug' | 'eval' | 'prompts';
+  view?: 'platform' | 'debug' | 'eval' | 'prompts' | 'risk';
 };
 
 export function AdminPage({ token, view = 'platform' }: AdminPageProps) {
@@ -52,6 +56,11 @@ export function AdminPage({ token, view = 'platform' }: AdminPageProps) {
   const [productPageSize, setProductPageSize] = useState(10);
   const [productTotal, setProductTotal] = useState(0);
   const [productLoading, setProductLoading] = useState(false);
+  const [merchants, setMerchants] = useState<Merchant[]>([]);
+  const [merchantPage, setMerchantPage] = useState(1);
+  const [merchantPageSize, setMerchantPageSize] = useState(10);
+  const [merchantTotal, setMerchantTotal] = useState(0);
+  const [merchantLoading, setMerchantLoading] = useState(false);
   const [orders, setOrders] = useState<Order[]>([]);
   const [orderPage, setOrderPage] = useState(1);
   const [orderPageSize, setOrderPageSize] = useState(10);
@@ -94,6 +103,12 @@ export function AdminPage({ token, view = 'platform' }: AdminPageProps) {
   }, [token, view, accountPage, accountPageSize]);
 
   useEffect(() => {
+    if (view === 'risk') {
+      loadAccounts(accountPage, accountPageSize);
+    }
+  }, [token, view, accountPage, accountPageSize]);
+
+  useEffect(() => {
     if (view === 'platform') {
       loadDocuments(documentPage, documentPageSize);
     }
@@ -106,6 +121,18 @@ export function AdminPage({ token, view = 'platform' }: AdminPageProps) {
   }, [token, view, productPage, productPageSize]);
 
   useEffect(() => {
+    if (view === 'risk') {
+      loadProducts(productPage, productPageSize);
+    }
+  }, [token, view, productPage, productPageSize]);
+
+  useEffect(() => {
+    if (view === 'risk') {
+      loadMerchants(merchantPage, merchantPageSize);
+    }
+  }, [token, view, merchantPage, merchantPageSize]);
+
+  useEffect(() => {
     if (view === 'platform') {
       loadOrders(orderPage, orderPageSize);
     }
@@ -116,6 +143,12 @@ export function AdminPage({ token, view = 'platform' }: AdminPageProps) {
       loadConfigs(configPage, configPageSize);
     }
   }, [token, view, configPage, configPageSize]);
+
+  useEffect(() => {
+    if (view === 'risk') {
+      loadConfigs(1, 100);
+    }
+  }, [token, view]);
 
   useEffect(() => {
     if (view === 'debug') {
@@ -183,6 +216,17 @@ export function AdminPage({ token, view = 'platform' }: AdminPageProps) {
       setProductTotal(data.total);
     } finally {
       setProductLoading(false);
+    }
+  }
+
+  async function loadMerchants(page: number, pageSize: number) {
+    setMerchantLoading(true);
+    try {
+      const data = await listAdminMerchants(token, page, pageSize);
+      setMerchants(data.items);
+      setMerchantTotal(data.total);
+    } finally {
+      setMerchantLoading(false);
     }
   }
 
@@ -282,9 +326,24 @@ export function AdminPage({ token, view = 'platform' }: AdminPageProps) {
     await loadAccounts(accountPage, accountPageSize);
   }
 
+  async function setAccountRiskStatus(account: Account, status: 'active' | 'inactive' | 'risk') {
+    await updateAccountStatus(token, account.account_id, status);
+    await loadAccounts(accountPage, accountPageSize);
+  }
+
   async function disableProduct(product: ProductCard) {
     await updateAdminProductStatus(token, product.productId, 'inactive');
     await loadProducts(productPage, productPageSize);
+  }
+
+  async function setProductRiskStatus(product: ProductCard, status: ProductStatus) {
+    await updateAdminProductStatus(token, product.productId, status);
+    await loadProducts(productPage, productPageSize);
+  }
+
+  async function setMerchantRiskStatus(merchant: Merchant, status: MerchantStatus) {
+    await updateAdminMerchantStatus(token, merchant.merchantId, status);
+    await loadMerchants(merchantPage, merchantPageSize);
   }
 
   async function saveConfig(config: AppConfig) {
@@ -338,6 +397,8 @@ export function AdminPage({ token, view = 'platform' }: AdminPageProps) {
   const configTotalPages = totalPages(configTotal, configPageSize);
   const agentRunTotalPages = totalPages(agentRunTotal, agentRunPageSize);
   const promptTotalPages = totalPages(promptTotal, promptPageSize);
+  const merchantTotalPages = totalPages(merchantTotal, merchantPageSize);
+  const riskConfigs = configs.filter((config) => config.config_key.startsWith('risk.'));
 
   if (view === 'prompts') {
     return (
@@ -593,6 +654,257 @@ export function AdminPage({ token, view = 'platform' }: AdminPageProps) {
         onSelectReport={loadEvalReportDetail}
         onRefresh={loadEvalDashboard}
       />
+    );
+  }
+
+  if (view === 'risk') {
+    return (
+      <section>
+        <header className="page-header">
+          <div>
+            <h1>风控管理</h1>
+            <p>管理输入内容风控、风险用户、风险商家和风险商品。风险对象不会进入 Agent 召回链路。</p>
+          </div>
+          <button
+            className="button button--ghost"
+            onClick={() => {
+              loadAccounts(accountPage, accountPageSize);
+              loadProducts(productPage, productPageSize);
+              loadMerchants(merchantPage, merchantPageSize);
+              loadConfigs(1, 100);
+            }}
+          >
+            刷新
+          </button>
+        </header>
+        <div className="risk-summary-grid">
+          <RiskMetric title="风险账号" value={accounts.filter((account) => account.status === 'risk').length} hint={`当前页 / 共 ${accountTotal} 个账号`} />
+          <RiskMetric title="风险商品" value={products.filter((product) => productStatus(product) === 'risk').length} hint={`当前页 / 共 ${productTotal} 个商品`} />
+          <RiskMetric title="风险商家" value={merchants.filter((merchant) => merchant.status === 'risk').length} hint={`当前页 / 共 ${merchantTotal} 个商家`} />
+          <RiskMetric title="风控配置" value={riskConfigs.length} hint="来自 Nacos 动态配置" />
+        </div>
+        <div className="admin-grid">
+          <section className="panel risk-panel">
+            <div className="panel-title-row">
+              <div>
+                <h2>输入内容风控</h2>
+                <p>维护 risk.* 配置，保存后后端按动态配置刷新间隔生效。</p>
+              </div>
+            </div>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>配置</th>
+                  <th>值</th>
+                  <th>说明</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {riskConfigs.map((config) => (
+                  <tr key={config.config_key}>
+                    <td>
+                      <strong>{config.config_key}</strong>
+                    </td>
+                    <td>
+                      {config.value_type === 'json' || config.value_type === 'text' ? (
+                        <textarea
+                          className="table-input table-input--textarea"
+                          value={configDrafts[config.config_key] ?? ''}
+                          onChange={(event) =>
+                            setConfigDrafts((current) => ({ ...current, [config.config_key]: event.target.value }))
+                          }
+                        />
+                      ) : (
+                        <input
+                          className="table-input"
+                          value={configDrafts[config.config_key] ?? ''}
+                          onChange={(event) =>
+                            setConfigDrafts((current) => ({ ...current, [config.config_key]: event.target.value }))
+                          }
+                        />
+                      )}
+                    </td>
+                    <td>{config.description}</td>
+                    <td>
+                      <button className="button button--ghost" onClick={() => saveConfig(config)}>
+                        保存
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {riskConfigs.length === 0 && !configLoading ? (
+                  <tr>
+                    <td colSpan={4}>暂无 risk.* 配置</td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </section>
+          <section className="panel">
+            <div className="panel-title-row">
+              <div>
+                <h2>风险用户</h2>
+                <p>
+                  共 {accountTotal} 个账号，第 {accountPage} / {accountTotalPages} 页
+                </p>
+              </div>
+              <PageSizeSelect
+                value={accountPageSize}
+                onChange={(value) => {
+                  setAccountPageSize(value);
+                  setAccountPage(1);
+                }}
+              />
+            </div>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>账号</th>
+                  <th>角色</th>
+                  <th>状态</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {accounts.map((account) => (
+                  <tr key={account.account_id}>
+                    <td>{account.username}</td>
+                    <td>{account.role}</td>
+                    <td>
+                      <StatusBadge status={account.status || 'active'} />
+                    </td>
+                    <td>
+                      <RiskStatusSelect
+                        value={(account.status || 'active') as 'active' | 'inactive' | 'risk'}
+                        options={['active', 'inactive', 'risk']}
+                        onChange={(status) => setAccountRiskStatus(account, status as 'active' | 'inactive' | 'risk')}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <PaginationBar
+              loading={accountLoading}
+              page={accountPage}
+              totalPages={accountTotalPages}
+              visibleCount={accounts.length}
+              total={accountTotal}
+              onPrev={() => setAccountPage((current) => Math.max(1, current - 1))}
+              onNext={() => setAccountPage((current) => Math.min(accountTotalPages, current + 1))}
+            />
+          </section>
+          <section className="panel">
+            <div className="panel-title-row">
+              <div>
+                <h2>风险商家</h2>
+                <p>
+                  共 {merchantTotal} 个商家，第 {merchantPage} / {merchantTotalPages} 页
+                </p>
+              </div>
+              <PageSizeSelect
+                value={merchantPageSize}
+                onChange={(value) => {
+                  setMerchantPageSize(value);
+                  setMerchantPage(1);
+                }}
+              />
+            </div>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>商家</th>
+                  <th>电话</th>
+                  <th>状态</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {merchants.map((merchant) => (
+                  <tr key={merchant.merchantId}>
+                    <td>{merchant.name}</td>
+                    <td>{merchant.servicePhone || '-'}</td>
+                    <td>
+                      <StatusBadge status={merchant.status} />
+                    </td>
+                    <td>
+                      <RiskStatusSelect
+                        value={(merchant.status || 'active') as MerchantStatus}
+                        options={['active', 'inactive', 'risk']}
+                        onChange={(status) => setMerchantRiskStatus(merchant, status as MerchantStatus)}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <PaginationBar
+              loading={merchantLoading}
+              page={merchantPage}
+              totalPages={merchantTotalPages}
+              visibleCount={merchants.length}
+              total={merchantTotal}
+              onPrev={() => setMerchantPage((current) => Math.max(1, current - 1))}
+              onNext={() => setMerchantPage((current) => Math.min(merchantTotalPages, current + 1))}
+            />
+          </section>
+          <section className="panel">
+            <div className="panel-title-row">
+              <div>
+                <h2>风险商品</h2>
+                <p>
+                  共 {productTotal} 个商品，第 {productPage} / {productTotalPages} 页
+                </p>
+              </div>
+              <PageSizeSelect
+                value={productPageSize}
+                onChange={(value) => {
+                  setProductPageSize(value);
+                  setProductPage(1);
+                }}
+              />
+            </div>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>商品</th>
+                  <th>商家</th>
+                  <th>状态</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {products.map((product) => (
+                  <tr key={product.productId}>
+                    <td>{product.name}</td>
+                    <td>{product.merchantName}</td>
+                    <td>
+                      <StatusBadge status={productStatus(product)} />
+                    </td>
+                    <td>
+                      <RiskStatusSelect
+                        value={productStatus(product) as ProductStatus}
+                        options={['active', 'inactive', 'risk', 'deleted']}
+                        onChange={(status) => setProductRiskStatus(product, status as ProductStatus)}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <PaginationBar
+              loading={productLoading}
+              page={productPage}
+              totalPages={productTotalPages}
+              visibleCount={products.length}
+              total={productTotal}
+              onPrev={() => setProductPage((current) => Math.max(1, current - 1))}
+              onNext={() => setProductPage((current) => Math.min(productTotalPages, current + 1))}
+            />
+          </section>
+        </div>
+      </section>
     );
   }
 
@@ -875,6 +1187,52 @@ export function AdminPage({ token, view = 'platform' }: AdminPageProps) {
       </div>
     </section>
   );
+}
+
+function RiskMetric({ title, value, hint }: { title: string; value: number; hint: string }) {
+  return (
+    <article className="risk-metric">
+      <span>{title}</span>
+      <strong>{value}</strong>
+      <small>{hint}</small>
+    </article>
+  );
+}
+
+function StatusBadge({ status }: { status: string }) {
+  return <span className={`status-badge status-badge--${status}`}>{statusText(status)}</span>;
+}
+
+function RiskStatusSelect({
+  value,
+  options,
+  onChange
+}: {
+  value: string;
+  options: string[];
+  onChange: (status: string) => void;
+}) {
+  return (
+    <select className="table-input table-input--compact" value={value} onChange={(event) => onChange(event.target.value)}>
+      {options.map((status) => (
+        <option value={status} key={status}>
+          {statusText(status)}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function statusText(status: string) {
+  if (status === 'active') return '正常';
+  if (status === 'inactive') return '停用';
+  if (status === 'risk') return '风险';
+  if (status === 'deleted') return '删除';
+  return status || '-';
+}
+
+function productStatus(product: ProductCard) {
+  return product.status || 'active';
 }
 
 function EvalDashboardView({

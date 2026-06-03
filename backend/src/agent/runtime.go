@@ -71,7 +71,8 @@ func (r *Runtime) Stream(ctx context.Context, run domain.AgentRun, message domai
 		return err
 	}
 
-	if result := risk.CheckText(message.Content, r.configs.GetMap(ctx)); result.Blocked {
+	configValues := r.configs.GetMap(ctx)
+	if result := risk.CheckText(message.Content, configValues); result.Blocked {
 		if err := r.emitText(run, result.Message, emit); err != nil {
 			return err
 		}
@@ -85,6 +86,26 @@ func (r *Runtime) Stream(ctx context.Context, run domain.AgentRun, message domai
 		r.trace(ctx, run, "risk", "blocked", "", "blocked", 0, "", map[string]any{"code": result.Code, "matched": result.Matched})
 		r.trace(ctx, run, "run", "completed", "", "blocked", 0, "", nil)
 		return emit(domain.SSEEvent{Type: "message_end", RunID: run.RunID})
+	}
+	if account, ok := r.store.GetAccount(ctx, run.AccountID); ok {
+		if result := risk.CheckAccount(account, configValues); result.Blocked {
+			if err := r.emitText(run, result.Message, emit); err != nil {
+				return err
+			}
+			block := domain.AgentBlock{Type: "warning", Code: result.Code, Message: result.Message}
+			if err := emit(domain.SSEEvent{Type: "block_delta", RunID: run.RunID, Block: &block}); err != nil {
+				return err
+			}
+			if _, ok := r.store.UpdateRunStatus(ctx, run.AccountID, run.RunID, domain.RunStatusCompleted); !ok {
+				r.logger.Warn("agent run status update skipped", "run_id", run.RunID)
+			}
+			r.trace(ctx, run, "risk", "blocked_account", "", "blocked", 0, "", map[string]any{
+				"code":           result.Code,
+				"account_status": result.Matched,
+			})
+			r.trace(ctx, run, "run", "completed", "", "blocked", 0, "", nil)
+			return emit(domain.SSEEvent{Type: "message_end", RunID: run.RunID})
+		}
 	}
 
 	if needsPhotoSearch(message) {

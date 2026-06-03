@@ -6,7 +6,7 @@ export type Merchant = {
   logoUrl: string;
   description: string;
   servicePhone?: string;
-  status: 'active' | 'inactive';
+  status: 'active' | 'inactive' | 'risk' | string;
 };
 
 export type Category = {
@@ -34,6 +34,7 @@ export type ProductCard = {
   price: string;
   marketPrice?: string;
   stockStatus: StockStatus;
+  status?: 'active' | 'inactive' | 'deleted' | 'risk' | string;
   tags: string[];
   sellingPoints: string[];
   recommendReason?: string;

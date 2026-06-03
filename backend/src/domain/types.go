@@ -10,6 +10,25 @@ const (
 	AccountRoleAdmin    AccountRole = "admin"
 )
 
+const (
+	AccountStatusActive   = "active"
+	AccountStatusInactive = "inactive"
+	AccountStatusRisk     = "risk"
+)
+
+const (
+	ProductStatusActive   = "active"
+	ProductStatusInactive = "inactive"
+	ProductStatusDeleted  = "deleted"
+	ProductStatusRisk     = "risk"
+)
+
+const (
+	MerchantStatusActive   = "active"
+	MerchantStatusInactive = "inactive"
+	MerchantStatusRisk     = "risk"
+)
+
 type Account struct {
 	AccountID   string      `json:"account_id"`
 	Username    string      `json:"username"`
@@ -255,6 +274,7 @@ type ProductCard struct {
 	Price           string   `json:"price"`
 	MarketPrice     string   `json:"marketPrice,omitempty"`
 	StockStatus     string   `json:"stockStatus"`
+	Status          string   `json:"status,omitempty"`
 	Tags            []string `json:"tags"`
 	SellingPoints   []string `json:"sellingPoints"`
 	RecommendReason string   `json:"recommendReason"`

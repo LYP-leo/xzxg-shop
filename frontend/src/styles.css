@@ -720,6 +720,66 @@ button {
   grid-column: 1 / -1;
 }
 
+.risk-panel {
+  grid-column: 1 / -1;
+}
+
+.risk-summary-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin-bottom: 16px;
+}
+
+.risk-metric {
+  background: #ffffff;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  display: grid;
+  gap: 5px;
+  padding: 14px;
+}
+
+.risk-metric span,
+.risk-metric small {
+  color: #657285;
+}
+
+.risk-metric strong {
+  color: #172033;
+  font-size: 24px;
+}
+
+.status-badge {
+  background: #eef2f7;
+  border: 1px solid #d8e0eb;
+  border-radius: 999px;
+  color: #465367;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 8px;
+}
+
+.status-badge--active {
+  background: #ecfdf3;
+  border-color: #abefc6;
+  color: #067647;
+}
+
+.status-badge--inactive,
+.status-badge--deleted {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  color: #475467;
+}
+
+.status-badge--risk {
+  background: #fff1f3;
+  border-color: #fecdd6;
+  color: #c01048;
+}
+
 .panel-title-row {
   align-items: flex-start;
   display: flex;
