@@ -123,12 +123,13 @@ type AgentSegment struct {
 }
 
 type ThoughtStep struct {
-	ID      string `json:"id"`
-	Title   string `json:"title"`
-	Status  string `json:"status"`
-	Summary string `json:"summary,omitempty"`
-	Detail  string `json:"detail,omitempty"`
-	Order   int    `json:"order,omitempty"`
+	ID       string        `json:"id"`
+	Title    string        `json:"title"`
+	Status   string        `json:"status"`
+	Summary  string        `json:"summary,omitempty"`
+	Detail   string        `json:"detail,omitempty"`
+	Products []ProductCard `json:"products,omitempty"`
+	Order    int           `json:"order,omitempty"`
 }
 
 type AgentTraceEvent struct {

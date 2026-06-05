@@ -370,6 +370,7 @@ func (r *Runtime) toolSearchProducts(ctx context.Context, run domain.AgentRun, r
 			"name":             product.Name,
 			"brand":            product.Brand,
 			"price":            product.Price,
+			"image_url":        product.ImageURL,
 			"stock_status":     product.StockStatus,
 			"merchant_name":    product.MerchantName,
 			"selling_points":   product.SellingPoints,

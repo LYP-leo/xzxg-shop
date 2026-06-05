@@ -131,7 +131,9 @@ public class MainActivity extends Activity {
     private LinearLayout activeThinkingList;
     private TextView activeThinkingTitle;
     private boolean activeThinkingExpanded = true;
+    private boolean activeThinkingAnswerStarted;
     private final Map<String, JSONObject> activeThinkingSteps = new HashMap<>();
+    private final Handler thinkingAnimationHandler = new Handler(Looper.getMainLooper());
     private StringBuilder activeAssistantMarkdown;
     private StringBuilder activeAssistantFullMarkdown;
     private boolean activeAssistantFormMode;
@@ -1863,6 +1865,7 @@ public class MainActivity extends Activity {
         activeThinkingPanel = null;
         activeThinkingList = null;
         activeThinkingTitle = null;
+        activeThinkingAnswerStarted = false;
         activeThinkingExpanded = true;
         activeFollowups = new JSONArray();
         activeFollowupsView = null;
@@ -1916,7 +1919,9 @@ public class MainActivity extends Activity {
             return;
         }
         if ("text_delta".equals(type)) {
-            appendAssistant(event.optString("delta"));
+            String delta = event.optString("delta");
+            markThinkingAnswerStarted(delta);
+            appendAssistant(delta);
             return;
         }
         if ("content_delta".equals(type)) {
@@ -2043,15 +2048,8 @@ public class MainActivity extends Activity {
         if (activeThinkingPanel == null || activeThinkingTitle == null || activeThinkingList == null) {
             return;
         }
-        boolean allDone = !activeThinkingSteps.isEmpty();
-        for (JSONObject step : sortedThinkingSteps()) {
-            String status = step.optString("status", "");
-            if (!"done".equals(status) && !"skipped".equals(status) && !"failed".equals(status)) {
-                allDone = false;
-                break;
-            }
-        }
-        activeThinkingTitle.setText((allDone ? "已完成思考 " : "正在思考 ") + (activeThinkingExpanded ? "⌃" : "⌄"));
+        activeThinkingTitle.setText((activeThinkingAnswerStarted ? "已完成思考 " : "思考中... ") + (activeThinkingExpanded ? "⌃" : "⌄"));
+        setThinkingPulse(activeThinkingTitle, !activeThinkingAnswerStarted);
         activeThinkingList.removeAllViews();
         activeThinkingList.setVisibility(activeThinkingExpanded ? View.VISIBLE : View.GONE);
         if (!activeThinkingExpanded) {
@@ -2086,16 +2084,29 @@ public class MainActivity extends Activity {
         icon.setTextSize(16);
         icon.setGravity(Gravity.TOP | Gravity.CENTER_HORIZONTAL);
         icon.setTextColor(thinkingStatusColor(status));
+        setThinkingPulse(icon, "running".equals(status));
         wrap.addView(icon, new LinearLayout.LayoutParams(dp(24), -2));
 
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+
         TextView title = new TextView(this);
         title.setText(step.optString("title", "处理步骤") + thinkingStatusSuffix(status));
         title.setTextSize(15);
         title.setTextColor(Color.rgb(75, 85, 99));
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        body.addView(title, new LinearLayout.LayoutParams(-1, -2));
+        titleRow.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+
+        View productStack = thinkingProductStack(step.optJSONArray("products"));
+        if (productStack != null) {
+            LinearLayout.LayoutParams stackParams = new LinearLayout.LayoutParams(dp(98), dp(34));
+            stackParams.leftMargin = dp(8);
+            titleRow.addView(productStack, stackParams);
+        }
+        body.addView(titleRow, new LinearLayout.LayoutParams(-1, -2));
 
         String summary = step.optString("summary", "");
         String detail = step.optString("detail", "");
@@ -2112,6 +2123,103 @@ public class MainActivity extends Activity {
         }
         wrap.addView(body, new LinearLayout.LayoutParams(0, -2, 1));
         return wrap;
+    }
+
+    private void markThinkingAnswerStarted(String delta) {
+        if (activeThinkingAnswerStarted || delta == null || delta.trim().isEmpty()) {
+            return;
+        }
+        activeThinkingAnswerStarted = true;
+        renderThinkingPanel();
+    }
+
+    private void setThinkingPulse(View view, boolean enabled) {
+        if (view == null) {
+            return;
+        }
+        if (!enabled) {
+            view.animate().cancel();
+            view.setTag(null);
+            view.setAlpha(1f);
+            return;
+        }
+        if ("thinking_pulse".equals(view.getTag())) {
+            return;
+        }
+        view.setTag("thinking_pulse");
+        pulseThinkingView(view, false);
+    }
+
+    private void pulseThinkingView(View view, boolean fadeIn) {
+        if (view == null || !"thinking_pulse".equals(view.getTag())) {
+            return;
+        }
+        float targetAlpha = fadeIn ? 1f : 0.42f;
+        view.animate()
+                .alpha(targetAlpha)
+                .setDuration(460)
+                .withEndAction(() -> pulseThinkingView(view, !fadeIn))
+                .start();
+    }
+
+    private View thinkingProductStack(JSONArray products) {
+        if (products == null || products.length() == 0) {
+            return null;
+        }
+        FrameLayout stack = new FrameLayout(this);
+        int count = Math.min(products.length(), 5);
+        for (int i = 0; i < count; i++) {
+            JSONObject product = products.optJSONObject(i);
+            if (product == null) {
+                continue;
+            }
+            String imageUrl = productField(product, "imageUrl", "image_url");
+            if (imageUrl.trim().isEmpty()) {
+                continue;
+            }
+            CircleImageView image = new CircleImageView(this);
+            image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            image.setBackground(rounded(Color.rgb(243, 244, 246), dp(16)));
+            image.setPadding(dp(1), dp(1), dp(1), dp(1));
+            imageLoader.load(image, api.absoluteUrl(imageUrl));
+            FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(dp(32), dp(32));
+            params.leftMargin = i * dp(16);
+            params.gravity = Gravity.CENTER_VERTICAL | Gravity.LEFT;
+            stack.addView(image, params);
+        }
+        if (stack.getChildCount() == 0) {
+            return null;
+        }
+        startThinkingProductCarousel(stack);
+        return stack;
+    }
+
+    private void startThinkingProductCarousel(FrameLayout stack) {
+        if (stack == null || stack.getChildCount() <= 1) {
+            return;
+        }
+        final int[] offset = {0};
+        Runnable ticker = new Runnable() {
+            @Override
+            public void run() {
+                if (stack.getParent() == null || stack.getChildCount() <= 1) {
+                    return;
+                }
+                offset[0] = (offset[0] + 1) % stack.getChildCount();
+                for (int i = 0; i < stack.getChildCount(); i++) {
+                    View child = stack.getChildAt(i);
+                    int position = (i - offset[0] + stack.getChildCount()) % stack.getChildCount();
+                    child.animate()
+                            .translationX((position - i) * dp(16))
+                            .alpha(position == 0 ? 1f : 0.88f)
+                            .setDuration(220)
+                            .start();
+                    child.setTranslationZ(position == 0 ? dp(4) : stack.getChildCount() - position);
+                }
+                thinkingAnimationHandler.postDelayed(this, 720);
+            }
+        };
+        thinkingAnimationHandler.postDelayed(ticker, 720);
     }
 
     private String thinkingStatusIcon(String status) {
@@ -2147,7 +2255,7 @@ public class MainActivity extends Activity {
         if ("skipped".equals(status)) {
             return "跳过";
         }
-        return "中";
+        return "中...";
     }
 
     private void appendThinkingSegmentsSnapshot() {
@@ -2411,6 +2519,7 @@ public class MainActivity extends Activity {
         activeThinkingPanel = null;
         activeThinkingList = null;
         activeThinkingTitle = null;
+        activeThinkingAnswerStarted = false;
         activeFollowups = new JSONArray();
         activeFollowupsView = null;
         updateInputActionButtonState();
@@ -2455,6 +2564,7 @@ public class MainActivity extends Activity {
         activeThinkingPanel = null;
         activeThinkingList = null;
         activeThinkingTitle = null;
+        activeThinkingAnswerStarted = false;
         activeFollowups = new JSONArray();
         activeFollowupsView = null;
         activeRunId = "";
