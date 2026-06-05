@@ -36,6 +36,12 @@ node quality/evals/run_agent_e2e.mjs quality/data/eval/agent_e2e_20_scenarios.js
 node quality/evals/run_intent_eval.mjs quality/data/eval/intent_cases.jsonl
 ```
 
+非导购服务域二级分类测评：
+
+```bash
+node quality/evals/run_intent_eval.mjs quality/data/eval/non_guide_intent_cases.jsonl
+```
+
 ## 3. RAG 召回测评
 
 输入：搜索关键词 + 预期可召回数据。

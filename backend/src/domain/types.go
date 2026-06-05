@@ -231,6 +231,7 @@ const (
 
 type Attachment struct {
 	AttachmentID string `json:"attachment_id"`
+	FileID       string `json:"file_id,omitempty"`
 	Type         string `json:"type"`
 	URL          string `json:"url,omitempty"`
 	Name         string `json:"name,omitempty"`
@@ -542,6 +543,7 @@ type KnowledgeDocumentInput struct {
 
 type AgentBlock struct {
 	Type       string                 `json:"type"`
+	Title      string                 `json:"title,omitempty"`
 	Product    *ProductCard           `json:"product,omitempty"`
 	ProductIDs []string               `json:"product_ids,omitempty"`
 	Citation   *Citation              `json:"citation,omitempty"`
@@ -549,6 +551,8 @@ type AgentBlock struct {
 	Content    string                 `json:"content,omitempty"`
 	Columns    []string               `json:"columns,omitempty"`
 	Rows       []ComparisonRow        `json:"rows,omitempty"`
+	Items      []map[string]any       `json:"items,omitempty"`
+	Summary    map[string]any         `json:"summary,omitempty"`
 	Cart       *Cart                  `json:"cart,omitempty"`
 	Orders     []Order                `json:"orders,omitempty"`
 	Code       string                 `json:"code,omitempty"`

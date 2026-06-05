@@ -12,17 +12,32 @@ import (
 	"time"
 
 	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
+	"github.com/LYP-leo/xzxg-shop/backend/src/imagevector"
+	"github.com/LYP-leo/xzxg-shop/backend/src/objectstore"
 	"github.com/LYP-leo/xzxg-shop/backend/src/rag"
 )
 
 const (
 	toolSearchProducts  = "search_products"
+	toolSearchImage     = "search_image_products"
 	toolSearchKnowledge = "search_knowledge"
 	toolGetCart         = "get_cart"
 	toolAddCartItem     = "add_cart_item"
 	toolUpdateCartItem  = "update_cart_item"
 	toolDeleteCartItem  = "delete_cart_item"
 	toolCheckout        = "checkout"
+	toolListOrders      = "list_orders"
+	toolGetOrder        = "get_order"
+	toolPayOrder        = "pay_order"
+	toolCancelOrder     = "cancel_order"
+	toolConfirmReceipt  = "confirm_receipt"
+	toolPreviewDiscount = "preview_discount"
+	toolListCoupons     = "list_coupons"
+	toolListUserCoupons = "list_user_coupons"
+	toolClaimCoupon     = "claim_coupon"
+	toolListPromotions  = "list_promotions"
+	toolListReviews     = "list_product_reviews"
+	toolCreateReview    = "create_product_review"
 )
 
 const (
@@ -65,6 +80,13 @@ type toolObservation struct {
 
 type toolExecutionContext struct {
 	AllowedAddProductIDs map[string]bool
+	Attachments          []domain.Attachment
+}
+
+type imageToolSource struct {
+	FileID    string
+	ObjectKey string
+	ImageURL  string
 }
 
 var productIDPattern = regexp.MustCompile(`\bp_[A-Za-z0-9_]+\b`)
@@ -84,6 +106,19 @@ func productIDSetFromText(text string) map[string]bool {
 	ids := make(map[string]bool)
 	for _, id := range productIDPattern.FindAllString(text, -1) {
 		ids[id] = true
+	}
+	return ids
+}
+
+func productIDsFromText(text string) []string {
+	seen := make(map[string]bool)
+	ids := make([]string, 0)
+	for _, id := range productIDPattern.FindAllString(text, -1) {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
 	}
 	return ids
 }
@@ -117,6 +152,8 @@ func (r *Runtime) executeTool(ctx context.Context, run domain.AgentRun, call rea
 	switch tool {
 	case toolSearchProducts:
 		observation = r.toolSearchProducts(ctx, run, call.Arguments)
+	case toolSearchImage:
+		observation = r.toolSearchImageProducts(ctx, run, call.Arguments, execCtx.Attachments)
 	case toolSearchKnowledge:
 		observation = r.toolSearchKnowledge(ctx, call.Arguments)
 	case toolGetCart:
@@ -129,12 +166,176 @@ func (r *Runtime) executeTool(ctx context.Context, run domain.AgentRun, call rea
 		observation = r.toolDeleteCartItem(ctx, run.AccountID, call.Arguments)
 	case toolCheckout:
 		observation = r.toolCheckout(ctx, run.AccountID)
+	case toolListOrders:
+		observation = r.toolListOrders(ctx, run.AccountID, call.Arguments)
+	case toolGetOrder:
+		observation = r.toolGetOrder(ctx, run.AccountID, call.Arguments)
+	case toolPayOrder:
+		observation = r.toolPayOrder(ctx, run.AccountID, call.Arguments)
+	case toolCancelOrder:
+		observation = r.toolCancelOrder(ctx, run.AccountID, call.Arguments)
+	case toolConfirmReceipt:
+		observation = r.toolConfirmReceipt(ctx, run.AccountID, call.Arguments)
+	case toolPreviewDiscount:
+		observation = r.toolPreviewDiscount(ctx, run.AccountID)
+	case toolListCoupons:
+		observation = r.toolListCoupons(ctx, run.AccountID, call.Arguments)
+	case toolListUserCoupons:
+		observation = r.toolListUserCoupons(ctx, run.AccountID, call.Arguments)
+	case toolClaimCoupon:
+		observation = r.toolClaimCoupon(ctx, run.AccountID, call.Arguments)
+	case toolListPromotions:
+		observation = r.toolListPromotions(ctx, call.Arguments)
+	case toolListReviews:
+		observation = r.toolListProductReviews(ctx, call.Arguments)
+	case toolCreateReview:
+		observation = r.toolCreateProductReview(ctx, run.AccountID, call.Arguments)
 	default:
 		observation.Message = "未知工具：" + tool
 	}
 	observation.Tool = tool
 	observation.DurationMS = time.Since(startedAt).Milliseconds()
 	return observation
+}
+
+func (r *Runtime) toolSearchImageProducts(ctx context.Context, run domain.AgentRun, raw json.RawMessage, attachments []domain.Attachment) toolObservation {
+	var args struct {
+		FileID    string `json:"file_id"`
+		ObjectKey string `json:"object_key"`
+		ImageURL  string `json:"image_url"`
+		Limit     int    `json:"limit"`
+	}
+	_ = json.Unmarshal(raw, &args)
+	args.FileID = strings.TrimSpace(args.FileID)
+	args.ObjectKey = strings.TrimSpace(args.ObjectKey)
+	args.ImageURL = strings.TrimSpace(args.ImageURL)
+	if args.FileID == "" && args.ObjectKey == "" && args.ImageURL == "" {
+		if source := firstImageAttachment(attachments); source != nil {
+			args.FileID = source.FileID
+			args.ObjectKey = source.ObjectKey
+			args.ImageURL = source.ImageURL
+		}
+	}
+	if args.FileID == "" && args.ObjectKey == "" && args.ImageURL == "" {
+		return toolObservation{Tool: toolSearchImage, Message: "没有可检索的图片；请先上传图片或提供 image_url"}
+	}
+
+	limit := clampLimit(args.Limit, 5, 10)
+	embeddingStartedAt := time.Now()
+	vector, err := r.imageVectorFromToolArgs(ctx, args.FileID, args.ObjectKey, args.ImageURL)
+	embeddingMS := time.Since(embeddingStartedAt).Milliseconds()
+	if err != nil {
+		return toolObservation{
+			Tool:            toolSearchImage,
+			Message:         "图片向量生成失败",
+			RelevanceStatus: relevanceNoMatch,
+			RelevanceReason: err.Error(),
+			Result: map[string]any{
+				"embedding_ms": embeddingMS,
+				"source":       map[string]any{"file_id": args.FileID, "object_key": args.ObjectKey, "image_url": args.ImageURL},
+			},
+		}
+	}
+
+	searchStartedAt := time.Now()
+	products, searchErr := r.store.SearchProductsByImageVector(ctx, vector, limit)
+	searchMS := time.Since(searchStartedAt).Milliseconds()
+	if searchErr != nil {
+		return toolObservation{
+			Tool:            toolSearchImage,
+			Message:         "图片向量库检索失败",
+			RelevanceStatus: relevanceNoMatch,
+			RelevanceReason: searchErr.Error(),
+			Result: map[string]any{
+				"embedding_ms": embeddingMS,
+				"search_ms":    searchMS,
+				"source":       map[string]any{"file_id": args.FileID, "object_key": args.ObjectKey, "image_url": args.ImageURL},
+			},
+		}
+	}
+	items := make([]map[string]any, 0, len(products))
+	productIDs := make([]string, 0, len(products))
+	for _, product := range products {
+		productIDs = append(productIDs, product.ProductID)
+		items = append(items, map[string]any{
+			"product_id":       product.ProductID,
+			"sku_id":           product.SkuID,
+			"name":             product.Name,
+			"brand":            product.Brand,
+			"price":            product.Price,
+			"image_url":        product.ImageURL,
+			"stock_status":     product.StockStatus,
+			"merchant_name":    product.MerchantName,
+			"selling_points":   product.SellingPoints,
+			"recommend_reason": truncateRunes(product.RecommendReason, 180),
+		})
+	}
+	status := relevanceOK
+	reason := "图片向量检索命中相似商品"
+	message := fmt.Sprintf("根据图片检索到 %d 个相似商品", len(items))
+	if len(items) == 0 {
+		status = relevanceNoMatch
+		reason = "图片向量库没有命中相似商品"
+		message = "没有检索到相似商品"
+	}
+	return toolObservation{
+		Tool:            toolSearchImage,
+		OK:              true,
+		Message:         message,
+		Result:          map[string]any{"items": items, "embedding_ms": embeddingMS, "search_ms": searchMS, "source": map[string]any{"file_id": args.FileID, "object_key": args.ObjectKey, "image_url": args.ImageURL}},
+		ProductIDs:      productIDs,
+		RelevanceStatus: status,
+		RelevanceReason: reason,
+	}
+}
+
+func (r *Runtime) imageVectorFromToolArgs(ctx context.Context, fileID string, objectKey string, imageURL string) ([]float32, error) {
+	embedder := imagevector.NewEmbedderFromMap(r.configs.GetMap(ctx), "")
+	if fileID != "" {
+		fileMeta, ok := r.store.GetStoredFile(ctx, fileID)
+		if !ok {
+			return nil, errors.New("file not found")
+		}
+		objectKey = fileMeta.ObjectKey
+	}
+	if objectKey != "" {
+		storage, err := objectstore.NewMinIOFromConfig(r.configs.GetMap(ctx))
+		if err != nil {
+			return nil, err
+		}
+		object, err := storage.Get(ctx, objectKey)
+		if err != nil {
+			return nil, err
+		}
+		defer object.Close()
+		return embedder.EmbedReader(ctx, object)
+	}
+	return embedder.EmbedSource(ctx, imageURL)
+}
+
+func firstImageAttachment(attachments []domain.Attachment) *imageToolSource {
+	for _, attachment := range attachments {
+		if attachment.Type != "image" {
+			continue
+		}
+		fileID := strings.TrimSpace(attachment.FileID)
+		if fileID == "" {
+			fileID = strings.TrimSpace(attachment.AttachmentID)
+		}
+		source := imageToolSource{
+			FileID:    fileID,
+			ObjectKey: strings.TrimSpace(attachment.ObjectKey),
+			ImageURL:  strings.TrimSpace(attachment.URL),
+		}
+		if strings.HasPrefix(source.ImageURL, "/api/v1/files/") {
+			source.FileID = strings.TrimPrefix(source.ImageURL, "/api/v1/files/")
+			source.ImageURL = ""
+		}
+		if source.FileID != "" || source.ObjectKey != "" || source.ImageURL != "" {
+			return &source
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) toolSearchProducts(ctx context.Context, run domain.AgentRun, raw json.RawMessage) toolObservation {
@@ -336,6 +537,259 @@ func (r *Runtime) toolCheckout(ctx context.Context, accountID string) toolObserv
 	}
 }
 
+func (r *Runtime) toolListOrders(ctx context.Context, accountID string, raw json.RawMessage) toolObservation {
+	var args struct {
+		Status string `json:"status"`
+		Limit  int    `json:"limit"`
+	}
+	_ = json.Unmarshal(raw, &args)
+	status := strings.TrimSpace(args.Status)
+	limit := clampLimit(args.Limit, 5, 10)
+	orders := filterOrdersByStatus(r.store.ListUserOrders(ctx, accountID), status)
+	if len(orders) > limit {
+		orders = orders[:limit]
+	}
+	return toolObservation{
+		Tool:    toolListOrders,
+		OK:      true,
+		Message: fmt.Sprintf("查询到 %d 个订单", len(orders)),
+		Result:  map[string]any{"items": compactOrders(orders), "status": status},
+		Orders:  orders,
+	}
+}
+
+func (r *Runtime) toolGetOrder(ctx context.Context, accountID string, raw json.RawMessage) toolObservation {
+	var args struct {
+		OrderID string `json:"order_id"`
+	}
+	_ = json.Unmarshal(raw, &args)
+	args.OrderID = strings.TrimSpace(args.OrderID)
+	if args.OrderID == "" {
+		return toolObservation{Tool: toolGetOrder, Message: "order_id 不能为空；如果用户没有提供订单号，请先调用 list_orders"}
+	}
+	order, ok := r.store.GetOrder(ctx, accountID, args.OrderID)
+	if !ok {
+		return toolObservation{Tool: toolGetOrder, Message: "订单不存在或不属于当前用户"}
+	}
+	return toolObservation{
+		Tool:    toolGetOrder,
+		OK:      true,
+		Message: "已查询到订单",
+		Result:  map[string]any{"order": compactOrder(order)},
+		Orders:  []domain.Order{order},
+	}
+}
+
+func (r *Runtime) toolPayOrder(ctx context.Context, accountID string, raw json.RawMessage) toolObservation {
+	var args struct {
+		OrderID string `json:"order_id"`
+		Method  string `json:"method"`
+	}
+	_ = json.Unmarshal(raw, &args)
+	args.OrderID = strings.TrimSpace(args.OrderID)
+	args.Method = strings.TrimSpace(args.Method)
+	if args.OrderID == "" {
+		return toolObservation{Tool: toolPayOrder, Message: "order_id 不能为空；支付前必须明确订单"}
+	}
+	order, payment, ok := r.store.PayOrder(ctx, accountID, args.OrderID, args.Method)
+	if !ok {
+		return toolObservation{Tool: toolPayOrder, Message: "订单不可支付，可能已支付、取消或超时关闭"}
+	}
+	return toolObservation{
+		Tool:    toolPayOrder,
+		OK:      true,
+		Message: "支付成功，订单已进入待发货",
+		Result:  map[string]any{"order": compactOrder(order), "payment": compactPayment(payment)},
+		Orders:  []domain.Order{order},
+	}
+}
+
+func (r *Runtime) toolCancelOrder(ctx context.Context, accountID string, raw json.RawMessage) toolObservation {
+	var args struct {
+		OrderID string `json:"order_id"`
+		Reason  string `json:"reason"`
+	}
+	_ = json.Unmarshal(raw, &args)
+	args.OrderID = strings.TrimSpace(args.OrderID)
+	if args.OrderID == "" {
+		return toolObservation{Tool: toolCancelOrder, Message: "order_id 不能为空；取消订单前必须明确订单"}
+	}
+	order, ok := r.store.CancelOrder(ctx, accountID, args.OrderID, args.Reason)
+	if !ok {
+		return toolObservation{Tool: toolCancelOrder, Message: "订单不可取消，只有待支付订单可以取消"}
+	}
+	return toolObservation{
+		Tool:    toolCancelOrder,
+		OK:      true,
+		Message: "订单已取消",
+		Result:  map[string]any{"order": compactOrder(order)},
+		Orders:  []domain.Order{order},
+	}
+}
+
+func (r *Runtime) toolConfirmReceipt(ctx context.Context, accountID string, raw json.RawMessage) toolObservation {
+	var args struct {
+		OrderID string `json:"order_id"`
+	}
+	_ = json.Unmarshal(raw, &args)
+	args.OrderID = strings.TrimSpace(args.OrderID)
+	if args.OrderID == "" {
+		return toolObservation{Tool: toolConfirmReceipt, Message: "order_id 不能为空；确认收货前必须明确订单"}
+	}
+	order, ok := r.store.ConfirmReceipt(ctx, accountID, args.OrderID)
+	if !ok {
+		return toolObservation{Tool: toolConfirmReceipt, Message: "订单不可确认收货，只有已发货订单可以确认"}
+	}
+	return toolObservation{
+		Tool:    toolConfirmReceipt,
+		OK:      true,
+		Message: "已确认收货，订单已完成",
+		Result:  map[string]any{"order": compactOrder(order)},
+		Orders:  []domain.Order{order},
+	}
+}
+
+func (r *Runtime) toolPreviewDiscount(ctx context.Context, accountID string) toolObservation {
+	preview := r.store.PreviewCartDiscount(ctx, accountID)
+	return toolObservation{
+		Tool:    toolPreviewDiscount,
+		OK:      true,
+		Message: fmt.Sprintf("当前可优惠 %s，应付 %s", preview.DiscountAmount, preview.PayAmount),
+		Result:  map[string]any{"discount": preview},
+	}
+}
+
+func (r *Runtime) toolListCoupons(ctx context.Context, accountID string, raw json.RawMessage) toolObservation {
+	var args struct {
+		Limit int `json:"limit"`
+	}
+	_ = json.Unmarshal(raw, &args)
+	limit := clampLimit(args.Limit, 5, 20)
+	coupons := r.store.ListCoupons(ctx, accountID)
+	if len(coupons) > limit {
+		coupons = coupons[:limit]
+	}
+	return toolObservation{
+		Tool:    toolListCoupons,
+		OK:      true,
+		Message: fmt.Sprintf("查询到 %d 张可领取优惠券", len(coupons)),
+		Result:  map[string]any{"items": compactCoupons(coupons)},
+	}
+}
+
+func (r *Runtime) toolListUserCoupons(ctx context.Context, accountID string, raw json.RawMessage) toolObservation {
+	var args struct {
+		Status string `json:"status"`
+		Limit  int    `json:"limit"`
+	}
+	_ = json.Unmarshal(raw, &args)
+	status := strings.TrimSpace(args.Status)
+	limit := clampLimit(args.Limit, 5, 20)
+	coupons := filterUserCouponsByStatus(r.store.ListUserCoupons(ctx, accountID), status)
+	if len(coupons) > limit {
+		coupons = coupons[:limit]
+	}
+	return toolObservation{
+		Tool:    toolListUserCoupons,
+		OK:      true,
+		Message: fmt.Sprintf("查询到 %d 张我的优惠券", len(coupons)),
+		Result:  map[string]any{"items": compactUserCoupons(coupons), "status": status},
+	}
+}
+
+func (r *Runtime) toolClaimCoupon(ctx context.Context, accountID string, raw json.RawMessage) toolObservation {
+	var args struct {
+		CouponID string `json:"coupon_id"`
+	}
+	_ = json.Unmarshal(raw, &args)
+	args.CouponID = strings.TrimSpace(args.CouponID)
+	if args.CouponID == "" {
+		return toolObservation{Tool: toolClaimCoupon, Message: "coupon_id 不能为空；领券前必须明确优惠券"}
+	}
+	coupon, ok := r.store.ClaimCoupon(ctx, accountID, args.CouponID)
+	if !ok {
+		return toolObservation{Tool: toolClaimCoupon, Message: "领券失败，可能已领取、已过期或库存不足"}
+	}
+	return toolObservation{
+		Tool:    toolClaimCoupon,
+		OK:      true,
+		Message: "优惠券领取成功",
+		Result:  map[string]any{"coupon": compactUserCoupon(coupon)},
+	}
+}
+
+func (r *Runtime) toolListPromotions(ctx context.Context, raw json.RawMessage) toolObservation {
+	var args struct {
+		MerchantID string `json:"merchant_id"`
+		Limit      int    `json:"limit"`
+	}
+	_ = json.Unmarshal(raw, &args)
+	limit := clampLimit(args.Limit, 5, 20)
+	promotions := r.store.ListPromotions(ctx, strings.TrimSpace(args.MerchantID))
+	if len(promotions) > limit {
+		promotions = promotions[:limit]
+	}
+	return toolObservation{
+		Tool:    toolListPromotions,
+		OK:      true,
+		Message: fmt.Sprintf("查询到 %d 个促销活动", len(promotions)),
+		Result:  map[string]any{"items": compactPromotions(promotions)},
+	}
+}
+
+func (r *Runtime) toolListProductReviews(ctx context.Context, raw json.RawMessage) toolObservation {
+	var args struct {
+		ProductID string `json:"product_id"`
+		Limit     int    `json:"limit"`
+	}
+	_ = json.Unmarshal(raw, &args)
+	args.ProductID = strings.TrimSpace(args.ProductID)
+	if args.ProductID == "" {
+		return toolObservation{Tool: toolListReviews, Message: "product_id 不能为空；查询评价前必须明确商品"}
+	}
+	limit := clampLimit(args.Limit, 5, 20)
+	reviews := r.store.ListProductReviews(ctx, args.ProductID)
+	if len(reviews) > limit {
+		reviews = reviews[:limit]
+	}
+	return toolObservation{
+		Tool:    toolListReviews,
+		OK:      true,
+		Message: fmt.Sprintf("查询到 %d 条可见评价", len(reviews)),
+		Result:  map[string]any{"items": compactReviews(reviews), "summary": reviewSummary(reviews)},
+	}
+}
+
+func (r *Runtime) toolCreateProductReview(ctx context.Context, accountID string, raw json.RawMessage) toolObservation {
+	var args struct {
+		OrderID     string   `json:"order_id"`
+		OrderItemID string   `json:"order_item_id"`
+		Rating      int      `json:"rating"`
+		Content     string   `json:"content"`
+		Tags        []string `json:"tags"`
+	}
+	_ = json.Unmarshal(raw, &args)
+	args.OrderID = strings.TrimSpace(args.OrderID)
+	args.OrderItemID = strings.TrimSpace(args.OrderItemID)
+	if args.OrderID == "" || args.OrderItemID == "" {
+		return toolObservation{Tool: toolCreateReview, Message: "order_id 和 order_item_id 不能为空；评价前必须明确已完成订单项"}
+	}
+	review, ok := r.store.CreateProductReview(ctx, accountID, args.OrderID, args.OrderItemID, domain.ProductReviewInput{
+		Rating:  args.Rating,
+		Content: args.Content,
+		Tags:    args.Tags,
+	})
+	if !ok {
+		return toolObservation{Tool: toolCreateReview, Message: "评价失败，只有已完成订单项可评价且不可重复评价"}
+	}
+	return toolObservation{
+		Tool:    toolCreateReview,
+		OK:      true,
+		Message: "评价已发布",
+		Result:  map[string]any{"review": compactReview(review)},
+	}
+}
+
 func parseReactAction(content string) (reactAction, error) {
 	var action reactAction
 	if err := json.Unmarshal([]byte(extractJSONObject(content)), &action); err != nil {
@@ -397,18 +851,214 @@ func compactCart(cart domain.Cart) map[string]any {
 func compactOrders(orders []domain.Order) []map[string]any {
 	items := make([]map[string]any, 0, len(orders))
 	for _, order := range orders {
-		items = append(items, map[string]any{
-			"order_id":            order.OrderID,
-			"order_no":            order.OrderNo,
-			"merchant_id":         order.MerchantID,
-			"merchant_name":       order.MerchantName,
-			"status":              order.Status,
-			"pay_amount":          order.PayAmount,
-			"payment_deadline_at": order.PaymentDeadlineAt,
-			"item_count":          len(order.Items),
-		})
+		items = append(items, compactOrder(order))
 	}
 	return items
+}
+
+func compactOrder(order domain.Order) map[string]any {
+	return map[string]any{
+		"order_id":            order.OrderID,
+		"order_no":            order.OrderNo,
+		"merchant_id":         order.MerchantID,
+		"merchant_name":       order.MerchantName,
+		"status":              order.Status,
+		"total_amount":        order.TotalAmount,
+		"discount_amount":     order.DiscountAmount,
+		"pay_amount":          order.PayAmount,
+		"payment_deadline_at": order.PaymentDeadlineAt,
+		"paid_at":             order.PaidAt,
+		"closed_at":           order.ClosedAt,
+		"completed_at":        order.CompletedAt,
+		"cancel_reason":       order.CancelReason,
+		"created_at":          order.CreatedAt,
+		"item_count":          len(order.Items),
+		"items":               compactOrderItems(order.Items),
+	}
+}
+
+func compactOrderItems(items []domain.OrderItem) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, map[string]any{
+			"order_item_id": item.OrderItemID,
+			"product_id":    item.ProductID,
+			"sku_id":        item.SkuID,
+			"name":          item.Name,
+			"price":         item.Price,
+			"quantity":      item.Quantity,
+			"merchant_id":   item.MerchantID,
+		})
+	}
+	return out
+}
+
+func compactPayment(payment domain.Payment) map[string]any {
+	return map[string]any{
+		"payment_id":     payment.PaymentID,
+		"order_id":       payment.OrderID,
+		"amount":         payment.Amount,
+		"status":         payment.Status,
+		"method":         payment.Method,
+		"transaction_no": payment.TransactionNo,
+		"paid_at":        payment.PaidAt,
+	}
+}
+
+func compactCoupons(coupons []domain.Coupon) []map[string]any {
+	out := make([]map[string]any, 0, len(coupons))
+	for _, coupon := range coupons {
+		out = append(out, compactCoupon(coupon))
+	}
+	return out
+}
+
+func compactCoupon(coupon domain.Coupon) map[string]any {
+	return map[string]any{
+		"coupon_id":        coupon.CouponID,
+		"name":             coupon.Name,
+		"scope":            coupon.Scope,
+		"merchant_id":      coupon.MerchantID,
+		"type":             coupon.Type,
+		"threshold_amount": coupon.ThresholdAmount,
+		"discount_amount":  coupon.DiscountAmount,
+		"claimed_count":    coupon.ClaimedCount,
+		"total_count":      coupon.TotalCount,
+		"per_user_limit":   coupon.PerUserLimit,
+		"start_at":         coupon.StartAt,
+		"end_at":           coupon.EndAt,
+		"status":           coupon.Status,
+	}
+}
+
+func compactUserCoupons(coupons []domain.UserCoupon) []map[string]any {
+	out := make([]map[string]any, 0, len(coupons))
+	for _, coupon := range coupons {
+		out = append(out, compactUserCoupon(coupon))
+	}
+	return out
+}
+
+func compactUserCoupon(coupon domain.UserCoupon) map[string]any {
+	return map[string]any{
+		"user_coupon_id": coupon.UserCouponID,
+		"coupon_id":      coupon.CouponID,
+		"status":         coupon.Status,
+		"order_id":       coupon.OrderID,
+		"claimed_at":     coupon.ClaimedAt,
+		"used_at":        coupon.UsedAt,
+		"coupon":         compactCoupon(coupon.Coupon),
+	}
+}
+
+func compactPromotions(promotions []domain.PromotionRule) []map[string]any {
+	out := make([]map[string]any, 0, len(promotions))
+	for _, promotion := range promotions {
+		out = append(out, map[string]any{
+			"promotion_id":     promotion.PromotionID,
+			"name":             promotion.Name,
+			"scope":            promotion.Scope,
+			"merchant_id":      promotion.MerchantID,
+			"product_id":       promotion.ProductID,
+			"category_id":      promotion.CategoryID,
+			"type":             promotion.Type,
+			"threshold_amount": promotion.ThresholdAmount,
+			"discount_amount":  promotion.DiscountAmount,
+			"discount_rate":    promotion.DiscountRate,
+			"stackable":        promotion.Stackable,
+			"start_at":         promotion.StartAt,
+			"end_at":           promotion.EndAt,
+			"status":           promotion.Status,
+		})
+	}
+	return out
+}
+
+func compactReviews(reviews []domain.ProductReview) []map[string]any {
+	out := make([]map[string]any, 0, len(reviews))
+	for _, review := range reviews {
+		out = append(out, compactReview(review))
+	}
+	return out
+}
+
+func compactReview(review domain.ProductReview) map[string]any {
+	return map[string]any{
+		"review_id":           review.ReviewID,
+		"order_id":            review.OrderID,
+		"order_item_id":       review.OrderItemID,
+		"product_id":          review.ProductID,
+		"sku_id":              review.SkuID,
+		"username":            review.Username,
+		"rating":              review.Rating,
+		"content":             truncateRunes(review.Content, 260),
+		"tags":                review.Tags,
+		"status":              review.Status,
+		"merchant_reply":      truncateRunes(review.MerchantReply, 220),
+		"merchant_replied_at": review.MerchantRepliedAt,
+		"created_at":          review.CreatedAt,
+	}
+}
+
+func reviewSummary(reviews []domain.ProductReview) map[string]any {
+	if len(reviews) == 0 {
+		return map[string]any{"count": 0, "average_rating": 0}
+	}
+	total := 0
+	tagCounts := map[string]int{}
+	for _, review := range reviews {
+		total += review.Rating
+		for _, tag := range review.Tags {
+			tag = strings.TrimSpace(tag)
+			if tag != "" {
+				tagCounts[tag]++
+			}
+		}
+	}
+	tags := make([]string, 0, len(tagCounts))
+	for tag := range tagCounts {
+		tags = append(tags, tag)
+	}
+	sort.Slice(tags, func(i, j int) bool {
+		if tagCounts[tags[i]] == tagCounts[tags[j]] {
+			return tags[i] < tags[j]
+		}
+		return tagCounts[tags[i]] > tagCounts[tags[j]]
+	})
+	if len(tags) > 5 {
+		tags = tags[:5]
+	}
+	return map[string]any{
+		"count":          len(reviews),
+		"average_rating": float64(total) / float64(len(reviews)),
+		"top_tags":       tags,
+	}
+}
+
+func filterOrdersByStatus(orders []domain.Order, status string) []domain.Order {
+	if status == "" {
+		return orders
+	}
+	out := make([]domain.Order, 0, len(orders))
+	for _, order := range orders {
+		if order.Status == status {
+			out = append(out, order)
+		}
+	}
+	return out
+}
+
+func filterUserCouponsByStatus(coupons []domain.UserCoupon, status string) []domain.UserCoupon {
+	if status == "" {
+		return coupons
+	}
+	out := make([]domain.UserCoupon, 0, len(coupons))
+	for _, coupon := range coupons {
+		if coupon.Status == status {
+			out = append(out, coupon)
+		}
+	}
+	return out
 }
 
 func clampLimit(value int, fallback int, max int) int {
@@ -564,14 +1214,15 @@ func (r *Runtime) classifyProductSearchRelevanceByLLM(ctx context.Context, run d
 	}
 	startedAt := time.Now()
 	temperature := 0.0
-	content, err := r.llm.Complete(ctx, r.llm.SmallModel(), messages, temperature)
+	model := r.modelForRole(ctx, modelRoleProductFilter, r.llm.SmallModel())
+	content, err := r.llm.Complete(ctx, model, messages, temperature)
 	if strings.TrimSpace(run.RunID) != "" {
 		extra := map[string]any{"candidate_count": len(candidates)}
 		if err == nil {
 			extra["raw_length"] = len([]rune(content))
 			extra["raw_output"] = content
 		}
-		r.traceLLM(ctx, run, "tools.search_products.filter", r.llm.SmallModel(), startedAt, err, llmPromptMetadata(messages, temperature, extra))
+		r.traceLLM(ctx, run, "tools.search_products.filter", model, startedAt, err, llmPromptMetadata(messages, temperature, extra))
 	}
 	if err != nil {
 		r.logger.Warn("product relevance llm fallback", "run_id", run.RunID, "error", err)

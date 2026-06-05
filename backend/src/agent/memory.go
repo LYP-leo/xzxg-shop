@@ -64,13 +64,14 @@ func (r *Runtime) buildConversationMemory(ctx context.Context, run domain.AgentR
 		{Role: "system", Content: r.stringConfig(ctx, "agent.prompt.memory_retrieval", configcenter.DefaultMemoryRetrievalPrompt)},
 		{Role: "user", Content: r.memoryRetrievalUserPrompt(ctx, query, records)},
 	}
-	content, err := r.llm.Complete(ctx, r.llm.SmallModel(), messages, temperature)
+	model := r.modelForRole(ctx, modelRoleMemoryRetrieval, r.llm.SmallModel())
+	content, err := r.llm.Complete(ctx, model, messages, temperature)
 	if err != nil {
 		r.logger.Warn("memory retrieval fallback", "run_id", run.RunID, "error", err)
-		r.traceLLM(ctx, run, "memory.retrieval", r.llm.SmallModel(), startedAt, err, llmPromptMetadata(messages, temperature, map[string]any{"candidate_count": len(records)}))
+		r.traceLLM(ctx, run, "memory.retrieval", model, startedAt, err, llmPromptMetadata(messages, temperature, map[string]any{"candidate_count": len(records)}))
 		return r.heuristicConversationMemory(query, memory)
 	}
-	r.traceLLM(ctx, run, "memory.retrieval", r.llm.SmallModel(), startedAt, nil, llmPromptMetadata(messages, temperature, map[string]any{"candidate_count": len(records), "raw_length": len([]rune(content))}))
+	r.traceLLM(ctx, run, "memory.retrieval", model, startedAt, nil, llmPromptMetadata(messages, temperature, map[string]any{"candidate_count": len(records), "raw_length": len([]rune(content))}))
 
 	var parsed memoryRetrievalOutput
 	if err := json.Unmarshal([]byte(extractJSONObject(content)), &parsed); err != nil {
@@ -172,13 +173,14 @@ func (r *Runtime) UpdateSessionSummaryAfterRun(ctx context.Context, run domain.A
 		{Role: "system", Content: r.stringConfig(ctx, "agent.prompt.session_summary", configcenter.DefaultSessionSummaryPrompt)},
 		{Role: "user", Content: fmt.Sprintf("旧摘要：%s\n\n最新用户问题：%s\n\n最新助手回答：%s", session.Summary, message.Content, truncateRunes(finalAnswer, 1800))},
 	}
-	content, err := r.llm.Complete(ctx, r.llm.SmallModel(), messages, temperature)
+	model := r.modelForRole(ctx, modelRoleMemorySummary, r.llm.SmallModel())
+	content, err := r.llm.Complete(ctx, model, messages, temperature)
 	if err != nil {
 		r.logger.Warn("session summary update failed", "run_id", run.RunID, "error", err)
-		r.traceLLM(ctx, run, "memory.summary", r.llm.SmallModel(), startedAt, err, llmPromptMetadata(messages, temperature, nil))
+		r.traceLLM(ctx, run, "memory.summary", model, startedAt, err, llmPromptMetadata(messages, temperature, nil))
 		return
 	}
-	r.traceLLM(ctx, run, "memory.summary", r.llm.SmallModel(), startedAt, nil, llmPromptMetadata(messages, temperature, map[string]any{"raw_length": len([]rune(content))}))
+	r.traceLLM(ctx, run, "memory.summary", model, startedAt, nil, llmPromptMetadata(messages, temperature, map[string]any{"raw_length": len([]rune(content))}))
 	var parsed struct {
 		Summary string `json:"summary"`
 	}

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/LYP-leo/xzxg-shop/backend/src/configcenter"
@@ -20,16 +21,55 @@ func TestAnswerModelForPlanUsesLargeForReactRoutes(t *testing.T) {
 	cases := []runPlan{
 		{Route: "guide", Intent: "product_deep"},
 		{Route: "guide", Intent: "category_shop_no_brand"},
-		{Route: "non_guide", Intent: "non_guide"},
 	}
 	for _, tc := range cases {
-		if got := runtime.answerModelForPlan(tc); got != "large" {
+		if got := runtime.answerModelForPlan(context.Background(), tc); got != "large" {
 			t.Fatalf("answerModelForPlan(%+v) = %q, want large", tc, got)
 		}
 	}
 }
 
-func TestAnswerModelForPlanKeepsSmallForFastProduct(t *testing.T) {
+func TestNormalizeQueryWithImageAttachmentRewritesGenericQuery(t *testing.T) {
+	got := normalizeQueryWithAttachments("???", []domain.Attachment{
+		{AttachmentID: "file_abc", Type: "image", URL: "/api/v1/files/file_abc"},
+	})
+	want := "找同款 [附件图片链接:/api/v1/files/file_abc]"
+	if got != want {
+		t.Fatalf("normalizeQueryWithAttachments = %q, want %q", got, want)
+	}
+}
+
+func TestNormalizeQueryWithImageAttachmentAppendsSpecificQuery(t *testing.T) {
+	got := normalizeQueryWithAttachments("这个适合通勤吗", []domain.Attachment{
+		{FileID: "file_xyz", Type: "image"},
+	})
+	for _, want := range []string{"这个适合通勤吗", "[附件图片链接:/api/v1/files/file_xyz]", "search_image_products"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("normalized query missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestAnswerModelForPlanUsesConfiguredRoleModel(t *testing.T) {
+	center := configcenter.NewMemoryCenter(configcenter.DefaultConfigs(""))
+	_, _ = center.Upsert(context.Background(), domain.AppConfigInput{
+		ConfigKey:   "ai.model.react_guide",
+		ConfigValue: "configured-guide",
+		ValueType:   "string",
+		Domain:      "app",
+	})
+	runtime := NewRuntime(nil, center, slog.Default(), RuntimeConfig{
+		Models: ModelConfig{
+			SmallModel: "small",
+			LargeModel: "large",
+		},
+	})
+	if got := runtime.answerModelForPlan(context.Background(), runPlan{Route: "guide", Intent: "product_deep"}); got != "configured-guide" {
+		t.Fatalf("answerModelForPlan configured role = %q, want configured-guide", got)
+	}
+}
+
+func TestAnswerModelForPlanKeepsSmallForToolIntents(t *testing.T) {
 	runtime := NewRuntime(nil, nil, slog.Default(), RuntimeConfig{
 		Models: ModelConfig{
 			SmallModel: "small",
@@ -38,13 +78,44 @@ func TestAnswerModelForPlanKeepsSmallForFastProduct(t *testing.T) {
 	})
 
 	cases := []runPlan{
-		{Route: "fast_product", Intent: "cart_add"},
-		{Route: "fast_product", Intent: "checkout_confirm"},
+		{Route: "non_guide", Intent: "cart_add"},
+		{Route: "non_guide", Intent: "checkout_confirm"},
 	}
 	for _, tc := range cases {
-		if got := runtime.answerModelForPlan(tc); got != "small" {
+		if got := runtime.answerModelForPlan(context.Background(), tc); got != "small" {
 			t.Fatalf("answerModelForPlan(%+v) = %q, want small", tc, got)
 		}
+	}
+}
+
+func TestNormalizeNonGuideIntentClassifiesServiceDomains(t *testing.T) {
+	cases := []struct {
+		query string
+		want  string
+	}{
+		{"我最近的订单到哪了", "order_service"},
+		{"我有哪些优惠券可以用", "coupon_service"},
+		{"这个商品差评主要说什么", "review_service"},
+		{"退货怎么退", "after_sales_service"},
+		{"打开购物车页面", "navigation_service"},
+		{"我的收货地址在哪里改", "account_service"},
+		{"你好", "chitchat"},
+	}
+	for _, tc := range cases {
+		if got := normalizeNonGuideIntent(tc.query, ""); got != tc.want {
+			t.Fatalf("normalizeNonGuideIntent(%q) = %q, want %q", tc.query, got, tc.want)
+		}
+	}
+}
+
+func TestNavigationPolicyDisablesTools(t *testing.T) {
+	runtime := &Runtime{configs: configcenter.NewMemoryCenter(configcenter.DefaultConfigs(""))}
+	plan := runPlan{Route: "non_guide", Intent: "navigation_service"}
+	if runtime.toolAllowedForPlan(context.Background(), plan, toolGetCart) {
+		t.Fatalf("navigation_service should not allow tools")
+	}
+	if !runtime.skillAllowedForPlan(context.Background(), plan, "navigate_cart") {
+		t.Fatalf("navigation_service should allow navigate_cart")
 	}
 }
 

@@ -57,6 +57,9 @@ func (r *Runtime) toolFocusPrompt(ctx context.Context, plan runPlan) string {
 			"调用 search_products 时，query 优先使用品牌/产品线/核心品类/明确型号，保持短而稳定；写代码、做演示、办公、通勤、送礼等使用场景不要塞进首次检索 query。",
 		)
 	}
+	if containsString(policy.Tools, toolSearchImage) {
+		lines = append(lines, "用户上传图片、拍照找货、图片找同款、识图时，优先调用 search_image_products；不要声称 VLM 未配置。")
+	}
 	if containsString(policy.Tools, toolSearchKnowledge) {
 		lines = append(lines, "平台规则、选购知识、材料解释、售后边界，必要时调用 search_knowledge。")
 	}
@@ -77,7 +80,13 @@ func (r *Runtime) toolFocusPrompt(ctx context.Context, plan runPlan) string {
 }
 
 func (r *Runtime) finalOutputRulesPrompt(ctx context.Context, plan runPlan) string {
-	rules := strings.TrimSpace(r.stringConfig(ctx, "agent.prompt.final_output_rules", configcenter.DefaultFinalOutputRulesPrompt))
+	rules := stripNonGuideFinalOutputRules(r.stringConfig(ctx, "agent.prompt.final_output_rules", configcenter.DefaultFinalOutputRulesPrompt))
+	if plan.Route == "non_guide" {
+		nonGuideRules := strings.TrimSpace(r.stringConfig(ctx, "agent.prompt.non_guide_final_output_rules", configcenter.DefaultNonGuideFinalOutputRulesPrompt))
+		if nonGuideRules != "" {
+			rules = strings.TrimSpace(rules + "\n" + nonGuideRules)
+		}
+	}
 	policy := r.policyForPlan(ctx, plan)
 	extras := make([]string, 0, 2)
 	if containsString(policy.Tools, toolSearchKnowledge) {
@@ -86,10 +95,42 @@ func (r *Runtime) finalOutputRulesPrompt(ctx context.Context, plan runPlan) stri
 	if containsString(policy.Tools, toolSearchProducts) {
 		extras = append(extras, "商品检索结果如果没有可靠命中，不得把候选商品当作推荐或挂品；只能用用户能理解的话说明当前商品库暂时没有找到符合条件的商品。")
 	}
+	if containsString(policy.Tools, toolSearchImage) {
+		extras = append(extras, "图片检索结果只能说明“相似商品/同款候选”，不要声称已经识别出图片中真实品牌或型号；没有命中时请提示用户补充文字线索。")
+	}
 	if len(extras) > 0 {
 		rules = strings.TrimSpace(rules + "\n" + plainListText(extras))
 	}
 	return rules
+}
+
+func stripNonGuideFinalOutputRules(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	lines := strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n")
+	out := make([]string, 0, len(lines))
+	skip := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "- 非导购服务结果") {
+			skip = true
+			continue
+		}
+		if strings.HasPrefix(trimmed, "- 结构化标签中的数据必须来自") {
+			continue
+		}
+		if skip {
+			if strings.HasPrefix(trimmed, "- ") && !strings.HasPrefix(trimmed, "- <") {
+				skip = false
+			} else {
+				continue
+			}
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
 func (r *Runtime) toolAllowedForPlan(ctx context.Context, plan runPlan, tool string) bool {
@@ -99,7 +140,7 @@ func (r *Runtime) toolAllowedForPlan(ctx context.Context, plan runPlan, tool str
 	}
 	policy := r.policyForPlan(ctx, plan)
 	if len(policy.Tools) == 0 {
-		return true
+		return false
 	}
 	for _, item := range policy.Tools {
 		if item == tool {
@@ -228,12 +269,25 @@ func containsString(items []string, target string) bool {
 func toolDescriptions() map[string]string {
 	return map[string]string{
 		toolSearchProducts:  `搜索当前商品库，用于查找可推荐商品、价格、库存、卖点和风险；只允许推荐 relevance_status=ok 的商品。参数 {"query":"正向商品关键词，2-4个词，不要包含否定词","limit":5,"constraints":{"brands":[],"terms":[],"categories":[]},"negative":{"brands":[],"terms":[],"categories":[]}}。用户说“不要/不买/排除/非 某品牌或属性”时，query 只放正向需求，把被排除项放到 negative。`,
+		toolSearchImage:     `按图片向量检索相似商品，用于拍照找货、图片找同款、识图搜商品。参数 {"file_id":"上传文件ID，可为空","object_key":"MinIO对象key，可为空","image_url":"图片URL，可为空","limit":5}；如果本轮用户已上传图片，参数可只传 {"limit":5}。`,
 		toolSearchKnowledge: `搜索知识库资料，用于查找选购依据、场景清单、平台规则、材料解释和售后边界。参数 {"query":"需要查证的问题","limit":3}。`,
 		toolGetCart:         `读取当前用户购物车，用于确认 cart_item_id、选中状态和数量。参数 {}。`,
 		toolAddCartItem:     `加入购物车；必须已有明确 product_id。参数 {"product_id":"商品ID","sku_id":"SKU ID，可为空","quantity":1}。`,
 		toolUpdateCartItem:  `修改购物车项数量或选中状态；必须已有 cart_item_id。参数 {"cart_item_id":"购物车项ID","quantity":2,"selected":true}。`,
 		toolDeleteCartItem:  `删除购物车项；必须已有 cart_item_id。参数 {"cart_item_id":"购物车项ID"}。`,
 		toolCheckout:        `基于当前选中购物车项创建待支付订单。参数 {}。`,
+		toolListOrders:      `查询当前用户订单列表，用于订单、物流、售后前置定位。参数 {"status":"可选订单状态","limit":5}。`,
+		toolGetOrder:        `查询当前用户单个订单详情。参数 {"order_id":"订单ID"}；用户未提供订单ID时先调用 list_orders。`,
+		toolPayOrder:        `支付待支付订单，推进本地虚拟支付状态。参数 {"order_id":"订单ID","method":"mock"}；必须明确订单ID。`,
+		toolCancelOrder:     `取消当前用户待支付订单。参数 {"order_id":"订单ID","reason":"取消原因"}；必须明确订单ID。`,
+		toolConfirmReceipt:  `确认当前用户已发货订单收货。参数 {"order_id":"订单ID"}；必须明确订单ID。`,
+		toolPreviewDiscount: `读取当前购物车优惠试算结果。参数 {}。`,
+		toolListCoupons:     `查询当前用户可领取优惠券。参数 {"limit":5}。`,
+		toolListUserCoupons: `查询当前用户已领取优惠券。参数 {"status":"可选状态","limit":5}。`,
+		toolClaimCoupon:     `领取优惠券。参数 {"coupon_id":"优惠券ID"}；必须明确 coupon_id。`,
+		toolListPromotions:  `查询平台或商家促销活动。参数 {"merchant_id":"可选商家ID","limit":5}。`,
+		toolListReviews:     `查询商品可见评价并返回评分摘要。参数 {"product_id":"商品ID","limit":5}；必须明确 product_id。`,
+		toolCreateReview:    `对已完成订单项发布评价。参数 {"order_id":"订单ID","order_item_id":"订单项ID","rating":5,"content":"评价内容","tags":[]}；必须明确订单项。`,
 	}
 }
 

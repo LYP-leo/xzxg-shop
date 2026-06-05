@@ -231,6 +231,7 @@ Agent ReAct 最后一轮不再使用 `{"type":"final","text":"..."}` 包装最�
 - `<item>product_id</item>` 会被后端校验，只允许工具返回过的商品 ID。
 - 合法 `<item>` 会转换为 `content_delta/product_card`，标签本身不会透传给前端。
 - `<buyer>`、Markdown fence 包裹等内部格式会被过滤。
+- 非导购服务块可以在 `<final>` 内使用后端内部标签，例如 `<coupon_list>{...}</coupon_list>`；这些标签由后端解析成 `block_delta`，不会透传给客户端。
 
 ```json
 {
@@ -344,13 +345,17 @@ Agent ReAct 最后一轮不再使用 `{"type":"final","text":"..."}` 包装最�
 - 前端如果选择解析 `<item>`，只按商品 ID 读取，不要从文本周边推断商品名、价格或库存。
 - 推荐优先使用结构化 `product_refs` block；`<item>` 只作为文本中挂品位置提示或兼容参考。
 
-前端建议处理：
+后端处理：
 
-1. 扫描 `text_delta` 累积文本中的 `<item>{productId}</item>`。
-2. 提取 `productId` 后去重。
-3. 按 `productId` 调商品详情接口或批量详情接口渲染卡片。
-4. 展示给用户的正文中可以隐藏 `<item>` 标签本身，只保留自然语言。
-5. 如果同一轮同时收到 `product_refs` 和 `<item>`，以 `product_refs.product_ids` 为准，`<item>` 只补充排序或挂载位置。
+1. 扫描模型输出中的 `<item>{productId}</item>`。
+2. 校验 `productId` 必须来自本轮工具 observation 且相关性通过。
+3. 合法商品转成 `content_delta/product_card`，用于在正文中间插入商品卡。
+4. 标签本身和非法商品 ID 不透传给客户端。
+
+客户端处理：
+
+- 不解析 `<item>`，只消费后端发出的 `content_delta/product_card` 或 `block_delta/product_refs`。
+- 如果未来客户端收到未过滤的 `<item>` 原文，应当按普通文本忽略或上报协议异常，不能自行从文本推断商品。
 
 ### citation_refs
 
@@ -466,28 +471,52 @@ Agent ReAct 最后一轮不再使用 `{"type":"final","text":"..."}` 包装最�
 }
 ```
 
-## 计划扩展 Block
+### 非导购服务 Block
 
-为了支持后端 v3 的优惠、评价、非导购链路，建议新增以下 block。后端接入前，前端先按类型设计渲染兜底。
+用于优惠、评价、售后、导航等非导购链路。模型内部可以在 `<final>` 中输出 XML-like 标签，后端解析成 `block_delta`；客户端只消费 `block_delta`，不解析标签。
+
+通用字段：
+
+```ts
+type ServiceBlock = {
+  type: 'coupon_list' | 'discount_preview' | 'review_summary' | 'after_sales_policy' | 'navigation_action';
+  title?: string;
+  message?: string;
+  items?: Array<Record<string, unknown>>;
+  summary?: Record<string, unknown>;
+  action?: Record<string, unknown>;
+}
+```
+
+后端内部标签约定：
+
+- `<coupon_list>{json}</coupon_list>` -> `block.type=coupon_list`
+- `<discount_preview>{json}</discount_preview>` -> `block.type=discount_preview`
+- `<review_summary>{json}</review_summary>` -> `block.type=review_summary`
+- `<after_sales_policy>{json}</after_sales_policy>` -> `block.type=after_sales_policy`
+- `<navigation_action>{json}</navigation_action>` -> `block.type=navigation_action`
+
+标签内 JSON 只能来自已调用工具或 skill 的 observation；后端解析失败时丢弃该结构块，不把 JSON 原文展示给用户。
 
 ### discount_preview
 
 ```json
 {
   "type": "discount_preview",
-  "discount": {
+  "title": "优惠试算",
+  "summary": {
     "total_amount": "2999.00",
     "discount_amount": "130.00",
-    "pay_amount": "2869.00",
-    "lines": [
-      {
-        "type": "promotion",
-        "id": "promo_platform_001",
-        "name": "平台满 300 减 30",
-        "amount": "30.00"
-      }
-    ]
-  }
+    "pay_amount": "2869.00"
+  },
+  "items": [
+    {
+      "type": "promotion",
+      "id": "promo_platform_001",
+      "name": "平台满 300 减 30",
+      "amount": "30.00"
+    }
+  ]
 }
 ```
 
@@ -496,7 +525,11 @@ Agent ReAct 最后一轮不再使用 `{"type":"final","text":"..."}` 包装最�
 ```json
 {
   "type": "coupon_list",
-  "coupons": [
+  "title": "可用优惠券",
+  "summary": {
+    "count": 1
+  },
+  "items": [
     {
       "coupon_id": "coupon_platform_001",
       "name": "平台新人满 200 减 20",
@@ -513,11 +546,33 @@ Agent ReAct 最后一轮不再使用 `{"type":"final","text":"..."}` 包装最�
 ```json
 {
   "type": "review_summary",
-  "product_id": "p_001",
-  "rating_avg": "4.8",
-  "rating_count": 120,
-  "highlights": ["做工好", "物流快"],
-  "risks": ["尺码偏小"]
+  "title": "评价摘要",
+  "summary": {
+    "product_id": "p_001",
+    "average_rating": 4.8,
+    "review_count": 120
+  },
+  "items": [
+    {
+      "rating": 5,
+      "content": "做工好，物流快"
+    }
+  ]
+}
+```
+
+### after_sales_policy
+
+```json
+{
+  "type": "after_sales_policy",
+  "title": "售后规则",
+  "items": [
+    {
+      "name": "退货",
+      "description": "根据工具资料可确认的规则"
+    }
+  ]
 }
 ```
 
@@ -526,6 +581,8 @@ Agent ReAct 最后一轮不再使用 `{"type":"final","text":"..."}` 包装最�
 ```json
 {
   "type": "navigation_action",
+  "title": "页面入口",
+  "message": "已为你打开订单页",
   "action": {
     "label": "查看我的订单",
     "route": "orders",
@@ -571,7 +628,7 @@ type AgentTurn = {
 3. 正常结束必须发送 `message_end`。
 4. 主回答文本只能通过 `text_delta` 输出。
 5. 商品、订单、优惠、评价、引用证据必须通过 `block_delta` 输出。
-6. 前端不需要解析 `<buyer>` 或其它 XML/内部标签；`<item>` 是唯一允许解析的文本内挂品标签，且标签内容必须是商品 ID。
+6. 前端不需要解析 `<buyer>`、`<item>` 或其它 XML/内部标签；这些标签只允许后端内部解析过滤。
 7. `block_delta` 可以在 `text_delta` 之前、中间或之后发送；前端按收到顺序追加展示。
 8. 错误后不再发送 `message_end`，前端以 `error` 为终态。
 
@@ -600,6 +657,6 @@ type AgentTurn = {
 新增 block 必须先更新：
 
 1. `backend/src/domain/types.go` 的 `AgentBlock` 字段。
-2. `frontend/src/types/agent.ts` 的 `AgentBlock` union。
-3. `frontend/src/components/chat/ChatMessageList.tsx` 的渲染分支。
+2. Android/Kotlin 客户端或管理员前端各自的 `AgentBlock` DTO。
+3. 对应客户端的渲染分支。
 4. 本协议文档。

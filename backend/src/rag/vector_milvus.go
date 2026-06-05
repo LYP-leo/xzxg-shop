@@ -80,9 +80,7 @@ func (c *Client) BootstrapImages(ctx context.Context, imageRows []map[string]any
 	if c == nil || !c.cfg.Enabled {
 		return nil
 	}
-	if c.collectionReady(ctx, c.cfg.ImageCollection, "product_images", "image_vector_id") {
-		_ = c.loadCollection(ctx, c.cfg.ImageCollection)
-		c.imageReady = true
+	if c.ImageCollectionReady(ctx) {
 		return nil
 	}
 	if len(imageRows) > 0 {
@@ -96,6 +94,18 @@ func (c *Client) BootstrapImages(ctx context.Context, imageRows []map[string]any
 		}
 	}
 	return nil
+}
+
+func (c *Client) ImageCollectionReady(ctx context.Context) bool {
+	if c == nil || !c.cfg.Enabled {
+		return false
+	}
+	if !c.collectionReady(ctx, c.cfg.ImageCollection, "product_images", "image_vector_id") {
+		return false
+	}
+	_ = c.loadCollection(ctx, c.cfg.ImageCollection)
+	c.imageReady = true
+	return true
 }
 
 func (c *Client) collectionReady(ctx context.Context, collection string, kind string, primary string) bool {

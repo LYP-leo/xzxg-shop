@@ -29,7 +29,7 @@ for (const item of cases) {
     await sleep(delayMS);
   }
 
-  const output = await streamAgentAnswer(token, session.session_id, item.query);
+  const output = await streamAgentAnswer(token, session.session_id, item.query, item.attachments ?? []);
   const trace = output.run_id ? await requestTrace(adminToken, output.run_id) : [];
   const evaluation = evaluateCase(item, output, trace);
   if (evaluation.evaluated) {
@@ -88,18 +88,36 @@ async function requestTrace(token, runID) {
 function evaluateCase(item, output, trace) {
   const checks = [];
   const expectedMemoryProductIDs = item.expected_memory_product_ids ?? [];
+  const forbiddenMemoryProductIDs = item.forbidden_memory_product_ids ?? [];
   const expectedCartProductIDs = item.expected_cart_product_ids ?? [];
   const expectedTerms = item.expected_answer_terms ?? [];
   const memoryProductIDs = productIDsFromMemoryTrace(trace);
+  const memoryApplied = trace.some((event) => event.stage === 'memory' && event.event_type === 'applied');
   const cartProductIDs = productIDsFromCartBlocks(output.blocks ?? []);
   const productBlockIDs = productIDsFromProductBlocks(output.blocks ?? []);
   const answer = output.answer ?? '';
 
+  if (typeof item.expected_memory_applied === 'boolean') {
+    checks.push({
+      name: 'memory_applied',
+      passed: memoryApplied === item.expected_memory_applied,
+      expected: item.expected_memory_applied,
+      actual: memoryApplied
+    });
+  }
   if (expectedMemoryProductIDs.length > 0) {
     checks.push({
       name: 'memory_referenced_products',
       passed: expectedMemoryProductIDs.every((id) => memoryProductIDs.includes(id)),
       expected: expectedMemoryProductIDs,
+      actual: memoryProductIDs
+    });
+  }
+  if (forbiddenMemoryProductIDs.length > 0) {
+    checks.push({
+      name: 'memory_forbidden_products_absent',
+      passed: forbiddenMemoryProductIDs.every((id) => !memoryProductIDs.includes(id)),
+      forbidden: forbiddenMemoryProductIDs,
       actual: memoryProductIDs
     });
   }

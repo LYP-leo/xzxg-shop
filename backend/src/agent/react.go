@@ -29,7 +29,7 @@ type reactStepOutput struct {
 	FinalFound bool
 }
 
-func (r *Runtime) runReactAgent(ctx context.Context, run domain.AgentRun, plan runPlan, query string, emit func(domain.SSEEvent) error) (reactRunResult, error) {
+func (r *Runtime) runReactAgent(ctx context.Context, run domain.AgentRun, plan runPlan, query string, attachments []domain.Attachment, emit func(domain.SSEEvent) error) (reactRunResult, error) {
 	// runReactAgent 是单轮 Agent 的主执行器。它不负责前置意图识别；进入这里时，
 	// plan 已经由 planner 决定好 route / intent / model。函数内部再完成：
 	// 1. ReAct 决策循环：让模型决定调用哪些工具或 skill；
@@ -189,6 +189,7 @@ func (r *Runtime) runReactAgent(ctx context.Context, run domain.AgentRun, plan r
 		// 订单等后端能力，并统一返回 toolObservation。
 		observation := r.executeTool(ctx, run, action, toolExecutionContext{
 			AllowedAddProductIDs: allowedAddProductIDs,
+			Attachments:          attachments,
 		})
 		result.Observations = append(result.Observations, observation)
 		if observation.RelevanceStatus == "" || observation.RelevanceStatus == relevanceOK {
@@ -262,18 +263,7 @@ func (r *Runtime) streamReactStep(ctx context.Context, run domain.AgentRun, plan
 	inFinal := false
 	doneFinal := false
 
-	filter := newStreamTextFilter(allowedProductIDs, func(productID string) {
-		if filterErr != nil {
-			return
-		}
-		product, ok := r.store.GetProduct(ctx, productID)
-		if !ok {
-			return
-		}
-		card := product.ProductCard
-		part := domain.AgentBlock{Type: "product_card", Product: &card}
-		filterErr = emit(domain.SSEEvent{Type: "content_delta", RunID: run.RunID, Part: &part})
-	})
+	filter := r.newAgentOutputFilter(ctx, run, allowedProductIDs, emit, &filterErr)
 
 	err := r.llm.Stream(ctx, plan.AnswerModel, messages, 0.1, func(delta string) error {
 		if r.store.IsRunCanceled(ctx, run.RunID) {
@@ -374,18 +364,7 @@ func (r *Runtime) emitReactFinalText(ctx context.Context, run domain.AgentRun, p
 
 	var content strings.Builder
 	var filterErr error
-	filter := newStreamTextFilter(result.ProductIDs, func(productID string) {
-		if filterErr != nil {
-			return
-		}
-		product, ok := r.store.GetProduct(ctx, productID)
-		if !ok {
-			return
-		}
-		card := product.ProductCard
-		part := domain.AgentBlock{Type: "product_card", Product: &card}
-		filterErr = emit(domain.SSEEvent{Type: "content_delta", RunID: run.RunID, Part: &part})
-	})
+	filter := r.newAgentOutputFilter(ctx, run, result.ProductIDs, emit, &filterErr)
 	clean := strings.TrimSpace(filter.Clean(rawText))
 	if filterErr != nil {
 		return filterErr
@@ -451,18 +430,7 @@ func (r *Runtime) streamReactFinal(ctx context.Context, run domain.AgentRun, pla
 	var content strings.Builder
 	var rawContent strings.Builder
 	var filterErr error
-	filter := newStreamTextFilter(result.ProductIDs, func(productID string) {
-		if filterErr != nil {
-			return
-		}
-		product, ok := r.store.GetProduct(ctx, productID)
-		if !ok {
-			return
-		}
-		card := product.ProductCard
-		part := domain.AgentBlock{Type: "product_card", Product: &card}
-		filterErr = emit(domain.SSEEvent{Type: "content_delta", RunID: run.RunID, Part: &part})
-	})
+	filter := r.newAgentOutputFilter(ctx, run, result.ProductIDs, emit, &filterErr)
 	err := r.llm.Stream(ctx, plan.AnswerModel, streamMessages, 0.4, func(delta string) error {
 		if r.store.IsRunCanceled(ctx, run.RunID) {
 			return emit(domain.SSEEvent{Type: "error", RunID: run.RunID, Code: "canceled", Message: "已停止生成"})
@@ -523,6 +491,29 @@ func (r *Runtime) emitReactFinalBlocks(runID string, blocks []domain.AgentBlock,
 		}
 	}
 	return nil
+}
+
+func (r *Runtime) newAgentOutputFilter(ctx context.Context, run domain.AgentRun, allowedProductIDs []string, emit func(domain.SSEEvent) error, filterErr *error) *streamTextFilter {
+	return newStreamTextFilter(allowedProductIDs, streamFilterCallbacks{
+		OnItem: func(productID string) {
+			if *filterErr != nil {
+				return
+			}
+			product, ok := r.store.GetProduct(ctx, productID)
+			if !ok {
+				return
+			}
+			card := product.ProductCard
+			part := domain.AgentBlock{Type: "product_card", Product: &card}
+			*filterErr = emit(domain.SSEEvent{Type: "content_delta", RunID: run.RunID, Part: &part})
+		},
+		OnBlock: func(block domain.AgentBlock) {
+			if *filterErr != nil {
+				return
+			}
+			*filterErr = emit(domain.SSEEvent{Type: "block_delta", RunID: run.RunID, Block: &block})
+		},
+	})
 }
 
 func (r *Runtime) reactSystemPromptForPlan(ctx context.Context, plan runPlan) string {
@@ -607,6 +598,8 @@ func statusTextForTool(tool string) string {
 	switch tool {
 	case toolSearchProducts:
 		return "正在检索商品"
+	case toolSearchImage:
+		return "正在按图片检索商品"
 	case toolSearchKnowledge:
 		return "正在检索资料"
 	case toolGetCart:
@@ -732,20 +725,83 @@ func traceStatus(ok bool) string {
 	return "failed"
 }
 
-type streamTextFilter struct {
-	inTag           bool
-	tagBuffer       strings.Builder
-	itemBuffer      strings.Builder
-	inItem          bool
-	inBuyer         bool
-	allowedItemIDs  map[string]bool
-	emittedItemIDs  map[string]bool
-	onItem          func(string)
-	pendingItemText string
-	fenceCarry      string
+func isStructuredFinalTag(tag string) bool {
+	switch tag {
+	case "coupon_list", "discount_preview", "review_summary", "after_sales_policy", "navigation_action":
+		return true
+	default:
+		return false
+	}
 }
 
-func newStreamTextFilter(allowedProductIDs []string, onItem ...func(string)) *streamTextFilter {
+func blockFromStructuredFinalTag(tag string, raw string) (domain.AgentBlock, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return domain.AgentBlock{}, false
+	}
+	var payload struct {
+		Title   string           `json:"title"`
+		Items   []map[string]any `json:"items"`
+		Summary map[string]any   `json:"summary"`
+		Message string           `json:"message"`
+		Action  map[string]any   `json:"action"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return domain.AgentBlock{}, false
+	}
+	block := domain.AgentBlock{
+		Type:    tag,
+		Title:   strings.TrimSpace(payload.Title),
+		Items:   payload.Items,
+		Summary: payload.Summary,
+		Message: strings.TrimSpace(payload.Message),
+		Action:  payload.Action,
+	}
+	if block.Title == "" {
+		block.Title = defaultStructuredBlockTitle(tag)
+	}
+	return block, true
+}
+
+func defaultStructuredBlockTitle(tag string) string {
+	switch tag {
+	case "coupon_list":
+		return "优惠券"
+	case "discount_preview":
+		return "优惠试算"
+	case "review_summary":
+		return "评价摘要"
+	case "after_sales_policy":
+		return "售后规则"
+	case "navigation_action":
+		return "页面入口"
+	default:
+		return "服务信息"
+	}
+}
+
+type streamTextFilter struct {
+	inTag            bool
+	tagBuffer        strings.Builder
+	itemBuffer       strings.Builder
+	structuredBuffer strings.Builder
+	inItem           bool
+	inBuyer          bool
+	structuredTag    string
+	allowedItemIDs   map[string]bool
+	emittedItemIDs   map[string]bool
+	onItem           func(string)
+	onBlock          func(domain.AgentBlock)
+	pendingItemText  string
+	fenceCarry       string
+}
+
+type streamFilterCallbacks struct {
+	OnItem  func(string)
+	OnBlock func(domain.AgentBlock)
+}
+
+func newStreamTextFilter(allowedProductIDs []string, callbacks ...streamFilterCallbacks) *streamTextFilter {
 	allowed := make(map[string]bool, len(allowedProductIDs))
 	for _, id := range allowedProductIDs {
 		id = strings.TrimSpace(id)
@@ -753,11 +809,11 @@ func newStreamTextFilter(allowedProductIDs []string, onItem ...func(string)) *st
 			allowed[id] = true
 		}
 	}
-	var callback func(string)
-	if len(onItem) > 0 {
-		callback = onItem[0]
+	var callback streamFilterCallbacks
+	if len(callbacks) > 0 {
+		callback = callbacks[0]
 	}
-	return &streamTextFilter{allowedItemIDs: allowed, emittedItemIDs: map[string]bool{}, onItem: callback}
+	return &streamTextFilter{allowedItemIDs: allowed, emittedItemIDs: map[string]bool{}, onItem: callback.OnItem, onBlock: callback.OnBlock}
 }
 
 func (f *streamTextFilter) Clean(delta string) string {
@@ -793,10 +849,27 @@ func (f *streamTextFilter) Clean(delta string) string {
 				f.inBuyer = true
 			case "/buyer":
 				f.inBuyer = false
+			default:
+				if isStructuredFinalTag(tag) {
+					f.structuredTag = tag
+					f.structuredBuffer.Reset()
+					continue
+				}
+				if f.structuredTag != "" && tag == "/"+f.structuredTag {
+					if block, ok := blockFromStructuredFinalTag(f.structuredTag, f.structuredBuffer.String()); ok && f.onBlock != nil {
+						f.onBlock(block)
+					}
+					f.structuredTag = ""
+					f.structuredBuffer.Reset()
+					continue
+				}
 			}
 			continue
 		case f.inTag:
 			f.tagBuffer.WriteRune(item)
+			continue
+		case f.structuredTag != "":
+			f.structuredBuffer.WriteRune(item)
 			continue
 		case f.inItem:
 			f.itemBuffer.WriteRune(item)
