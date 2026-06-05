@@ -7,7 +7,7 @@
 本轮问题集中在两个方向：
 
 1. 思考过程仍未真正展示后端返回的“分析用户需求 / 查询买手团经验”详情，只停在“分析用户需求”阶段后直接进入回答。
-2. 键盘弹出后的页面避让方式错误，表现像聊天列表被手动上滑，而不是键盘把键盘以上的整个页面顶上去。
+2. 键盘弹出后的页面避让方式错误。正确效果应参考用户提供的截图：键盘收起时聊天页正常占满底部；键盘出现时，聊天页底边整体贴到键盘上沿，底部输入栏和聊天内容一起被顶上去，即使聊天列表已经滚到底，也能保持最新内容在键盘上方可见。
 
 本方案必须基于已有后端/Agent 协议文档实现，不再靠猜测事件字段。
 
@@ -150,14 +150,43 @@ android:windowSoftInputMode="adjustResize"
 getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
 ```
 
-这会形成“双重避让”：
+这会形成“双重避让”和“错误滚动”：
 
 - 系统已经 resize Activity 可用高度。
 - Android 代码又给 `content` 加了 `imeBottom` padding。
 - 还强制 `scrollBottom()`，表现像列表被手动滑动。
 - 当聊天列表已经到底部时，继续上滑失效，输入区/内容恢复也异常。
 
-v5 技术方案已经明确：聊天页应回到普通纵向布局，依赖系统 `adjustResize`，不要再手动计算键盘高度移动页面。
+当前后续代码又改成：
+
+```java
+int targetHeight = view.getHeight() - imeBottom;
+content.setLayoutParams(params);
+```
+
+这仍然不够准确：
+
+- 它直接修改整个 `content` 的固定高度，容易和系统 `adjustResize` 重复计算。
+- 如果系统已经缩小了 root 高度，再减一次 `imeBottom`，页面会被过度压缩。
+- 如果系统没有触发 resize，直接改高度虽然能避让输入栏，但没有维护“弹出前是否在底部”的状态，聊天列表到底时仍可能看不到最新内容。
+- 它没有定义键盘隐藏时如何恢复容器高度和滚动锚点。
+
+用户最新截图表达的目标不是“输入框不被盖住”，而是：
+
+```text
+键盘收起：
+  顶栏
+  聊天列表
+  输入栏贴屏幕底部
+
+键盘弹出：
+  顶栏
+  聊天列表高度变小
+  输入栏贴键盘顶部
+  聊天列表如果原本在底部，仍保持底部内容可见
+```
+
+因此 v28 需要把键盘适配定义为“聊天 viewport 随 IME inset 改变底边位置”，而不是简单 padding 或强制滚动。
 
 ## 4. v28 总体目标
 
@@ -169,7 +198,7 @@ v5 技术方案已经明确：聊天页应回到普通纵向布局，依赖系�
 6. 点击“已完成思考”展开/收起时，页面滚动位置保持不变。
 7. 删除三阶段之间的小竖线，只保留适当间距。
 8. 重新设计展开符号。
-9. 键盘弹出时，键盘以上的整个页面被系统 resize 顶上去，不再通过 `content` padding 或强制滚动模拟。
+9. 键盘弹出时，聊天页根容器的底边必须贴到键盘上沿；顶栏、聊天列表、输入栏作为同一个聊天 viewport 重新布局。若键盘弹出前聊天列表在底部，弹出后仍自动保持底部锚定。
 
 ## 5. 思考过程协议处理方案
 
@@ -433,94 +462,180 @@ ThinkingEvent received stage=answer_summary
 
 ## 8. 键盘顶起页面方案
 
-### 8.1 回到系统 resize
+### 8.1 目标效果
 
-保留：
+键盘适配必须严格对齐用户截图表达的效果。
+
+键盘收起时：
+
+```text
+屏幕可用区域
+  topBar
+  chatScroll
+  composerBar 贴屏幕底部
+```
+
+键盘弹出时：
+
+```text
+屏幕可用区域中键盘以上部分
+  topBar
+  chatScroll 高度变小
+  composerBar 贴键盘上沿
+
+键盘区域
+```
+
+也就是说，键盘出现时不是把某条消息“滑上去”，而是把整个聊天页面的底边改到键盘上沿。聊天列表如果原本已经在底部，弹出后仍然应该保持底部锚定，最新消息和输入栏都在键盘上方。
+
+### 8.2 布局边界改造
+
+新增一个聊天页专用 viewport 容器，不再直接把 `content` 当作全局可变高度对象：
+
+```text
+root FrameLayout
+  chatViewport LinearLayout vertical
+    topBar 固定高度
+    chatScroll height=0 weight=1
+    composerOuter wrap_content
+```
+
+要求：
+
+- `chatViewport` 只在聊天页存在。
+- `chatViewport` 的初始 `FrameLayout.LayoutParams` 为 `MATCH_PARENT x MATCH_PARENT`。
+- 键盘显示时只调整 `chatViewport` 的底部约束，不修改全局 `content` 高度。
+- `topBar`、`chatScroll`、`composerOuter` 必须在同一个 `chatViewport` 内，这样键盘出现时三者作为整体重新布局。
+- `composerOuter` 不使用绝对定位，不使用 overlay，不使用额外底部 padding 占位。
+
+推荐字段：
+
+```java
+private LinearLayout chatViewport;
+private int lastImeBottom;
+private boolean wasChatAtBottomBeforeIme;
+```
+
+### 8.3 IME inset 处理
+
+保留窗口模式：
 
 ```xml
 android:windowSoftInputMode="adjustResize"
 ```
 
-保留：
-
 ```java
 getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
 ```
 
-删除聊天页 `bindImeInsets()` 中对 `content` 的手动键盘 padding：
+但不能再做以下操作：
 
 ```java
-content.setPadding(0, 0, 0, bottomInset);
-scrollBottom();
+content.setPadding(0, 0, 0, imeBottom);
+content.setLayoutParams(height = rootHeight - imeBottom);
+scrollBottom(); // 每次 WindowInsets 变化时无条件调用
 ```
 
-改为：
+新的 `bindImeInsets()` 只负责调整 `chatViewport` 的底部边界：
 
 ```java
 private void bindImeInsets() {
     root.setOnApplyWindowInsetsListener((view, insets) -> {
+        int imeBottom = 0;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            imeBottom = insets.getInsets(WindowInsets.Type.ime()).bottom;
+        }
+        applyChatImeInset(imeBottom);
         return insets;
     });
 }
 ```
 
-或者聊天页不再调用 `bindImeInsets()`。
-
-### 8.2 布局结构保持普通纵向布局
-
-聊天页应保持：
-
-```text
-content LinearLayout vertical
-  topBar 固定高度
-  chatMessageLayer height=0 weight=1
-  composerBar wrap_content
-```
-
-键盘弹出时：
-
-- 系统缩小 Activity 可用高度。
-- `content` 整体重新 layout。
-- `composerBar` 自然贴到键盘上方。
-- `chatMessageLayer` 高度自然变小。
-- 不需要模拟滑动。
-
-### 8.3 只在输入框聚焦时适度滚动
-
-可以保留：
+`applyChatImeInset()` 的职责：
 
 ```java
-input.setOnFocusChangeListener(...)
-```
-
-但不要在 WindowInsets 每次变化时 `scrollBottom()`。
-
-建议：
-
-```java
-input.postDelayed(() -> {
-    if (input.hasFocus()) {
-        scrollBottom();
+private void applyChatImeInset(int imeBottom) {
+    if (chatViewport == null) {
+        return;
     }
-}, 180);
+    boolean imeWillShow = imeBottom > 0;
+    boolean imeWasHidden = lastImeBottom == 0;
+    if (imeWillShow && imeWasHidden) {
+        wasChatAtBottomBeforeIme = isChatScrolledToBottom();
+    }
+
+    FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) chatViewport.getLayoutParams();
+    params.height = FrameLayout.LayoutParams.MATCH_PARENT;
+    params.bottomMargin = imeBottom;
+    chatViewport.setLayoutParams(params);
+    lastImeBottom = imeBottom;
+
+    if (imeWillShow && wasChatAtBottomBeforeIme) {
+        chatViewport.post(this::scrollBottom);
+    }
+}
 ```
 
-该滚动只用于让最新消息可见，不承担键盘避让职责。
+关键点：
 
-### 8.4 退出聊天页时恢复窗口模式
+- `bottomMargin = imeBottom` 是“把聊天 viewport 的底边推到键盘上沿”，不是给消息列表塞 padding。
+- 不改变 `content` 的高度，避免和 `adjustResize` 叠加。
+- 只有键盘弹出前聊天列表本来在底部时，才在布局完成后 `scrollBottom()`，保持最新内容可见。
+- 如果用户正在查看历史消息，键盘弹出时不要强制滚到底。
+- 键盘收起时 `bottomMargin` 恢复为 0，聊天页回到截图 1 的底部布局。
 
-现有其他页面可能使用：
+### 8.4 底部锚定判断
+
+新增：
 
 ```java
-useKeyboardNothing()
-restoreKeyboardModeForActivePage()
+private boolean isChatScrolledToBottom() {
+    if (chatScroll == null || chatScroll.getChildCount() == 0) {
+        return true;
+    }
+    View child = chatScroll.getChildAt(0);
+    int distance = child.getBottom() - (chatScroll.getScrollY() + chatScroll.getHeight());
+    return distance <= dp(24);
+}
 ```
 
-v28 要求：
+使用 24dp 容差，避免最后几像素或动画过程导致误判。
 
-- 聊天页进入时 `useKeyboardResize()`。
-- 离开聊天页或打开抽屉/其他页面时保持现有恢复逻辑。
-- 不再叠加 IME padding。
+### 8.5 输入框聚焦滚动
+
+输入框获得焦点时可以延迟一次滚动，但必须遵守底部锚定规则：
+
+```java
+input.setOnFocusChangeListener((v, hasFocus) -> {
+    if (hasFocus) {
+        hideAttachmentPanel();
+        wasChatAtBottomBeforeIme = isChatScrolledToBottom();
+        input.postDelayed(() -> {
+            if (input.hasFocus() && wasChatAtBottomBeforeIme) {
+                scrollBottom();
+            }
+        }, 220);
+    }
+});
+```
+
+该滚动只用于保持“原本就在底部”的会话继续贴底，不承担键盘避让。键盘避让只由 `chatViewport.bottomMargin` 完成。
+
+### 8.6 退出聊天页时恢复
+
+离开聊天页或重建 `baseScreen()` 时必须清理聊天页 IME 状态：
+
+```java
+lastImeBottom = 0;
+wasChatAtBottomBeforeIme = true;
+root.setOnApplyWindowInsetsListener(null);
+```
+
+要求：
+
+- 其他页面继续使用现有键盘模式恢复逻辑。
+- 只在聊天页绑定 `bindImeInsets()`。
+- 不把聊天页的 `bottomMargin` 状态泄漏到登录页、设置页、商品详情页。
 
 ## 9. 需要修改的方法清单
 
@@ -566,14 +681,38 @@ v28 要求：
 
 修改：
 
+- `renderChatHome()`
+  - 创建聊天页专用 `chatViewport`。
+  - `topBar`、`chatScroll`、`composerOuter` 全部加入 `chatViewport`。
+  - `root` 只承载 `chatViewport`，不要让聊天页复用会被全局改高度的 `content`。
 - `bindImeInsets()`
   - 删除 `content.setPadding(...)`。
-  - 删除 `imeBottom > 0 -> scrollBottom()`。
-- `renderChatHome()`
-  - 保留普通纵向布局。
-  - 保留 `useKeyboardResize()`。
+  - 删除 `content.setLayoutParams(height = rootHeight - imeBottom)`。
+  - 删除 `imeBottom > 0 -> scrollBottom()` 的无条件滚动。
+  - 改为调用 `applyChatImeInset(imeBottom)`。
+- `applyChatImeInset(int imeBottom)`
+  - 新增。
+  - 调整 `chatViewport` 的 `FrameLayout.LayoutParams.bottomMargin`。
+  - 当键盘从隐藏变为显示时，记录弹出前是否在底部。
+  - 如果弹出前在底部，则布局完成后滚到底部。
+- `isChatScrolledToBottom()`
+  - 新增。
+  - 使用 `child.getBottom() - (scrollY + height)` 判断是否贴底。
 - 输入框 focus 逻辑：
-  - 只延迟滚到底部一次，不承担避让职责。
+  - 只在弹出前已经贴底时延迟滚到底部一次。
+  - 不承担键盘避让职责。
+- `baseScreen()` 或离开聊天页逻辑：
+  - 清理 `lastImeBottom`。
+  - 清理 `wasChatAtBottomBeforeIme`。
+  - 移除旧的 `OnApplyWindowInsetsListener`，避免影响其他页面。
+
+新增字段：
+
+```java
+private LinearLayout chatViewport;
+private int lastImeBottom;
+private boolean wasChatAtBottomBeforeIme = true;
+```
 
 ## 10. 验证方案
 
@@ -620,19 +759,24 @@ adb logcat -d | rg "ThinkingEvent|thinking_delta"
 
 验证步骤：
 
-1. 聊天列表滚到底部。
+1. 聊天列表滚到底部，记录键盘收起时的布局，应接近用户截图 1：输入栏贴屏幕底部。
 2. 点击输入框弹出键盘。
-3. 观察键盘以上的整个页面是否被顶上去。
+3. 观察键盘以上的整个聊天页面是否被顶上去，应接近用户截图 2：输入栏贴键盘顶部，最新内容仍在键盘上方。
 4. 收起键盘。
-5. 观察页面是否恢复原状。
+5. 观察页面是否恢复截图 1 的底部布局。
+6. 手动向上滚动查看历史消息，不在底部时再次点击输入框。
+7. 观察键盘弹出后是否保持当前历史阅读位置，不强制跳到底部。
 
 成功标准：
 
-- 输入栏贴住键盘顶部。
-- 顶栏、聊天区、输入栏作为一个整体被系统 resize。
-- 不出现额外底部 padding。
+- 键盘收起时：输入栏贴屏幕底部，聊天页没有残留底部空白。
+- 键盘弹出时：输入栏贴键盘顶部，聊天页底边与键盘上沿相接。
+- 顶栏、聊天区、输入栏作为同一个 `chatViewport` 重新布局。
+- 不出现 `content` 被二次压缩导致的异常空白。
+- 不出现额外 IME padding。
 - 不出现键盘收起后页面停在异常上移位置。
-- 聊天列表到底时，键盘弹出仍能正确顶起页面。
+- 聊天列表到底时，键盘弹出后仍保持最新内容可见。
+- 聊天列表不在底部时，键盘弹出不强制跳到底部。
 
 ### 10.4 崩溃日志
 
@@ -651,5 +795,5 @@ adb logcat -d AndroidRuntime:E '*:S'
 
 1. 如果后端没有发送 `thinking_delta`，Android 无法展示真实“分析用户需求 / 查询买手团经验”详情。此时应通过日志暴露协议缺失，而不是在前端编造内容。
 2. `status` / `thinking_status` 只能作为短状态，不应存入 thinking segment。
-3. 删除 IME padding 后，若个别系统键盘 resize 不稳定，应先确认 `adjustResize` 是否被全屏/透明系统栏破坏，不要重新回到手动 padding。
+3. 个别系统键盘或全面屏模式下 `adjustResize` 可能不稳定，因此 v28 不只依赖系统 resize，而是用 `chatViewport.bottomMargin = imeBottom` 明确控制聊天页底边。实现时仍禁止给 `chatScroll` 或 `content` 增加 IME padding。
 4. 点击“已完成思考”保持滚动位置时，如果展开内容高度很大，可能造成当前视口下方内容被挤出屏幕，这是预期；用户可手动滚动查看。

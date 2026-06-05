@@ -94,6 +94,7 @@ public class MainActivity extends Activity {
     private ImageLoader imageLoader;
     private FrameLayout root;
     private LinearLayout content;
+    private LinearLayout chatViewport;
     private LinearLayout chatList;
     private ScrollView chatScroll;
     private EditText input;
@@ -102,6 +103,8 @@ public class MainActivity extends Activity {
     private LinearLayout composerOuter;
     private LinearLayout attachmentBufferView;
     private LinearLayout attachmentPanelView;
+    private int lastImeBottom;
+    private boolean wasChatAtBottomBeforeIme = true;
     private boolean voiceMode;
     private SpeechRecognizer speechRecognizer;
     private String lastPartialSpeech = "";
@@ -350,6 +353,12 @@ public class MainActivity extends Activity {
     }
 
     private void baseScreen() {
+        if (root != null) {
+            root.setOnApplyWindowInsetsListener(null);
+        }
+        chatViewport = null;
+        lastImeBottom = 0;
+        wasChatAtBottomBeforeIme = true;
         root = new FrameLayout(this);
         productCartFab = null;
         productCartBadge = null;
@@ -372,28 +381,65 @@ public class MainActivity extends Activity {
         backStack.clear();
         baseScreen();
 
-        content.addView(createTopBar("AI导购", null), new LinearLayout.LayoutParams(-1, dp(56)));
-        content.addView(createChatMessageLayer(), new LinearLayout.LayoutParams(-1, 0, 1));
-        content.addView(createComposerBar(), new LinearLayout.LayoutParams(-1, -2));
+        root.removeView(content);
+        chatViewport = new LinearLayout(this);
+        chatViewport.setOrientation(LinearLayout.VERTICAL);
+        chatViewport.setClipChildren(false);
+        chatViewport.setClipToPadding(false);
+        chatViewport.setPadding(0, 0, 0, 0);
+        content = chatViewport;
+        root.addView(chatViewport, new FrameLayout.LayoutParams(-1, -1));
+
+        chatViewport.addView(createTopBar("AI导购", null), new LinearLayout.LayoutParams(-1, dp(56)));
+        chatViewport.addView(createChatMessageLayer(), new LinearLayout.LayoutParams(-1, 0, 1));
+        chatViewport.addView(createComposerBar(), new LinearLayout.LayoutParams(-1, -2));
         bindImeInsets();
+        root.requestApplyInsets();
     }
 
     private void bindImeInsets() {
         root.setOnApplyWindowInsetsListener((view, insets) -> {
+            int imeBottom = 0;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                int imeBottom = insets.getInsets(WindowInsets.Type.ime()).bottom;
-                ViewGroup.LayoutParams params = content.getLayoutParams();
-                int targetHeight = ViewGroup.LayoutParams.MATCH_PARENT;
-                if (imeBottom > 0 && view.getHeight() > imeBottom) {
-                    targetHeight = view.getHeight() - imeBottom;
-                }
-                if (params != null && params.height != targetHeight) {
-                    params.height = targetHeight;
-                    content.setLayoutParams(params);
-                }
+                imeBottom = insets.getInsets(WindowInsets.Type.ime()).bottom;
             }
+            applyChatImeInset(imeBottom);
             return insets;
         });
+    }
+
+    private void applyChatImeInset(int imeBottom) {
+        if (chatViewport == null) {
+            return;
+        }
+        boolean imeWillShow = imeBottom > 0;
+        boolean imeWasHidden = lastImeBottom == 0;
+        if (imeWillShow && imeWasHidden) {
+            wasChatAtBottomBeforeIme = isChatScrolledToBottom();
+        }
+        ViewGroup.LayoutParams currentParams = chatViewport.getLayoutParams();
+        if (!(currentParams instanceof FrameLayout.LayoutParams)) {
+            return;
+        }
+        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) currentParams;
+        if (params.height != FrameLayout.LayoutParams.MATCH_PARENT || params.bottomMargin != imeBottom) {
+            params.height = FrameLayout.LayoutParams.MATCH_PARENT;
+            params.bottomMargin = imeBottom;
+            chatViewport.setLayoutParams(params);
+        }
+        lastImeBottom = imeBottom;
+        if (imeWillShow && wasChatAtBottomBeforeIme) {
+            chatViewport.post(this::scrollBottom);
+        }
+    }
+
+    private boolean isChatScrolledToBottom() {
+        if (chatScroll == null || chatScroll.getChildCount() == 0) {
+            return true;
+        }
+        View child = chatScroll.getChildAt(0);
+        int distance = child.getBottom() - (chatScroll.getScrollY() + chatScroll.getHeight());
+        return distance <= dp(24);
     }
 
     private void useKeyboardResize() {
@@ -579,7 +625,12 @@ public class MainActivity extends Activity {
         input.setOnFocusChangeListener((v, hasFocus) -> {
             if (hasFocus) {
                 hideAttachmentPanel();
-                scrollBottom();
+                wasChatAtBottomBeforeIme = isChatScrolledToBottom();
+                input.postDelayed(() -> {
+                    if (input != null && input.hasFocus() && wasChatAtBottomBeforeIme) {
+                        scrollBottom();
+                    }
+                }, 220);
             }
         });
         input.addTextChangedListener(new TextWatcher() {
