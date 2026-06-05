@@ -127,6 +127,11 @@ public class MainActivity extends Activity {
     private TextView activeAssistant;
     private LinearLayout activeAssistantMessageBubble;
     private TextView loadingAssistant;
+    private LinearLayout activeThinkingPanel;
+    private LinearLayout activeThinkingList;
+    private TextView activeThinkingTitle;
+    private boolean activeThinkingExpanded = true;
+    private final Map<String, JSONObject> activeThinkingSteps = new HashMap<>();
     private StringBuilder activeAssistantMarkdown;
     private StringBuilder activeAssistantFullMarkdown;
     private boolean activeAssistantFormMode;
@@ -1854,6 +1859,11 @@ public class MainActivity extends Activity {
         activeAssistantMessageBubble = null;
         activeAssistantBlocks = new JSONArray();
         activeAssistantSegments = new JSONArray();
+        activeThinkingSteps.clear();
+        activeThinkingPanel = null;
+        activeThinkingList = null;
+        activeThinkingTitle = null;
+        activeThinkingExpanded = true;
         activeFollowups = new JSONArray();
         activeFollowupsView = null;
         activeRenderedProductIds.clear();
@@ -1899,6 +1909,10 @@ public class MainActivity extends Activity {
         }
         if ("status".equals(type)) {
             updateLoadingStatus(event.optString("text", "正在处理..."));
+            return;
+        }
+        if ("thinking_delta".equals(type)) {
+            updateThinkingPanel(event.optJSONObject("step"));
             return;
         }
         if ("text_delta".equals(type)) {
@@ -1973,6 +1987,182 @@ public class MainActivity extends Activity {
             loadingAssistant = addLoadingBubble();
         }
         loadingAssistant.setText(text == null || text.isEmpty() ? "正在处理..." : text);
+    }
+
+    private void updateThinkingPanel(JSONObject step) {
+        if (step == null) {
+            return;
+        }
+        String id = step.optString("id", "");
+        if (id.trim().isEmpty()) {
+            return;
+        }
+        removeLoadingBubbleIfNeeded();
+        try {
+            activeThinkingSteps.put(id, new JSONObject(step.toString()));
+        } catch (Exception ignored) {
+            activeThinkingSteps.put(id, step);
+        }
+        ensureThinkingPanel();
+        renderThinkingPanel();
+        scrollBottom();
+    }
+
+    private void ensureThinkingPanel() {
+        if (activeThinkingPanel != null) {
+            return;
+        }
+        activeThinkingPanel = new LinearLayout(this);
+        activeThinkingPanel.setOrientation(LinearLayout.VERTICAL);
+        activeThinkingPanel.setPadding(dp(12), dp(10), dp(12), dp(10));
+        activeThinkingPanel.setBackground(rounded(Color.WHITE, dp(16)));
+        int bubbleWidth = (int) (getResources().getDisplayMetrics().widthPixels * 0.82f);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(bubbleWidth, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.gravity = Gravity.LEFT;
+        params.setMargins(0, dp(4), 0, dp(8));
+        chatList.addView(activeThinkingPanel, params);
+
+        activeThinkingTitle = new TextView(this);
+        activeThinkingTitle.setTextSize(15);
+        activeThinkingTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        activeThinkingTitle.setTextColor(Color.rgb(31, 41, 55));
+        activeThinkingTitle.setOnClickListener(v -> {
+            activeThinkingExpanded = !activeThinkingExpanded;
+            renderThinkingPanel();
+        });
+        activeThinkingPanel.addView(activeThinkingTitle, new LinearLayout.LayoutParams(-1, -2));
+
+        activeThinkingList = new LinearLayout(this);
+        activeThinkingList.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams listParams = new LinearLayout.LayoutParams(-1, -2);
+        listParams.topMargin = dp(8);
+        activeThinkingPanel.addView(activeThinkingList, listParams);
+    }
+
+    private void renderThinkingPanel() {
+        if (activeThinkingPanel == null || activeThinkingTitle == null || activeThinkingList == null) {
+            return;
+        }
+        boolean allDone = !activeThinkingSteps.isEmpty();
+        for (JSONObject step : sortedThinkingSteps()) {
+            String status = step.optString("status", "");
+            if (!"done".equals(status) && !"skipped".equals(status) && !"failed".equals(status)) {
+                allDone = false;
+                break;
+            }
+        }
+        activeThinkingTitle.setText((allDone ? "已完成思考 " : "正在思考 ") + (activeThinkingExpanded ? "⌃" : "⌄"));
+        activeThinkingList.removeAllViews();
+        activeThinkingList.setVisibility(activeThinkingExpanded ? View.VISIBLE : View.GONE);
+        if (!activeThinkingExpanded) {
+            return;
+        }
+        for (JSONObject step : sortedThinkingSteps()) {
+            activeThinkingList.addView(thinkingStepView(step));
+        }
+    }
+
+    private List<JSONObject> sortedThinkingSteps() {
+        List<JSONObject> steps = new ArrayList<>(activeThinkingSteps.values());
+        steps.sort((a, b) -> {
+            int orderA = a.optInt("order", 99);
+            int orderB = b.optInt("order", 99);
+            if (orderA != orderB) {
+                return orderA - orderB;
+            }
+            return a.optString("id", "").compareTo(b.optString("id", ""));
+        });
+        return steps;
+    }
+
+    private View thinkingStepView(JSONObject step) {
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.HORIZONTAL);
+        wrap.setPadding(0, dp(4), 0, dp(4));
+
+        TextView icon = new TextView(this);
+        String status = step.optString("status", "running");
+        icon.setText(thinkingStatusIcon(status));
+        icon.setTextSize(16);
+        icon.setGravity(Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        icon.setTextColor(thinkingStatusColor(status));
+        wrap.addView(icon, new LinearLayout.LayoutParams(dp(24), -2));
+
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        TextView title = new TextView(this);
+        title.setText(step.optString("title", "处理步骤") + thinkingStatusSuffix(status));
+        title.setTextSize(15);
+        title.setTextColor(Color.rgb(75, 85, 99));
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        body.addView(title, new LinearLayout.LayoutParams(-1, -2));
+
+        String summary = step.optString("summary", "");
+        String detail = step.optString("detail", "");
+        String text = !summary.trim().isEmpty() ? summary : detail;
+        if (!text.trim().isEmpty()) {
+            TextView summaryView = new TextView(this);
+            summaryView.setText(text.trim());
+            summaryView.setTextSize(14);
+            summaryView.setTextColor(Color.rgb(138, 145, 158));
+            summaryView.setLineSpacing(4, 1);
+            LinearLayout.LayoutParams summaryParams = new LinearLayout.LayoutParams(-1, -2);
+            summaryParams.topMargin = dp(5);
+            body.addView(summaryView, summaryParams);
+        }
+        wrap.addView(body, new LinearLayout.LayoutParams(0, -2, 1));
+        return wrap;
+    }
+
+    private String thinkingStatusIcon(String status) {
+        if ("done".equals(status)) {
+            return "✓";
+        }
+        if ("failed".equals(status)) {
+            return "!";
+        }
+        if ("skipped".equals(status)) {
+            return "–";
+        }
+        return "●";
+    }
+
+    private int thinkingStatusColor(String status) {
+        if ("done".equals(status)) {
+            return Color.rgb(143, 150, 165);
+        }
+        if ("failed".equals(status)) {
+            return Color.rgb(220, 38, 38);
+        }
+        return Color.rgb(37, 99, 235);
+    }
+
+    private String thinkingStatusSuffix(String status) {
+        if ("done".equals(status)) {
+            return "完成";
+        }
+        if ("failed".equals(status)) {
+            return "失败";
+        }
+        if ("skipped".equals(status)) {
+            return "跳过";
+        }
+        return "中";
+    }
+
+    private void appendThinkingSegmentsSnapshot() {
+        if (activeThinkingSteps.isEmpty() || activeAssistantSegments == null) {
+            return;
+        }
+        for (JSONObject step : sortedThinkingSteps()) {
+            try {
+                JSONObject segment = new JSONObject();
+                segment.put("type", "thinking");
+                segment.put("thought", new JSONObject(step.toString()));
+                activeAssistantSegments.put(segment);
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     private void appendAssistant(String delta) {
@@ -2217,6 +2407,10 @@ public class MainActivity extends Activity {
         activeAssistantTagPending = new StringBuilder();
         activeAssistantBlocks = new JSONArray();
         activeAssistantSegments = new JSONArray();
+        activeThinkingSteps.clear();
+        activeThinkingPanel = null;
+        activeThinkingList = null;
+        activeThinkingTitle = null;
         activeFollowups = new JSONArray();
         activeFollowupsView = null;
         updateInputActionButtonState();
@@ -2240,7 +2434,8 @@ public class MainActivity extends Activity {
             MarkdownRenderer.setMarkdown(activeAssistant, visibleMarkdown);
         }
         renderItemRefs(rendered.itemIds, chatList);
-        if (!visibleMarkdown.trim().isEmpty() || activeAssistantBlocks.length() > 0 || activeFollowups.length() > 0) {
+        appendThinkingSegmentsSnapshot();
+        if (!visibleMarkdown.trim().isEmpty() || activeAssistantBlocks.length() > 0 || activeFollowups.length() > 0 || activeAssistantSegments.length() > 0) {
             chatStore.saveAssistantTurn(ownerLocalSessionId, visibleMarkdown, activeAssistantBlocks.toString(), activeFollowups.toString(), activeAssistantSegments.toString(), "completed");
         }
         enqueueSessionSync(ownerLocalSessionId, activeStreamServerSessionId, activeStreamTitle, visibleMarkdown);
@@ -2256,6 +2451,10 @@ public class MainActivity extends Activity {
         activeAssistantMessageBubble = null;
         activeAssistantBlocks = new JSONArray();
         activeAssistantSegments = new JSONArray();
+        activeThinkingSteps.clear();
+        activeThinkingPanel = null;
+        activeThinkingList = null;
+        activeThinkingTitle = null;
         activeFollowups = new JSONArray();
         activeFollowupsView = null;
         activeRunId = "";
@@ -2673,8 +2872,34 @@ public class MainActivity extends Activity {
                 renderHistoricalBlock(context, segment.optJSONObject("block"));
             } else if ("product_refs".equals(type) || "product_card".equals(type)) {
                 renderHistoricalBlock(context, segment);
+            } else if ("thinking".equals(type)) {
+                renderHistoricalThinkingSegment(context, segment.optJSONObject("thought"));
             }
         }
+    }
+
+    private void renderHistoricalThinkingSegment(HistoricalMessageRenderContext context, JSONObject thought) {
+        if (context == null || context.parent == null || thought == null) {
+            return;
+        }
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(12), dp(10), dp(12), dp(10));
+        panel.setBackground(rounded(Color.WHITE, dp(16)));
+        int bubbleWidth = (int) (getResources().getDisplayMetrics().widthPixels * 0.82f);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(bubbleWidth, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.gravity = Gravity.LEFT;
+        params.setMargins(0, dp(4), 0, dp(8));
+        TextView title = new TextView(this);
+        title.setText("已完成思考");
+        title.setTextSize(15);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTextColor(Color.rgb(31, 41, 55));
+        panel.addView(title, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout.LayoutParams stepParams = new LinearLayout.LayoutParams(-1, -2);
+        stepParams.topMargin = dp(8);
+        panel.addView(thinkingStepView(thought), stepParams);
+        context.parent.addView(panel, params);
     }
 
     private void renderHistoricalTextSegment(HistoricalMessageRenderContext context, String text) {

@@ -220,6 +220,15 @@ func (r *Runtime) runReactAgent(ctx context.Context, run domain.AgentRun, plan r
 			"result_truncated":      false,
 			"admin_visible_note":    "工具结果完整写入 trace，管理员页面可直接排查检索片段、弱相关候选、剔除原因和工具返回。",
 		})
+		if err := r.emitThinkingStep(ctx, run.RunID, domain.ThoughtStep{
+			ID:      "retrieve",
+			Title:   "查询商品与资料",
+			Status:  "done",
+			Summary: thinkingSummaryForToolObservation(observation),
+			Order:   2,
+		}, emit); err != nil {
+			return result, err
+		}
 		if observation.Cart != nil {
 			// 购物车类工具的结构化结果即时发给前端，让页面能直接刷新购物车状态。
 			if err := emitCartBlock(run.RunID, *observation.Cart, emit); err != nil {
@@ -615,6 +624,22 @@ func statusTextForTool(tool string) string {
 	default:
 		return "正在调用工具"
 	}
+}
+
+func thinkingSummaryForToolObservation(observation toolObservation) string {
+	if strings.TrimSpace(observation.Message) != "" {
+		return observation.Message
+	}
+	if len(observation.ProductIDs) > 0 {
+		return fmt.Sprintf("已找到 %d 个可用商品候选。", len(observation.ProductIDs))
+	}
+	if len(observation.ChunkIDs) > 0 {
+		return fmt.Sprintf("已找到 %d 个可参考资料片段。", len(observation.ChunkIDs))
+	}
+	if observation.OK {
+		return "已完成相关信息查询。"
+	}
+	return "查询未得到可用结果，正在尝试用现有信息回答。"
 }
 
 func blocksFromReact(action reactAction, productIDs []string, chunkIDs []string) []domain.AgentBlock {

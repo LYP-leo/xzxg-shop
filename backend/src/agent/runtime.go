@@ -137,6 +137,13 @@ func (r *Runtime) Stream(ctx context.Context, run domain.AgentRun, message domai
 		"level":           plan.Level,
 		"secondary_level": plan.SecondaryLevel,
 	})
+	needSummaryCtx, cancelNeedSummary := context.WithCancel(ctx)
+	needSummaryDone := make(chan struct{})
+	defer cancelNeedSummary()
+	go func() {
+		defer close(needSummaryDone)
+		r.emitNeedSummaryStep(needSummaryCtx, run, effectiveQuery, plan, emit)
+	}()
 
 	result, handled, err := r.runNonGuideAction(ctx, run, plan, effectiveQuery, emit)
 	if err != nil {
@@ -168,6 +175,24 @@ func (r *Runtime) Stream(ctx context.Context, run domain.AgentRun, message domai
 	if _, ok := r.store.UpdateRunStatus(ctx, run.AccountID, run.RunID, domain.RunStatusCompleted); !ok {
 		r.logger.Warn("agent run status update skipped", "run_id", run.RunID)
 	}
+	if err := r.emitThinkingStep(ctx, run.RunID, domain.ThoughtStep{
+		ID:      "answer",
+		Title:   "总结答案",
+		Status:  "done",
+		Summary: "已根据当前可用信息生成回答。",
+		Order:   3,
+	}, emit); err != nil {
+		return err
+	}
+	select {
+	case <-needSummaryDone:
+	default:
+		cancelNeedSummary()
+		select {
+		case <-needSummaryDone:
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
 	r.trace(ctx, run, "run", "completed", "", "ok", 0, "", nil)
 	return emit(domain.SSEEvent{Type: "message_end", RunID: run.RunID})
 }
@@ -179,8 +204,116 @@ func (r *Runtime) emitStatus(ctx context.Context, runID string, stage string, te
 	if err := emit(domain.SSEEvent{Type: "status", RunID: runID, Stage: stage, Text: text}); err != nil {
 		return err
 	}
+	if step, ok := thinkingStepForStatus(stage, text); ok {
+		if err := r.emitThinkingStep(ctx, runID, step, emit); err != nil {
+			return err
+		}
+	}
 	time.Sleep(120 * time.Millisecond)
 	return nil
+}
+
+func (r *Runtime) emitThinkingStep(ctx context.Context, runID string, step domain.ThoughtStep, emit func(domain.SSEEvent) error) error {
+	if step.ID == "" || step.Title == "" || step.Status == "" {
+		return nil
+	}
+	if r.store != nil && r.store.IsRunCanceled(ctx, runID) {
+		return emit(domain.SSEEvent{Type: "error", RunID: runID, Code: "canceled", Message: "已停止生成"})
+	}
+	return emit(domain.SSEEvent{Type: "thinking_delta", RunID: runID, Step: &step})
+}
+
+func thinkingStepForStatus(stage string, text string) (domain.ThoughtStep, bool) {
+	switch stage {
+	case "intent":
+		return domain.ThoughtStep{ID: "intent", Title: "分析用户需求", Status: "running", Order: 1}, true
+	case "tool", "skill":
+		return domain.ThoughtStep{ID: "retrieve", Title: "查询商品与资料", Status: "running", Summary: text, Order: 2}, true
+	case "answer":
+		return domain.ThoughtStep{ID: "answer", Title: "总结答案", Status: "running", Summary: text, Order: 3}, true
+	default:
+		return domain.ThoughtStep{}, false
+	}
+}
+
+func (r *Runtime) emitNeedSummaryStep(ctx context.Context, run domain.AgentRun, query string, plan runPlan, emit func(domain.SSEEvent) error) {
+	summary := r.generateNeedSummary(ctx, run, query, plan)
+	if ctx.Err() != nil {
+		return
+	}
+	if summary == "" {
+		summary = fallbackNeedSummary(query, plan)
+	}
+	if err := r.emitThinkingStep(ctx, run.RunID, domain.ThoughtStep{
+		ID:      "intent",
+		Title:   "分析用户需求",
+		Status:  "done",
+		Summary: summary,
+		Order:   1,
+	}, emit); err != nil && r.logger != nil {
+		r.logger.Warn("emit need summary failed", "run_id", run.RunID, "error", err)
+	}
+}
+
+func (r *Runtime) generateNeedSummary(ctx context.Context, run domain.AgentRun, query string, plan runPlan) string {
+	if !r.llm.Enabled() {
+		return ""
+	}
+	startedAt := time.Now()
+	temperature := 0.2
+	messages := []ChatMessage{
+		{Role: "system", Content: `你是电商导购的需求理解摘要器。根据用户问题和已识别意图，输出给用户看的需求理解摘要。
+要求：
+- 只输出一段中文，50-90字。
+- 概括用户想买什么、核心偏好、预算/场景/功能/外观/风险等约束。
+- 不输出内部意图名、模型思考、工具名、JSON 或列表。
+- 不编造用户没有表达或上下文没有提供的信息。`},
+		{Role: "user", Content: fmt.Sprintf("用户问题：%s\n路由：%s\n意图：%s\n层级：%s\n二级层级：%s\n模型分类理由：%s", query, plan.Route, plan.ReferenceIntent(), plan.Level, plan.SecondaryLevel, plan.Reasoning)},
+	}
+	model := r.modelForRole(ctx, modelRoleNeedSummary, r.llm.SmallModel())
+	content, err := r.llm.Complete(ctx, model, messages, temperature)
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Warn("need summary fallback", "run_id", run.RunID, "error", err)
+		}
+		r.traceLLM(ctx, run, "thinking.need_summary", model, startedAt, err, llmPromptMetadata(messages, temperature, nil))
+		return ""
+	}
+	r.traceLLM(ctx, run, "thinking.need_summary", model, startedAt, nil, llmPromptMetadata(messages, temperature, map[string]any{
+		"raw_length": len([]rune(content)),
+	}))
+	return cleanNeedSummary(content)
+}
+
+func cleanNeedSummary(content string) string {
+	content = strings.TrimSpace(extractJSONObject(content))
+	if strings.HasPrefix(content, "{") {
+		var decoded map[string]string
+		if err := json.Unmarshal([]byte(content), &decoded); err == nil {
+			for _, key := range []string{"summary", "content", "text"} {
+				if value := strings.TrimSpace(decoded[key]); value != "" {
+					content = value
+					break
+				}
+			}
+		}
+	}
+	content = strings.TrimSpace(strings.Trim(content, "` \n\t"))
+	content = strings.TrimPrefix(content, "需求理解：")
+	content = strings.TrimPrefix(content, "用户需求：")
+	return truncateRunes(strings.TrimSpace(content), 110)
+}
+
+func fallbackNeedSummary(query string, plan runPlan) string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return "已识别当前需求，正在结合可用商品和资料继续处理。"
+	}
+	prefix := "已识别当前需求："
+	if plan.Route == "non_guide" {
+		prefix = "已识别当前服务诉求："
+	}
+	return truncateRunes(prefix+query, 90)
 }
 
 type runPlan struct {

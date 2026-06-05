@@ -116,9 +116,19 @@ type AgentRun struct {
 }
 
 type AgentSegment struct {
-	Type  string      `json:"type"`
-	Text  string      `json:"text,omitempty"`
-	Block *AgentBlock `json:"block,omitempty"`
+	Type    string       `json:"type"`
+	Text    string       `json:"text,omitempty"`
+	Block   *AgentBlock  `json:"block,omitempty"`
+	Thought *ThoughtStep `json:"thought,omitempty"`
+}
+
+type ThoughtStep struct {
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Status  string `json:"status"`
+	Summary string `json:"summary,omitempty"`
+	Detail  string `json:"detail,omitempty"`
+	Order   int    `json:"order,omitempty"`
 }
 
 type AgentTraceEvent struct {
@@ -566,17 +576,18 @@ type ComparisonRow struct {
 }
 
 type SSEEvent struct {
-	Type          string      `json:"type"`
-	RunID         string      `json:"run_id,omitempty"`
-	SessionID     string      `json:"session_id,omitempty"`
-	UserMessageID string      `json:"user_message_id,omitempty"`
-	TraceID       string      `json:"trace_id,omitempty"`
-	Stage         string      `json:"stage,omitempty"`
-	Text          string      `json:"text,omitempty"`
-	Delta         string      `json:"delta,omitempty"`
-	Block         *AgentBlock `json:"block,omitempty"`
-	Part          *AgentBlock `json:"part,omitempty"`
-	Questions     []string    `json:"questions,omitempty"`
-	Code          string      `json:"code,omitempty"`
-	Message       string      `json:"message,omitempty"`
+	Type          string       `json:"type"`
+	RunID         string       `json:"run_id,omitempty"`
+	SessionID     string       `json:"session_id,omitempty"`
+	UserMessageID string       `json:"user_message_id,omitempty"`
+	TraceID       string       `json:"trace_id,omitempty"`
+	Stage         string       `json:"stage,omitempty"`
+	Text          string       `json:"text,omitempty"`
+	Delta         string       `json:"delta,omitempty"`
+	Block         *AgentBlock  `json:"block,omitempty"`
+	Part          *AgentBlock  `json:"part,omitempty"`
+	Step          *ThoughtStep `json:"step,omitempty"`
+	Questions     []string     `json:"questions,omitempty"`
+	Code          string       `json:"code,omitempty"`
+	Message       string       `json:"message,omitempty"`
 }

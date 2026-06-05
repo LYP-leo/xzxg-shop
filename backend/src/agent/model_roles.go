@@ -9,6 +9,7 @@ const (
 	modelRolePlannerRoute       = "planner_route"
 	modelRolePlannerGuideIntent = "planner_guide_intent"
 	modelRolePlannerNonGuide    = "planner_non_guide_intent"
+	modelRoleNeedSummary        = "need_summary"
 	modelRoleMemoryRetrieval    = "memory_retrieval"
 	modelRoleMemorySummary      = "memory_summary"
 	modelRoleFollowups          = "followups"

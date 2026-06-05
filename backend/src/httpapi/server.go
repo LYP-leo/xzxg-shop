@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/LYP-leo/xzxg-shop/backend/src/agent"
@@ -2127,6 +2128,7 @@ func (s *Server) streamAgentRun(w http.ResponseWriter, r *http.Request, run doma
 	blocks := make([]domain.AgentBlock, 0)
 	followups := make([]string, 0)
 	segments := make([]domain.AgentSegment, 0)
+	var emitMu sync.Mutex
 	flushText := func() {
 		text := strings.TrimSpace(currentText.String())
 		if text == "" {
@@ -2138,6 +2140,8 @@ func (s *Server) streamAgentRun(w http.ResponseWriter, r *http.Request, run doma
 	}
 
 	emit := func(event domain.SSEEvent) error {
+		emitMu.Lock()
+		defer emitMu.Unlock()
 		switch event.Type {
 		case "text_delta":
 			content.WriteString(event.Delta)
@@ -2151,6 +2155,11 @@ func (s *Server) streamAgentRun(w http.ResponseWriter, r *http.Request, run doma
 			}
 		case "followups":
 			followups = append([]string{}, event.Questions...)
+		case "thinking_delta":
+			if event.Step != nil {
+				step := *event.Step
+				segments = upsertThinkingSegment(segments, step)
+			}
 		}
 		payload, err := json.Marshal(event)
 		if err != nil {
@@ -2180,6 +2189,19 @@ func (s *Server) streamAgentRun(w http.ResponseWriter, r *http.Request, run doma
 	if !skipSessionSummaryAfterRun(blocks) {
 		s.runtime.UpdateSessionSummaryAfterRun(r.Context(), run, message, finalAnswer)
 	}
+}
+
+func upsertThinkingSegment(segments []domain.AgentSegment, step domain.ThoughtStep) []domain.AgentSegment {
+	if step.ID == "" {
+		return segments
+	}
+	for index := range segments {
+		if segments[index].Type == "thinking" && segments[index].Thought != nil && segments[index].Thought.ID == step.ID {
+			segments[index].Thought = &step
+			return segments
+		}
+	}
+	return append(segments, domain.AgentSegment{Type: "thinking", Thought: &step})
 }
 
 func skipSessionSummaryAfterRun(blocks []domain.AgentBlock) bool {
