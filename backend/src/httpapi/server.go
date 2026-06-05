@@ -28,6 +28,7 @@ import (
 	"github.com/LYP-leo/xzxg-shop/backend/src/rag"
 	"github.com/LYP-leo/xzxg-shop/backend/src/retrievalconfig"
 	"github.com/LYP-leo/xzxg-shop/backend/src/store"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type Server struct {
@@ -147,7 +148,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	account, passwordHash, ok := s.store.GetAccountByUsername(r.Context(), username)
-	if !ok || passwordHash != hashPassword(request.Password) {
+	if !ok || !verifyPassword(request.Password, passwordHash) {
 		writeError(w, http.StatusUnauthorized, "invalid_credential", "账号或密码错误")
 		return
 	}
@@ -2320,6 +2321,17 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (domain.Ac
 func hashPassword(password string) string {
 	sum := sha256.Sum256([]byte(password))
 	return hex.EncodeToString(sum[:])
+}
+
+func verifyPassword(password string, passwordHash string) bool {
+	passwordHash = strings.TrimSpace(passwordHash)
+	if passwordHash == "" {
+		return false
+	}
+	if strings.HasPrefix(passwordHash, "$2a$") || strings.HasPrefix(passwordHash, "$2b$") || strings.HasPrefix(passwordHash, "$2y$") {
+		return bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)) == nil
+	}
+	return passwordHash == hashPassword(password)
 }
 
 func validateRegisterInput(username string, password string, displayName string) error {
