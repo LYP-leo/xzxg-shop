@@ -366,12 +366,16 @@ public class ApiClient {
     }
 
     public StreamCall streamMessage(String sessionId, String content, JSONArray attachments, SseCallback callback) {
+        return streamMessage(sessionId, "android_" + System.currentTimeMillis(), content, attachments, callback);
+    }
+
+    public StreamCall streamMessage(String sessionId, String clientMessageId, String content, JSONArray attachments, SseCallback callback) {
         StreamCall call = new StreamCall();
         Thread thread = new Thread(() -> {
             HttpURLConnection conn = null;
             try {
                 JSONObject body = new JSONObject();
-                body.put("client_message_id", "android_" + System.currentTimeMillis());
+                body.put("client_message_id", clientMessageId == null || clientMessageId.trim().isEmpty() ? "android_" + System.currentTimeMillis() : clientMessageId);
                 body.put("content", content);
                 body.put("attachments", attachments == null ? new JSONArray() : attachments);
                 conn = open("/agent/sessions/" + sessionId + "/messages:stream", "POST");
