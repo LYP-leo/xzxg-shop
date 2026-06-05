@@ -4,11 +4,14 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.ProtocolException;
+import java.net.SocketException;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -336,18 +339,82 @@ public class ApiClient {
     }
 
     public JSONObject uploadAttachment(String name, String mimeType, String type, byte[] data) throws Exception {
-        String boundary = "----xzxgAndroid" + System.currentTimeMillis();
-        HttpURLConnection conn = openRaw("/attachments", "POST");
-        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
-        try (OutputStream out = conn.getOutputStream()) {
-            writeFormField(out, boundary, "type", type == null ? "file" : type);
-            out.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
-            out.write(("Content-Disposition: form-data; name=\"file\"; filename=\"" + safeFileName(name) + "\"\r\n").getBytes(StandardCharsets.UTF_8));
-            out.write(("Content-Type: " + (mimeType == null || mimeType.isEmpty() ? "application/octet-stream" : mimeType) + "\r\n\r\n").getBytes(StandardCharsets.UTF_8));
-            out.write(data);
-            out.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+        if (data == null || data.length == 0) {
+            throw new IOException("附件内容为空，无法发送");
         }
-        return readJSON(conn);
+        if (data.length > 10 * 1024 * 1024) {
+            throw new IOException("单个附件不能超过 10MB");
+        }
+        String boundary = "----xzxgAndroid" + System.currentTimeMillis();
+        byte[] body = attachmentMultipartBody(boundary, name, mimeType, type, data);
+        try {
+            return uploadAttachmentBody(boundary, body, name, type);
+        } catch (Exception error) {
+            if (!shouldRetryUpload(error)) {
+                throw error;
+            }
+            return uploadAttachmentBody(boundary, body, name, type);
+        }
+    }
+
+    private JSONObject uploadAttachmentBody(String boundary, byte[] body, String name, String type) throws Exception {
+        HttpURLConnection conn = openRaw("/files", "POST");
+        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+        conn.setRequestProperty("Connection", "close");
+        conn.setFixedLengthStreamingMode(body.length);
+        try (OutputStream out = conn.getOutputStream()) {
+            out.write(body);
+            out.flush();
+        } catch (Exception error) {
+            conn.disconnect();
+            throw error;
+        }
+        try {
+            return fileUploadToAttachment(readJSON(conn), name, type);
+        } finally {
+            conn.disconnect();
+        }
+    }
+
+    private byte[] attachmentMultipartBody(String boundary, String name, String mimeType, String type, byte[] data) throws Exception {
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        writeFormField(body, boundary, "type", type == null || type.trim().isEmpty() ? "file" : type.trim());
+        body.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
+        body.write(("Content-Disposition: form-data; name=\"file\"; filename=\"" + safeFileName(name) + "\"\r\n").getBytes(StandardCharsets.UTF_8));
+        body.write(("Content-Type: " + (mimeType == null || mimeType.isEmpty() ? "application/octet-stream" : mimeType) + "\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+        body.write(data);
+        body.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+        return body.toByteArray();
+    }
+
+    private boolean shouldRetryUpload(Exception error) {
+        if (error instanceof SocketException || error instanceof ProtocolException) {
+            return true;
+        }
+        if (error instanceof IOException && error.getMessage() != null) {
+            String message = error.getMessage().toLowerCase();
+            return message.contains("broken pipe") || message.contains("unexpected end of stream") || message.contains("connection reset");
+        }
+        return false;
+    }
+
+    private JSONObject fileUploadToAttachment(JSONObject response, String name, String type) throws Exception {
+        JSONObject file = response == null ? null : response.optJSONObject("file");
+        if (file == null) {
+            return response == null ? new JSONObject() : response;
+        }
+        JSONObject attachment = new JSONObject();
+        String fileId = file.optString("file_id", "");
+        attachment.put("attachment_id", fileId);
+        attachment.put("type", type == null || type.trim().isEmpty() ? attachmentTypeFromMime(file.optString("mime_type", "")) : type.trim());
+        attachment.put("url", file.optString("url", ""));
+        attachment.put("name", name == null || name.trim().isEmpty() ? fileId : name.trim());
+        attachment.put("object_key", file.optString("object_key", ""));
+        return attachment;
+    }
+
+    private String attachmentTypeFromMime(String mimeType) {
+        return mimeType != null && mimeType.startsWith("image/") ? "image" : "file";
     }
 
     private void writeFormField(OutputStream out, String boundary, String name, String value) throws Exception {

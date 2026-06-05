@@ -11,13 +11,13 @@ import java.util.List;
 
 public class LocalChatStore extends SQLiteOpenHelper {
     public LocalChatStore(Context context) {
-        super(context, "xzxg_chat.db", null, 3);
+        super(context, "xzxg_chat.db", null, 4);
     }
 
     @Override
     public void onCreate(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE sessions (local_session_id TEXT PRIMARY KEY, server_session_id TEXT, title TEXT, summary TEXT, sync_state TEXT, created_at INTEGER, updated_at INTEGER, pinned_at INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER NOT NULL DEFAULT 0)");
-        db.execSQL("CREATE TABLE messages (local_message_id TEXT PRIMARY KEY, local_session_id TEXT, role TEXT, content TEXT, blocks_json TEXT, followups_json TEXT NOT NULL DEFAULT '[]', segments_json TEXT NOT NULL DEFAULT '[]', status TEXT, created_at INTEGER)");
+        db.execSQL("CREATE TABLE messages (local_message_id TEXT PRIMARY KEY, local_session_id TEXT, role TEXT, content TEXT, attachments_json TEXT NOT NULL DEFAULT '[]', blocks_json TEXT, followups_json TEXT NOT NULL DEFAULT '[]', segments_json TEXT NOT NULL DEFAULT '[]', status TEXT, created_at INTEGER)");
     }
 
     @Override
@@ -29,6 +29,9 @@ public class LocalChatStore extends SQLiteOpenHelper {
             addColumnIfMissing(db, "messages", "segments_json", "TEXT NOT NULL DEFAULT '[]'");
             addColumnIfMissing(db, "sessions", "pinned_at", "INTEGER NOT NULL DEFAULT 0");
             addColumnIfMissing(db, "sessions", "deleted_at", "INTEGER NOT NULL DEFAULT 0");
+        }
+        if (oldVersion < 4) {
+            addColumnIfMissing(db, "messages", "attachments_json", "TEXT NOT NULL DEFAULT '[]'");
         }
     }
 
@@ -98,6 +101,10 @@ public class LocalChatStore extends SQLiteOpenHelper {
         saveMessage(localSessionId, role, content, "[]", "[]", "[]", status);
     }
 
+    public void saveUserMessage(String localSessionId, String content, String attachmentsJson, String status) {
+        saveMessageWithAttachments(localSessionId, "user", content, attachmentsJson, "[]", "[]", "[]", status);
+    }
+
     public void saveAssistantTurn(String localSessionId, String content, String blocksJson, String followupsJson, String status) {
         saveAssistantTurn(localSessionId, content, blocksJson, followupsJson, "[]", status);
     }
@@ -111,6 +118,10 @@ public class LocalChatStore extends SQLiteOpenHelper {
     }
 
     public void saveMessage(String localSessionId, String role, String content, String blocksJson, String followupsJson, String segmentsJson, String status) {
+        saveMessageWithAttachments(localSessionId, role, content, "[]", blocksJson, followupsJson, segmentsJson, status);
+    }
+
+    public void saveMessageWithAttachments(String localSessionId, String role, String content, String attachmentsJson, String blocksJson, String followupsJson, String segmentsJson, String status) {
         ContentValues values = new ContentValues();
         long now = System.currentTimeMillis();
         String safeContent = content == null ? "" : content;
@@ -118,6 +129,7 @@ public class LocalChatStore extends SQLiteOpenHelper {
         values.put("local_session_id", localSessionId);
         values.put("role", role);
         values.put("content", safeContent);
+        values.put("attachments_json", attachmentsJson == null || attachmentsJson.isEmpty() ? "[]" : attachmentsJson);
         values.put("blocks_json", blocksJson == null || blocksJson.isEmpty() ? "[]" : blocksJson);
         values.put("followups_json", followupsJson == null || followupsJson.isEmpty() ? "[]" : followupsJson);
         values.put("segments_json", segmentsJson == null || segmentsJson.isEmpty() ? "[]" : segmentsJson);
@@ -260,10 +272,10 @@ public class LocalChatStore extends SQLiteOpenHelper {
 
     public List<MessageItem> messages(String localSessionId) {
         ArrayList<MessageItem> items = new ArrayList<>();
-        Cursor cursor = getReadableDatabase().query("messages", new String[]{"role", "content", "status", "blocks_json", "followups_json", "segments_json"}, "local_session_id = ?", new String[]{localSessionId}, null, null, "created_at ASC");
+        Cursor cursor = getReadableDatabase().query("messages", new String[]{"role", "content", "status", "attachments_json", "blocks_json", "followups_json", "segments_json"}, "local_session_id = ?", new String[]{localSessionId}, null, null, "created_at ASC");
         try {
             while (cursor.moveToNext()) {
-                items.add(new MessageItem(cursor.getString(0), cursor.getString(1), cursor.getString(2), cursor.getString(3), cursor.getString(4), cursor.getString(5)));
+                items.add(new MessageItem(cursor.getString(0), cursor.getString(1), cursor.getString(2), cursor.getString(3), cursor.getString(4), cursor.getString(5), cursor.getString(6)));
             }
         } finally {
             cursor.close();
@@ -384,18 +396,24 @@ public class LocalChatStore extends SQLiteOpenHelper {
         public final String role;
         public final String content;
         public final String status;
+        public final String attachmentsJson;
         public final String blocksJson;
         public final String followupsJson;
         public final String segmentsJson;
 
         MessageItem(String role, String content, String status, String blocksJson, String followupsJson) {
-            this(role, content, status, blocksJson, followupsJson, "[]");
+            this(role, content, status, "[]", blocksJson, followupsJson, "[]");
         }
 
         MessageItem(String role, String content, String status, String blocksJson, String followupsJson, String segmentsJson) {
+            this(role, content, status, "[]", blocksJson, followupsJson, segmentsJson);
+        }
+
+        MessageItem(String role, String content, String status, String attachmentsJson, String blocksJson, String followupsJson, String segmentsJson) {
             this.role = role;
             this.content = content;
             this.status = status;
+            this.attachmentsJson = attachmentsJson == null ? "[]" : attachmentsJson;
             this.blocksJson = blocksJson == null ? "[]" : blocksJson;
             this.followupsJson = followupsJson == null ? "[]" : followupsJson;
             this.segmentsJson = segmentsJson == null ? "[]" : segmentsJson;
