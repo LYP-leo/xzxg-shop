@@ -73,6 +73,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -1468,6 +1469,8 @@ public class MainActivity extends Activity {
         navGroup.addView(drawerNavButton("🏷", "商品", "products", v -> renderProducts()));
         navGroup.addView(drawerNavButton("🛒", "购物车", "cart", v -> renderCart()));
         navGroup.addView(drawerNavButton("📦", "订单", "orders", v -> renderOrders()));
+        navGroup.addView(drawerNavButton("券", "优惠券", "coupons", v -> renderCoupons()));
+        navGroup.addView(drawerNavButton("促", "活动", "promotions", v -> renderPromotions()));
         drawer.addView(navGroup);
 
         View divider = new View(this);
@@ -2056,7 +2059,8 @@ public class MainActivity extends Activity {
         activeStreamServerSessionId = ownerServerSessionId;
         activeStreamTitle = titleFromChatText(text);
         removeLoadingBubbleIfNeeded();
-        activeStreamCall = api.streamMessage(ownerServerSessionId, text, attachments, new ApiClient.SseCallback() {
+        String clientMessageId = "android_" + UUID.randomUUID().toString();
+        activeStreamCall = api.streamMessage(ownerServerSessionId, clientMessageId, text, attachments, new ApiClient.SseCallback() {
             @Override
             public void onEvent(JSONObject event) {
                 runOnUiThread(() -> handleSse(ownerLocalSessionId, event));
@@ -2086,6 +2090,10 @@ public class MainActivity extends Activity {
         String type = event.optString("type");
         if ("message_start".equals(type)) {
             activeRunId = event.optString("run_id", "");
+            return;
+        }
+        if ("duplicate_message".equals(type)) {
+            finishDuplicateStream(ownerLocalSessionId, event);
             return;
         }
         if ("status".equals(type)) {
@@ -2410,6 +2418,41 @@ public class MainActivity extends Activity {
 
     private void finishStream() {
         finishStream(localSessionId);
+    }
+
+    private void finishDuplicateStream(String ownerLocalSessionId, JSONObject event) {
+        flushPendingAssistantForm(true);
+        removeLoadingBubbleIfNeeded();
+        streaming = false;
+        stopRequested = false;
+        activeRunId = "";
+        activeStreamCall = null;
+        activeAssistant = null;
+        activeAssistantMessageBubble = null;
+        activeAssistantMarkdown = null;
+        activeAssistantFullMarkdown = null;
+        activeAssistantFormMode = false;
+        activeAssistantImplicitTableMode = false;
+        activeAssistantFormMarkdown = new StringBuilder();
+        activeAssistantTagPending = new StringBuilder();
+        activeAssistantFormCodeBox = null;
+        activeAssistantFormCodeText = null;
+        activeAssistantBlocks = new JSONArray();
+        activeAssistantSegments = new JSONArray();
+        activeThinking = null;
+        hasReceivedThinkingDelta = false;
+        loggedMissingThinkingDelta = false;
+        pendingThinkingStatuses.clear();
+        activeFollowups = new JSONArray();
+        activeFollowupsView = null;
+        updateInputActionButtonState();
+        toastLine("消息已提交过，正在刷新会话");
+        if (activeStreamServerSessionId != null && !activeStreamServerSessionId.isEmpty()) {
+            loadRemoteSessionDetail(activeStreamServerSessionId, ownerLocalSessionId);
+        }
+        activeStreamLocalSessionId = "";
+        activeStreamServerSessionId = "";
+        activeStreamTitle = "";
     }
 
     private void finishStream(String ownerLocalSessionId) {
@@ -3242,22 +3285,27 @@ public class MainActivity extends Activity {
             return;
         }
         if ("discount_preview".equals(type)) {
-            parent.addView(discountPreviewCard(block.optJSONObject("discount")));
+            parent.addView(discountPreviewCard(block));
             scrollBottom();
             return;
         }
         if ("coupon_list".equals(type)) {
-            parent.addView(couponListCard(block.optJSONArray("coupons")));
+            parent.addView(couponListCard(serviceItems(block, "coupons")));
             scrollBottom();
             return;
         }
         if ("navigation_action".equals(type)) {
-            parent.addView(navigationActionCard(block.optJSONObject("action")));
+            parent.addView(navigationActionCard(block));
             scrollBottom();
             return;
         }
         if ("review_summary".equals(type)) {
-            parent.addView(warningCard("评价摘要：" + block.optString("rating_avg", block.optString("ratingAvg", ""))));
+            parent.addView(reviewSummaryCard(block));
+            scrollBottom();
+            return;
+        }
+        if ("after_sales_policy".equals(type)) {
+            parent.addView(afterSalesPolicyCard(block));
             scrollBottom();
             return;
         }
@@ -3511,11 +3559,23 @@ public class MainActivity extends Activity {
             return;
         }
         if ("discount_preview".equals(type)) {
-            context.parent.addView(discountPreviewCard(block.optJSONObject("discount")));
+            context.parent.addView(discountPreviewCard(block));
             return;
         }
         if ("coupon_list".equals(type)) {
-            context.parent.addView(couponListCard(block.optJSONArray("coupons")));
+            context.parent.addView(couponListCard(serviceItems(block, "coupons")));
+            return;
+        }
+        if ("review_summary".equals(type)) {
+            context.parent.addView(reviewSummaryCard(block));
+            return;
+        }
+        if ("after_sales_policy".equals(type)) {
+            context.parent.addView(afterSalesPolicyCard(block));
+            return;
+        }
+        if ("navigation_action".equals(type)) {
+            context.parent.addView(navigationActionCard(block));
         }
     }
 
@@ -3809,9 +3869,10 @@ public class MainActivity extends Activity {
         return card;
     }
 
-    private View discountPreviewCard(JSONObject discount) {
+    private View discountPreviewCard(JSONObject block) {
         LinearLayout card = panel();
-        card.addView(strong("优惠明细"));
+        JSONObject discount = serviceSummary(block, "discount");
+        card.addView(strong(blockTitle(block, "优惠明细")));
         if (discount == null) {
             card.addView(muted("暂无可用优惠"));
             return card;
@@ -3820,11 +3881,14 @@ public class MainActivity extends Activity {
         card.addView(muted("优惠金额：¥" + discount.optString("discount_amount", discount.optString("discountAmount", "0"))));
         card.addView(strong("应付：¥" + discount.optString("pay_amount", discount.optString("payAmount", "0"))));
         JSONArray lines = discount.optJSONArray("lines");
+        if (lines == null) {
+            lines = serviceItems(block, "lines");
+        }
         if (lines != null) {
             for (int i = 0; i < lines.length(); i++) {
                 JSONObject line = lines.optJSONObject(i);
                 if (line != null) {
-                    card.addView(muted(line.optString("name", "优惠") + " -¥" + line.optString("amount", "0")));
+                    card.addView(muted(line.optString("name", "优惠") + " -¥" + line.optString("amount", line.optString("discount_amount", "0"))));
                 }
             }
         }
@@ -3847,10 +3911,65 @@ public class MainActivity extends Activity {
         return card;
     }
 
-    private View navigationActionCard(JSONObject action) {
+    private View reviewSummaryCard(JSONObject block) {
         LinearLayout card = panel();
-        String label = action == null ? "查看详情" : action.optString("label", "查看详情");
-        String route = action == null ? "" : action.optString("route", "");
+        card.addView(strong(blockTitle(block, "评价摘要")));
+        JSONObject summary = serviceSummary(block, "summary");
+        if (summary != null) {
+            String average = summary.optString("average_rating", summary.optString("rating_avg", ""));
+            String count = summary.optString("review_count", summary.optString("rating_count", ""));
+            if (!average.isEmpty() || !count.isEmpty()) {
+                card.addView(muted("评分 " + (average.isEmpty() ? "-" : average) + " · " + (count.isEmpty() ? "0" : count) + " 条评价"));
+            }
+        }
+        JSONArray items = serviceItems(block, "reviews");
+        if (items == null || items.length() == 0) {
+            card.addView(muted(block.optString("message", "暂无评价摘要")));
+            return card;
+        }
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject review = items.optJSONObject(i);
+            if (review != null) {
+                String rating = review.optString("rating", "");
+                String content = review.optString("content", review.optString("summary", ""));
+                card.addView(muted((rating.isEmpty() ? "" : "★ " + rating + "  ") + content));
+            }
+        }
+        return card;
+    }
+
+    private View afterSalesPolicyCard(JSONObject block) {
+        LinearLayout card = panel();
+        card.addView(strong(blockTitle(block, "售后规则")));
+        String message = block.optString("message", "");
+        if (!message.isEmpty()) {
+            card.addView(muted(message));
+        }
+        JSONArray items = serviceItems(block, "policies");
+        if (items == null || items.length() == 0) {
+            card.addView(muted("暂无可展示的售后规则。"));
+            return card;
+        }
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject item = items.optJSONObject(i);
+            if (item != null) {
+                String name = item.optString("name", item.optString("title", "规则"));
+                String description = item.optString("description", item.optString("content", ""));
+                card.addView(muted(name + (description.isEmpty() ? "" : "：" + description)));
+            }
+        }
+        return card;
+    }
+
+    private View navigationActionCard(JSONObject block) {
+        LinearLayout card = panel();
+        JSONObject action = block == null ? null : block.optJSONObject("action");
+        String label = action == null ? blockTitle(block, "查看详情") : action.optString("label", blockTitle(block, "查看详情"));
+        String route = action == null ? "" : action.optString("route", action.optString("target", ""));
+        String message = block == null ? "" : block.optString("message", "");
+        if (!message.isEmpty()) {
+            card.addView(muted(message));
+        }
         TextView view = strong(label + "  >");
         view.setOnClickListener(v -> navigateRoute(route));
         card.addView(view);
@@ -3858,19 +3977,52 @@ public class MainActivity extends Activity {
     }
 
     private void navigateRoute(String route) {
+        if (route == null) {
+            route = "";
+        }
         if ("orders".equals(route)) {
             renderOrders();
         } else if ("cart".equals(route)) {
             renderCart();
         } else if ("products".equals(route)) {
             renderProducts();
-        } else if ("coupons".equals(route)) {
+        } else if ("coupons".equals(route) || "coupon".equals(route)) {
             renderCoupons();
-        } else if ("promotions".equals(route)) {
+        } else if ("promotions".equals(route) || "promotion".equals(route) || "activity".equals(route)) {
             renderProductsTab("activity", false);
         } else {
             toastLine("暂不支持该跳转");
         }
+    }
+
+    private String blockTitle(JSONObject block, String fallback) {
+        if (block == null) {
+            return fallback;
+        }
+        String title = block.optString("title", "");
+        return title.isEmpty() ? fallback : title;
+    }
+
+    private JSONObject serviceSummary(JSONObject block, String legacyKey) {
+        if (block == null) {
+            return null;
+        }
+        JSONObject summary = block.optJSONObject("summary");
+        if (summary != null) {
+            return summary;
+        }
+        return legacyKey == null ? null : block.optJSONObject(legacyKey);
+    }
+
+    private JSONArray serviceItems(JSONObject block, String legacyKey) {
+        if (block == null) {
+            return null;
+        }
+        JSONArray items = block.optJSONArray("items");
+        if (items != null) {
+            return items;
+        }
+        return legacyKey == null ? null : block.optJSONArray(legacyKey);
     }
 
     private void renderFollowups(JSONArray questions, LinearLayout parent) {
@@ -5392,9 +5544,44 @@ public class MainActivity extends Activity {
             toastLine("暂无可评价商品");
             return;
         }
-        JSONObject item = items.optJSONObject(0);
+        if (items.length() == 1) {
+            showReviewForm(order, items.optJSONObject(0));
+            return;
+        }
+        LinearLayout chooser = new LinearLayout(this);
+        chooser.setOrientation(LinearLayout.VERTICAL);
+        chooser.setPadding(dp(8), dp(8), dp(8), dp(4));
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("选择评价商品")
+                .setView(chooser)
+                .setNegativeButton("取消", null)
+                .create();
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject item = items.optJSONObject(i);
+            if (item == null) {
+                continue;
+            }
+            Button option = secondaryButton(item.optString("name", "商品") + " x" + item.optInt("quantity", 1));
+            option.setOnClickListener(v -> {
+                dialog.dismiss();
+                showReviewForm(order, item);
+            });
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(46));
+            params.bottomMargin = dp(8);
+            chooser.addView(option, params);
+        }
+        dialog.show();
+    }
+
+    private void showReviewForm(JSONObject order, JSONObject item) {
+        if (item == null) {
+            toastLine("订单项信息缺失");
+            return;
+        }
         LinearLayout form = new LinearLayout(this);
         form.setOrientation(LinearLayout.VERTICAL);
+        form.setPadding(dp(4), dp(4), dp(4), 0);
+        form.addView(muted(item.optString("name", "商品")));
         EditText rating = inputField("评分 1-5", "5");
         EditText content = inputField("评价内容", "");
         form.addView(rating);
@@ -5408,6 +5595,10 @@ public class MainActivity extends Activity {
     }
 
     private void submitReview(String orderId, String orderItemId, String ratingText, String content) {
+        if (content == null || content.trim().isEmpty()) {
+            toastLine("请填写评价内容");
+            return;
+        }
         int rating = 5;
         try {
             rating = Math.max(1, Math.min(5, Integer.parseInt(ratingText.trim())));
