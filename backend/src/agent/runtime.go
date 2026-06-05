@@ -137,6 +137,13 @@ func (r *Runtime) Stream(ctx context.Context, run domain.AgentRun, message domai
 		"level":           plan.Level,
 		"secondary_level": plan.SecondaryLevel,
 	})
+	needSummaryCtx, cancelNeedSummary := context.WithCancel(ctx)
+	needSummaryDone := make(chan struct{})
+	defer cancelNeedSummary()
+	go func() {
+		defer close(needSummaryDone)
+		r.emitNeedSummaryStep(needSummaryCtx, run, effectiveQuery, plan, emit)
+	}()
 
 	result, handled, err := r.runNonGuideAction(ctx, run, plan, effectiveQuery, emit)
 	if err != nil {
@@ -168,6 +175,24 @@ func (r *Runtime) Stream(ctx context.Context, run domain.AgentRun, message domai
 	if _, ok := r.store.UpdateRunStatus(ctx, run.AccountID, run.RunID, domain.RunStatusCompleted); !ok {
 		r.logger.Warn("agent run status update skipped", "run_id", run.RunID)
 	}
+	if err := r.emitThinkingStep(ctx, run.RunID, domain.ThoughtStep{
+		ID:      "answer",
+		Title:   "总结答案",
+		Status:  "done",
+		Summary: "已根据当前可用信息生成回答。",
+		Order:   3,
+	}, emit); err != nil {
+		return err
+	}
+	select {
+	case <-needSummaryDone:
+	default:
+		cancelNeedSummary()
+		select {
+		case <-needSummaryDone:
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
 	r.trace(ctx, run, "run", "completed", "", "ok", 0, "", nil)
 	return emit(domain.SSEEvent{Type: "message_end", RunID: run.RunID})
 }
@@ -179,8 +204,116 @@ func (r *Runtime) emitStatus(ctx context.Context, runID string, stage string, te
 	if err := emit(domain.SSEEvent{Type: "status", RunID: runID, Stage: stage, Text: text}); err != nil {
 		return err
 	}
+	if step, ok := thinkingStepForStatus(stage, text); ok {
+		if err := r.emitThinkingStep(ctx, runID, step, emit); err != nil {
+			return err
+		}
+	}
 	time.Sleep(120 * time.Millisecond)
 	return nil
+}
+
+func (r *Runtime) emitThinkingStep(ctx context.Context, runID string, step domain.ThoughtStep, emit func(domain.SSEEvent) error) error {
+	if step.ID == "" || step.Title == "" || step.Status == "" {
+		return nil
+	}
+	if r.store != nil && r.store.IsRunCanceled(ctx, runID) {
+		return emit(domain.SSEEvent{Type: "error", RunID: runID, Code: "canceled", Message: "已停止生成"})
+	}
+	return emit(domain.SSEEvent{Type: "thinking_delta", RunID: runID, Step: &step})
+}
+
+func thinkingStepForStatus(stage string, text string) (domain.ThoughtStep, bool) {
+	switch stage {
+	case "intent":
+		return domain.ThoughtStep{ID: "intent", Title: "分析用户需求", Status: "running", Order: 1}, true
+	case "tool", "skill":
+		return domain.ThoughtStep{ID: "retrieve", Title: "查询商品与资料", Status: "running", Summary: text, Order: 2}, true
+	case "answer":
+		return domain.ThoughtStep{ID: "answer", Title: "总结答案", Status: "running", Summary: text, Order: 3}, true
+	default:
+		return domain.ThoughtStep{}, false
+	}
+}
+
+func (r *Runtime) emitNeedSummaryStep(ctx context.Context, run domain.AgentRun, query string, plan runPlan, emit func(domain.SSEEvent) error) {
+	summary := r.generateNeedSummary(ctx, run, query, plan)
+	if ctx.Err() != nil {
+		return
+	}
+	if summary == "" {
+		summary = fallbackNeedSummary(query, plan)
+	}
+	if err := r.emitThinkingStep(ctx, run.RunID, domain.ThoughtStep{
+		ID:      "intent",
+		Title:   "分析用户需求",
+		Status:  "done",
+		Summary: summary,
+		Order:   1,
+	}, emit); err != nil && r.logger != nil {
+		r.logger.Warn("emit need summary failed", "run_id", run.RunID, "error", err)
+	}
+}
+
+func (r *Runtime) generateNeedSummary(ctx context.Context, run domain.AgentRun, query string, plan runPlan) string {
+	if !r.llm.Enabled() {
+		return ""
+	}
+	startedAt := time.Now()
+	temperature := 0.2
+	messages := []ChatMessage{
+		{Role: "system", Content: `你是电商导购的需求理解摘要器。根据用户问题和已识别意图，输出给用户看的需求理解摘要。
+要求：
+- 只输出一段中文，50-90字。
+- 概括用户想买什么、核心偏好、预算/场景/功能/外观/风险等约束。
+- 不输出内部意图名、模型思考、工具名、JSON 或列表。
+- 不编造用户没有表达或上下文没有提供的信息。`},
+		{Role: "user", Content: fmt.Sprintf("用户问题：%s\n路由：%s\n意图：%s\n层级：%s\n二级层级：%s\n模型分类理由：%s", query, plan.Route, plan.ReferenceIntent(), plan.Level, plan.SecondaryLevel, plan.Reasoning)},
+	}
+	model := r.modelForRole(ctx, modelRoleNeedSummary, r.llm.SmallModel())
+	content, err := r.llm.Complete(ctx, model, messages, temperature)
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Warn("need summary fallback", "run_id", run.RunID, "error", err)
+		}
+		r.traceLLM(ctx, run, "thinking.need_summary", model, startedAt, err, llmPromptMetadata(messages, temperature, nil))
+		return ""
+	}
+	r.traceLLM(ctx, run, "thinking.need_summary", model, startedAt, nil, llmPromptMetadata(messages, temperature, map[string]any{
+		"raw_length": len([]rune(content)),
+	}))
+	return cleanNeedSummary(content)
+}
+
+func cleanNeedSummary(content string) string {
+	content = strings.TrimSpace(extractJSONObject(content))
+	if strings.HasPrefix(content, "{") {
+		var decoded map[string]string
+		if err := json.Unmarshal([]byte(content), &decoded); err == nil {
+			for _, key := range []string{"summary", "content", "text"} {
+				if value := strings.TrimSpace(decoded[key]); value != "" {
+					content = value
+					break
+				}
+			}
+		}
+	}
+	content = strings.TrimSpace(strings.Trim(content, "` \n\t"))
+	content = strings.TrimPrefix(content, "需求理解：")
+	content = strings.TrimPrefix(content, "用户需求：")
+	return truncateRunes(strings.TrimSpace(content), 110)
+}
+
+func fallbackNeedSummary(query string, plan runPlan) string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return "已识别当前需求，正在结合可用商品和资料继续处理。"
+	}
+	prefix := "已识别当前需求："
+	if plan.Route == "non_guide" {
+		prefix = "已识别当前服务诉求："
+	}
+	return truncateRunes(prefix+query, 90)
 }
 
 type runPlan struct {
@@ -217,15 +350,9 @@ func (r *Runtime) plan(ctx context.Context, run domain.AgentRun, query string) r
 
 // classifyIntent 使用分层意图识别：
 // 先判断 guide/non_guide；guide 再做 P1-P6 细分；non_guide 再按电商服务域细分。
-// 加购、结算等需要强一致落库的动作仍保留确定性 intent，避免模型口头承诺但没有写业务数据。
+// route 和 intent 都由 planner 模型决定；代码只负责白名单归一化，不用关键词抢路由。
 func (r *Runtime) classifyIntent(ctx context.Context, run domain.AgentRun, query string, recordTrace bool) runPlan {
-	fallback := heuristicPlan(query, r.llm.SmallModel(), r.llm.LargeModel())
-	if isGreeting(query) || isToolIntent(fallback.Intent) {
-		return fallback
-	}
-	if fallback.Route == "non_guide" && fallback.Intent != "" && fallback.Intent != "unsupported" && fallback.Intent != "non_guide" {
-		return fallback
-	}
+	fallback := defaultPlannerFallback(r.llm.SmallModel())
 	if !r.llm.Enabled() {
 		return fallback
 	}
@@ -269,12 +396,6 @@ func (r *Runtime) classifyIntent(ctx context.Context, run domain.AgentRun, query
 		return guidePlan
 	}
 
-	if isToolIntent(fallback.Intent) {
-		plan.Intent = fallback.Intent
-		plan.Route = "non_guide"
-		plan.AnswerModel = r.answerModelForPlan(ctx, plan)
-		return plan
-	}
 	nonGuidePlan := r.classifyNonGuideIntent(ctx, run, query, recordTrace, fallback)
 	nonGuidePlan.Route = "non_guide"
 	nonGuidePlan.AnswerModel = r.answerModelForPlan(ctx, nonGuidePlan)
@@ -322,7 +443,6 @@ func (r *Runtime) classifyGuideIntent(ctx context.Context, run domain.AgentRun, 
 
 // classifyNonGuideIntent 把非导购请求拆到具体服务域，后续按服务域装配工具和 skill。
 func (r *Runtime) classifyNonGuideIntent(ctx context.Context, run domain.AgentRun, query string, recordTrace bool, fallback runPlan) runPlan {
-	fallback.Intent = normalizeNonGuideIntent(query, fallback.Intent)
 	startedAt := time.Now()
 	temperature := 0.1
 	messages := []ChatMessage{
@@ -354,7 +474,7 @@ func (r *Runtime) classifyNonGuideIntent(ctx context.Context, run domain.AgentRu
 		return fallback
 	}
 	plan.Route = "non_guide"
-	plan.Intent = normalizeNonGuideIntent(query, plan.Intent)
+	plan.Intent = normalizeNonGuideIntent(plan.Intent, fallback.Intent)
 	if plan.Intent == "" {
 		plan.Intent = fallback.Intent
 	}
@@ -422,7 +542,7 @@ func normalizeGuideReferenceIntent(plan runPlan) string {
 func normalizeRouteIntent(route string, query string, fallback string) string {
 	switch route {
 	case "non_guide":
-		return normalizeNonGuideIntent(query, fallback)
+		return normalizeNonGuideIntent(fallback, "unsupported")
 	case "guide":
 		return "open_explore"
 	default:
@@ -430,7 +550,7 @@ func normalizeRouteIntent(route string, query string, fallback string) string {
 	}
 }
 
-func normalizeNonGuideIntent(query string, intent string) string {
+func normalizeNonGuideIntent(intent string, fallback string) string {
 	intent = strings.TrimSpace(intent)
 	switch intent {
 	case "cart_add", "cart_remove", "cart_update_quantity", "checkout_confirm":
@@ -438,41 +558,21 @@ func normalizeNonGuideIntent(query string, intent string) string {
 	case "cart_service", "order_service", "coupon_service", "review_service", "after_sales_service", "account_service", "navigation_service", "chitchat", "unsupported":
 		return intent
 	case "non_guide", "":
+		return "non_guide"
 	default:
-		intent = ""
 	}
-	switch {
-	case looksCartAdd(query):
-		return "cart_add"
-	case looksCartRemove(query):
-		return "cart_remove"
-	case looksCartQuantityUpdate(query):
-		return "cart_update_quantity"
-	case looksCheckout(query):
-		return "checkout_confirm"
-	case looksNavigation(query):
-		return "navigation_service"
-	case looksCouponService(query):
-		return "coupon_service"
-	case looksReviewService(query):
-		return "review_service"
-	case looksOrderService(query):
-		return "order_service"
-	case looksAfterSalesService(query):
-		return "after_sales_service"
-	case looksAccountService(query):
-		return "account_service"
-	case isGreeting(query):
-		return "chitchat"
-	case looksUnsupported(query):
+	return normalizeNonGuideFallback(fallback)
+}
+
+func normalizeNonGuideFallback(fallback string) string {
+	switch strings.TrimSpace(fallback) {
+	case "cart_add", "cart_remove", "cart_update_quantity", "checkout_confirm":
+		return fallback
+	case "cart_service", "order_service", "coupon_service", "review_service", "after_sales_service", "account_service", "navigation_service", "chitchat", "unsupported", "non_guide":
+		return fallback
+	default:
 		return "unsupported"
-	case strings.Contains(query, "购物车"):
-		return "cart_service"
 	}
-	if intent != "" {
-		return intent
-	}
-	return "unsupported"
 }
 
 func (r *Runtime) emitText(run domain.AgentRun, text string, emit func(domain.SSEEvent) error) error {
@@ -645,78 +745,12 @@ func parseBool(value string, fallback bool) bool {
 	}
 }
 
-func heuristicPlan(query string, smallModel string, largeModel string) runPlan {
-	plan := runPlan{
+func defaultPlannerFallback(smallModel string) runPlan {
+	return runPlan{
 		Route:       "non_guide",
-		Intent:      "non_guide",
+		Intent:      "unsupported",
 		AnswerModel: smallModel,
 	}
-	if isGreeting(query) {
-		plan.Intent = "chitchat"
-		return plan
-	}
-	if looksUnsupported(query) {
-		plan.Intent = "unsupported"
-		return plan
-	}
-	if looksCartAdd(query) {
-		plan.Route = "non_guide"
-		plan.Intent = "cart_add"
-		return plan
-	}
-	if looksCartRemove(query) {
-		plan.Route = "non_guide"
-		plan.Intent = "cart_remove"
-		return plan
-	}
-	if looksCartQuantityUpdate(query) {
-		plan.Route = "non_guide"
-		plan.Intent = "cart_update_quantity"
-		return plan
-	}
-	if looksCheckout(query) {
-		plan.Route = "non_guide"
-		plan.Intent = "checkout_confirm"
-		return plan
-	}
-	if serviceIntent := normalizeNonGuideIntent(query, ""); serviceIntent != "unsupported" && serviceIntent != "non_guide" {
-		plan.Route = "non_guide"
-		plan.Intent = serviceIntent
-		return plan
-	}
-	if strings.Contains(query, "对比") || strings.Contains(query, "比较") {
-		plan.Route = "guide"
-		plan.Intent = "compare_decide"
-		plan.Level = "P2"
-		plan.SecondaryLevel = "None"
-		plan.AnswerModel = largeModel
-		return plan
-	}
-	if containsAny(query, []string{"优惠", "促销", "满减", "券", "折扣", "活动"}) {
-		plan.Intent = "coupon_service"
-		return plan
-	}
-	if looksCatalogRelated(query) {
-		plan.Route = "guide"
-		plan.Intent = "category_shop_no_brand"
-		plan.Level = "P4"
-		plan.SecondaryLevel = "P4B"
-	}
-	if strings.Contains(query, "哪个") {
-		plan.Route = "guide"
-		plan.Intent = "compare_decide"
-		plan.Level = "P2"
-		plan.SecondaryLevel = "None"
-		plan.AnswerModel = largeModel
-	}
-	if strings.Contains(query, "售后") || strings.Contains(query, "退货") || strings.Contains(query, "保修") {
-		plan.Route = "non_guide"
-		plan.Intent = "after_sales_service"
-		plan.Level = ""
-		plan.SecondaryLevel = ""
-	}
-	plan.Intent = normalizeNonGuideIntent(query, plan.Intent)
-	return plan
 }
 
 func buildAnswer(query string, plan runPlan, products []domain.ProductCard) string {
@@ -756,65 +790,12 @@ func isGreeting(query string) bool {
 	return normalized == "你好" || normalized == "您好" || normalized == "hello" || normalized == "hi" || normalized == "嗨" || normalized == "谢谢" || normalized == "谢谢你" || normalized == "你是谁"
 }
 
-func looksCatalogRelated(query string) bool {
-	keywords := []string{"推荐", "买", "商品", "手机", "鼠标", "电脑", "耳机", "价格", "预算", "对比", "比较", "售后", "退货", "保修", "优惠", "拍照", "办公", "护肤", "美妆", "服饰", "食品"}
-	for _, keyword := range keywords {
-		if strings.Contains(query, keyword) {
-			return true
-		}
-	}
-	return false
-}
-
 func looksCartAdd(query string) bool {
 	return containsAny(query, []string{"加到购物车", "加入购物车", "加购物车", "放进购物车", "加购"})
 }
 
-func looksCartRemove(query string) bool {
-	return strings.Contains(query, "购物车") && containsAny(query, []string{"删除", "移除", "不要"})
-}
-
-func looksCartQuantityUpdate(query string) bool {
-	return strings.Contains(query, "购物车") && containsAny(query, []string{"数量", "改成", "改为", "调整到"})
-}
-
-func looksNavigation(query string) bool {
-	return containsAny(query, []string{"打开", "跳转", "进入", "去", "页面", "入口"}) &&
-		containsAny(query, []string{"购物车", "订单", "商品列表", "优惠券", "优惠券中心", "个人中心", "地址", "评价"})
-}
-
-func looksOrderService(query string) bool {
-	return containsAny(query, []string{"订单", "物流", "快递", "催发货", "待支付", "付款", "支付", "取消订单", "确认收货", "发货", "取件", "取件码", "驿站", "复购"})
-}
-
-func looksCouponService(query string) bool {
-	return containsAny(query, []string{"优惠", "优惠券", "券", "红包", "会员权益", "返利", "促销", "活动", "满减", "折扣", "领券", "卡券", "凑单", "更便宜", "省钱"})
-}
-
-func looksReviewService(query string) bool {
-	return containsAny(query, []string{"评价", "评论", "评分", "晒单", "追评", "差评", "好评", "口碑"})
-}
-
-func looksAfterSalesService(query string) bool {
-	return containsAny(query, []string{"售后", "退货", "退款", "保修", "换货", "投诉", "改地址", "发票", "客服", "赔付"})
-}
-
-func looksAccountService(query string) bool {
-	return containsAny(query, []string{"账号", "账户", "登录", "注册", "手机号", "收货地址", "地址", "个人资料", "会员等级", "风险用户"})
-}
-
 func looksCheckout(query string) bool {
 	return containsAny(query, []string{"下单", "结算", "提交订单", "确认购买", "确认订单"})
-}
-
-func looksUnsupported(query string) bool {
-	keywords := []string{"论文", "破解", "绕过登录", "绕过鉴权", "脚本", "黑客", "攻击", "股票", "吃什么药", "起诉书", "代写", "美团", "外卖订单", "其他平台订单"}
-	for _, keyword := range keywords {
-		if strings.Contains(query, keyword) {
-			return true
-		}
-	}
-	return false
 }
 
 func formatProducts(products []domain.ProductCard, limit int) string {

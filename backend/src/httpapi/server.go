@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/LYP-leo/xzxg-shop/backend/src/agent"
@@ -27,6 +28,7 @@ import (
 	"github.com/LYP-leo/xzxg-shop/backend/src/rag"
 	"github.com/LYP-leo/xzxg-shop/backend/src/retrievalconfig"
 	"github.com/LYP-leo/xzxg-shop/backend/src/store"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type Server struct {
@@ -146,7 +148,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	account, passwordHash, ok := s.store.GetAccountByUsername(r.Context(), username)
-	if !ok || passwordHash != hashPassword(request.Password) {
+	if !ok || !verifyPassword(request.Password, passwordHash) {
 		writeError(w, http.StatusUnauthorized, "invalid_credential", "账号或密码错误")
 		return
 	}
@@ -2127,6 +2129,7 @@ func (s *Server) streamAgentRun(w http.ResponseWriter, r *http.Request, run doma
 	blocks := make([]domain.AgentBlock, 0)
 	followups := make([]string, 0)
 	segments := make([]domain.AgentSegment, 0)
+	var emitMu sync.Mutex
 	flushText := func() {
 		text := strings.TrimSpace(currentText.String())
 		if text == "" {
@@ -2138,6 +2141,8 @@ func (s *Server) streamAgentRun(w http.ResponseWriter, r *http.Request, run doma
 	}
 
 	emit := func(event domain.SSEEvent) error {
+		emitMu.Lock()
+		defer emitMu.Unlock()
 		switch event.Type {
 		case "text_delta":
 			content.WriteString(event.Delta)
@@ -2151,6 +2156,11 @@ func (s *Server) streamAgentRun(w http.ResponseWriter, r *http.Request, run doma
 			}
 		case "followups":
 			followups = append([]string{}, event.Questions...)
+		case "thinking_delta":
+			if event.Step != nil {
+				step := *event.Step
+				segments = upsertThinkingSegment(segments, step)
+			}
 		}
 		payload, err := json.Marshal(event)
 		if err != nil {
@@ -2180,6 +2190,19 @@ func (s *Server) streamAgentRun(w http.ResponseWriter, r *http.Request, run doma
 	if !skipSessionSummaryAfterRun(blocks) {
 		s.runtime.UpdateSessionSummaryAfterRun(r.Context(), run, message, finalAnswer)
 	}
+}
+
+func upsertThinkingSegment(segments []domain.AgentSegment, step domain.ThoughtStep) []domain.AgentSegment {
+	if step.ID == "" {
+		return segments
+	}
+	for index := range segments {
+		if segments[index].Type == "thinking" && segments[index].Thought != nil && segments[index].Thought.ID == step.ID {
+			segments[index].Thought = &step
+			return segments
+		}
+	}
+	return append(segments, domain.AgentSegment{Type: "thinking", Thought: &step})
 }
 
 func skipSessionSummaryAfterRun(blocks []domain.AgentBlock) bool {
@@ -2298,6 +2321,17 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (domain.Ac
 func hashPassword(password string) string {
 	sum := sha256.Sum256([]byte(password))
 	return hex.EncodeToString(sum[:])
+}
+
+func verifyPassword(password string, passwordHash string) bool {
+	passwordHash = strings.TrimSpace(passwordHash)
+	if passwordHash == "" {
+		return false
+	}
+	if strings.HasPrefix(passwordHash, "$2a$") || strings.HasPrefix(passwordHash, "$2b$") || strings.HasPrefix(passwordHash, "$2y$") {
+		return bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)) == nil
+	}
+	return passwordHash == hashPassword(password)
 }
 
 func validateRegisterInput(username string, password string, displayName string) error {

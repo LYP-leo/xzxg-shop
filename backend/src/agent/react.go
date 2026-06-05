@@ -220,6 +220,16 @@ func (r *Runtime) runReactAgent(ctx context.Context, run domain.AgentRun, plan r
 			"result_truncated":      false,
 			"admin_visible_note":    "工具结果完整写入 trace，管理员页面可直接排查检索片段、弱相关候选、剔除原因和工具返回。",
 		})
+		if err := r.emitThinkingStep(ctx, run.RunID, domain.ThoughtStep{
+			ID:       "retrieve",
+			Title:    "查询商品与资料",
+			Status:   "done",
+			Summary:  thinkingSummaryForToolObservation(observation),
+			Products: thinkingProductsForToolObservation(observation),
+			Order:    2,
+		}, emit); err != nil {
+			return result, err
+		}
 		if observation.Cart != nil {
 			// 购物车类工具的结构化结果即时发给前端，让页面能直接刷新购物车状态。
 			if err := emitCartBlock(run.RunID, *observation.Cart, emit); err != nil {
@@ -615,6 +625,84 @@ func statusTextForTool(tool string) string {
 	default:
 		return "正在调用工具"
 	}
+}
+
+func thinkingSummaryForToolObservation(observation toolObservation) string {
+	if strings.TrimSpace(observation.Message) != "" {
+		if len(observation.ProductIDs) > 0 {
+			return "已筛出可看商品，正在快速对比重点。"
+		}
+		return observation.Message
+	}
+	if len(observation.ProductIDs) > 0 {
+		return "已筛出可看商品，正在快速对比重点。"
+	}
+	if len(observation.ChunkIDs) > 0 {
+		return fmt.Sprintf("已找到 %d 个可参考资料片段。", len(observation.ChunkIDs))
+	}
+	if observation.OK {
+		return "已完成相关信息查询。"
+	}
+	return "查询未得到可用结果，正在尝试用现有信息回答。"
+}
+
+func thinkingProductsForToolObservation(observation toolObservation) []domain.ProductCard {
+	if observation.Tool != toolSearchProducts && observation.Tool != toolSearchImage {
+		return nil
+	}
+	rawItems, ok := observation.Result["items"]
+	if !ok {
+		return nil
+	}
+	products := make([]domain.ProductCard, 0, 5)
+	appendProduct := func(item map[string]any) {
+		if len(products) >= 5 {
+			return
+		}
+		productID := mapString(item, "productId", "product_id", "id")
+		if strings.TrimSpace(productID) == "" {
+			return
+		}
+		products = append(products, domain.ProductCard{
+			ProductID:       productID,
+			SkuID:           mapString(item, "skuId", "sku_id"),
+			MerchantName:    mapString(item, "merchantName", "merchant_name"),
+			Name:            mapString(item, "name"),
+			Brand:           mapString(item, "brand"),
+			ImageURL:        mapString(item, "imageUrl", "image_url"),
+			Price:           mapString(item, "price"),
+			StockStatus:     mapString(item, "stockStatus", "stock_status"),
+			RecommendReason: mapString(item, "recommendReason", "recommend_reason"),
+		})
+	}
+	switch items := rawItems.(type) {
+	case []map[string]any:
+		for _, item := range items {
+			appendProduct(item)
+		}
+	case []any:
+		for _, raw := range items {
+			if item, ok := raw.(map[string]any); ok {
+				appendProduct(item)
+			}
+		}
+	}
+	if len(products) == 0 {
+		return nil
+	}
+	return products
+}
+
+func mapString(item map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := item[key]; ok {
+			text := strings.TrimSpace(fmt.Sprint(value))
+			if text != "" && text != "<nil>" {
+				return text
+			}
+		}
+	}
+	return ""
 }
 
 func blocksFromReact(action reactAction, productIDs []string, chunkIDs []string) []domain.AgentBlock {

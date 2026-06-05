@@ -88,23 +88,41 @@ func TestAnswerModelForPlanKeepsSmallForToolIntents(t *testing.T) {
 	}
 }
 
-func TestNormalizeNonGuideIntentClassifiesServiceDomains(t *testing.T) {
+func TestNormalizeNonGuideIntentAcceptsPlannerOutputOnly(t *testing.T) {
 	cases := []struct {
-		query string
-		want  string
+		intent string
+		want   string
 	}{
-		{"我最近的订单到哪了", "order_service"},
-		{"我有哪些优惠券可以用", "coupon_service"},
-		{"这个商品差评主要说什么", "review_service"},
-		{"退货怎么退", "after_sales_service"},
-		{"打开购物车页面", "navigation_service"},
-		{"我的收货地址在哪里改", "account_service"},
-		{"你好", "chitchat"},
+		{"cart_add", "cart_add"},
+		{"order_service", "order_service"},
+		{"coupon_service", "coupon_service"},
+		{"review_service", "review_service"},
+		{"after_sales_service", "after_sales_service"},
+		{"navigation_service", "navigation_service"},
+		{"chitchat", "chitchat"},
+		{"unknown_intent", "unsupported"},
 	}
 	for _, tc := range cases {
-		if got := normalizeNonGuideIntent(tc.query, ""); got != tc.want {
-			t.Fatalf("normalizeNonGuideIntent(%q) = %q, want %q", tc.query, got, tc.want)
+		if got := normalizeNonGuideIntent(tc.intent, "unsupported"); got != tc.want {
+			t.Fatalf("normalizeNonGuideIntent(%q) = %q, want %q", tc.intent, got, tc.want)
 		}
+	}
+}
+
+func TestNormalizeNonGuideIntentDoesNotInferFromQueryText(t *testing.T) {
+	effectiveQuery := `当前用户问题：
+我是干性皮肤
+
+相关会话记忆：
+- 用户上一轮询问化妆品推荐。
+
+相关历史商品（后续如需加购或引用商品，优先使用这里的 item_id/product_id）：
+- 来自第1轮的第5个商品 item_id=p_beauty_009 sku_id=s_p_beauty_009_1 name=珀莱雅双抗精华 price=210.00
+
+记忆使用规则：只把相关会话记忆作为指代消解和上下文补充。`
+
+	if got := normalizeNonGuideIntent(effectiveQuery, "unsupported"); got == "cart_add" {
+		t.Fatalf("normalizeNonGuideIntent = %q, want non cart_add", got)
 	}
 }
 
