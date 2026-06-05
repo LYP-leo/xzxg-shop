@@ -108,6 +108,26 @@ func TestNormalizeNonGuideIntentClassifiesServiceDomains(t *testing.T) {
 	}
 }
 
+func TestNormalizeNonGuideIntentIgnoresMemoryInstructionWords(t *testing.T) {
+	effectiveQuery := `当前用户问题：
+我是干性皮肤
+
+相关会话记忆：
+- 用户上一轮询问化妆品推荐。
+
+相关历史商品（后续如需加购或引用商品，优先使用这里的 item_id/product_id）：
+- 来自第1轮的第5个商品 item_id=p_beauty_009 sku_id=s_p_beauty_009_1 name=珀莱雅双抗精华 price=210.00
+
+记忆使用规则：只把相关会话记忆作为指代消解和上下文补充。`
+
+	if looksCartAdd(effectiveQuery) {
+		t.Fatalf("looksCartAdd should only inspect current user question, not memory instructions")
+	}
+	if got := normalizeNonGuideIntent(effectiveQuery, ""); got == "cart_add" {
+		t.Fatalf("normalizeNonGuideIntent = %q, want non cart_add", got)
+	}
+}
+
 func TestNavigationPolicyDisablesTools(t *testing.T) {
 	runtime := &Runtime{configs: configcenter.NewMemoryCenter(configcenter.DefaultConfigs(""))}
 	plan := runPlan{Route: "non_guide", Intent: "navigation_service"}

@@ -890,6 +890,7 @@ func isGreeting(query string) bool {
 }
 
 func looksCatalogRelated(query string) bool {
+	query = intentSurfaceQuery(query)
 	keywords := []string{"推荐", "买", "商品", "手机", "鼠标", "电脑", "耳机", "价格", "预算", "对比", "比较", "售后", "退货", "保修", "优惠", "拍照", "办公", "护肤", "美妆", "服饰", "食品"}
 	for _, keyword := range keywords {
 		if strings.Contains(query, keyword) {
@@ -900,47 +901,58 @@ func looksCatalogRelated(query string) bool {
 }
 
 func looksCartAdd(query string) bool {
+	query = intentSurfaceQuery(query)
 	return containsAny(query, []string{"加到购物车", "加入购物车", "加购物车", "放进购物车", "加购"})
 }
 
 func looksCartRemove(query string) bool {
+	query = intentSurfaceQuery(query)
 	return strings.Contains(query, "购物车") && containsAny(query, []string{"删除", "移除", "不要"})
 }
 
 func looksCartQuantityUpdate(query string) bool {
+	query = intentSurfaceQuery(query)
 	return strings.Contains(query, "购物车") && containsAny(query, []string{"数量", "改成", "改为", "调整到"})
 }
 
 func looksNavigation(query string) bool {
+	query = intentSurfaceQuery(query)
 	return containsAny(query, []string{"打开", "跳转", "进入", "去", "页面", "入口"}) &&
 		containsAny(query, []string{"购物车", "订单", "商品列表", "优惠券", "优惠券中心", "个人中心", "地址", "评价"})
 }
 
 func looksOrderService(query string) bool {
+	query = intentSurfaceQuery(query)
 	return containsAny(query, []string{"订单", "物流", "快递", "催发货", "待支付", "付款", "支付", "取消订单", "确认收货", "发货", "取件", "取件码", "驿站", "复购"})
 }
 
 func looksCouponService(query string) bool {
+	query = intentSurfaceQuery(query)
 	return containsAny(query, []string{"优惠", "优惠券", "券", "红包", "会员权益", "返利", "促销", "活动", "满减", "折扣", "领券", "卡券", "凑单", "更便宜", "省钱"})
 }
 
 func looksReviewService(query string) bool {
+	query = intentSurfaceQuery(query)
 	return containsAny(query, []string{"评价", "评论", "评分", "晒单", "追评", "差评", "好评", "口碑"})
 }
 
 func looksAfterSalesService(query string) bool {
+	query = intentSurfaceQuery(query)
 	return containsAny(query, []string{"售后", "退货", "退款", "保修", "换货", "投诉", "改地址", "发票", "客服", "赔付"})
 }
 
 func looksAccountService(query string) bool {
+	query = intentSurfaceQuery(query)
 	return containsAny(query, []string{"账号", "账户", "登录", "注册", "手机号", "收货地址", "地址", "个人资料", "会员等级", "风险用户"})
 }
 
 func looksCheckout(query string) bool {
+	query = intentSurfaceQuery(query)
 	return containsAny(query, []string{"下单", "结算", "提交订单", "确认购买", "确认订单"})
 }
 
 func looksUnsupported(query string) bool {
+	query = intentSurfaceQuery(query)
 	keywords := []string{"论文", "破解", "绕过登录", "绕过鉴权", "脚本", "黑客", "攻击", "股票", "吃什么药", "起诉书", "代写", "美团", "外卖订单", "其他平台订单"}
 	for _, keyword := range keywords {
 		if strings.Contains(query, keyword) {
@@ -948,6 +960,21 @@ func looksUnsupported(query string) bool {
 		}
 	}
 	return false
+}
+
+func intentSurfaceQuery(query string) string {
+	query = strings.TrimSpace(query)
+	const prefix = "当前用户问题："
+	if !strings.HasPrefix(query, prefix) {
+		return query
+	}
+	query = strings.TrimSpace(strings.TrimPrefix(query, prefix))
+	for _, delimiter := range []string{"\n\n相关会话记忆：", "\n\n记忆使用规则："} {
+		if idx := strings.Index(query, delimiter); idx >= 0 {
+			query = query[:idx]
+		}
+	}
+	return strings.TrimSpace(query)
 }
 
 func formatProducts(products []domain.ProductCard, limit int) string {
