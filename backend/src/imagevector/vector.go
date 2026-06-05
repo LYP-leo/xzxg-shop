@@ -31,11 +31,12 @@ const (
 )
 
 type Config struct {
-	Provider  string
-	BaseURL   string
-	APIKey    string
-	Model     string
-	Dimension int
+	Provider     string
+	BaseURL      string
+	APIKey       string
+	Model        string
+	Dimension    int
+	ProxyEnabled bool
 }
 
 type Embedder interface {
@@ -77,9 +78,13 @@ func NewDashScopeEmbedder(cfg Config) *DashScopeEmbedder {
 	if cfg.Dimension <= 0 {
 		cfg.Dimension = 512
 	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if !cfg.ProxyEnabled {
+		transport.Proxy = nil
+	}
 	return &DashScopeEmbedder{
 		cfg:    cfg,
-		client: &http.Client{Timeout: 20 * time.Second},
+		client: &http.Client{Timeout: 20 * time.Second, Transport: transport},
 	}
 }
 
@@ -94,12 +99,21 @@ func NewEmbedderFromMap(values map[string]string, fallbackAPIKey string) Embedde
 func ConfigFromMap(values map[string]string, fallbackAPIKey string) Config {
 	dimension := parseInt(values["image_embedding.dimension"], 512)
 	return Config{
-		Provider:  valueOr(values["image_embedding.provider"], DefaultProvider),
-		BaseURL:   valueOr(values["image_embedding.base_url"], DefaultBaseURL),
-		APIKey:    valueOr(values["image_embedding.api_key"], valueOr(values["ai.api_key"], fallbackAPIKey)),
-		Model:     valueOr(values["image_embedding.model"], DefaultModel),
-		Dimension: dimension,
+		Provider:     valueOr(values["image_embedding.provider"], DefaultProvider),
+		BaseURL:      valueOr(values["image_embedding.base_url"], DefaultBaseURL),
+		APIKey:       valueOr(values["image_embedding.api_key"], valueOr(activeProviderAPIKey(values), valueOr(values["ai.api_key"], fallbackAPIKey))),
+		Model:        valueOr(values["image_embedding.model"], DefaultModel),
+		Dimension:    dimension,
+		ProxyEnabled: parseBool(values["image_embedding.proxy_enabled"], false),
 	}
+}
+
+func activeProviderAPIKey(values map[string]string) string {
+	provider := strings.TrimSpace(strings.ToLower(values["ai.active_provider"]))
+	if provider == "" {
+		return ""
+	}
+	return strings.TrimSpace(values["ai."+provider+".api_key"])
 }
 
 func (e *DashScopeEmbedder) EmbedReader(ctx context.Context, reader io.Reader) ([]float32, error) {
@@ -281,4 +295,15 @@ func parseInt(value string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func parseBool(value string, fallback bool) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true", "1", "yes", "on", "enabled":
+		return true
+	case "false", "0", "no", "off", "disabled":
+		return false
+	default:
+		return fallback
+	}
 }

@@ -93,6 +93,9 @@ func (s *MySQLStore) BootstrapImageVectorIndex(ctx context.Context) error {
 	if s.vector == nil {
 		return nil
 	}
+	if s.vector.ImageCollectionReady(ctx) {
+		return nil
+	}
 	return s.vector.BootstrapImages(ctx, s.productImageVectorRows(ctx))
 }
 

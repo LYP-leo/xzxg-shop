@@ -1442,6 +1442,7 @@ func evalToolSuites(datasets []adminEvalDataset, reports []adminEvalReport) []ad
 		{ID: "rag_retriever_eval", Name: "RAG 检索召回", Scope: "tool", DatasetID: "rag_recall_cases", Command: "node quality/evals/run_rag_recall_eval.mjs quality/data/eval/rag_recall_cases.jsonl"},
 		{ID: "image_search_eval", Name: "图片搜索", Scope: "tool", DatasetID: "image_search_cases", Command: "node quality/evals/run_image_search_eval.mjs quality/data/eval/image_search_cases.jsonl"},
 		{ID: "intent", Name: "意图识别", Scope: "tool", DatasetID: "intent_cases", Command: "node quality/evals/run_intent_eval.mjs quality/data/eval/intent_cases.jsonl"},
+		{ID: "non_guide_intent", Name: "非导购服务域识别", Scope: "tool", DatasetID: "non_guide_intent_cases", Command: "node quality/evals/run_intent_eval.mjs quality/data/eval/non_guide_intent_cases.jsonl"},
 		{ID: "agent_e2e", Name: "导购 Agent 端到端", Scope: "agent", DatasetID: "agent_e2e_queries", Command: "node quality/evals/run_agent_e2e.mjs quality/data/eval/agent_e2e_queries.jsonl"},
 		{ID: "agent_no_inventory", Name: "Agent 无库存误挂品", Scope: "agent", DatasetID: "agent_no_inventory_cases", Command: "node quality/evals/run_agent_e2e.mjs quality/data/eval/agent_no_inventory_cases.jsonl"},
 	}
@@ -2183,6 +2184,10 @@ func (s *Server) streamAgentRun(w http.ResponseWriter, r *http.Request, run doma
 
 func skipSessionSummaryAfterRun(blocks []domain.AgentBlock) bool {
 	for _, block := range blocks {
+		switch block.Type {
+		case "cart_state", "order_summary":
+			return true
+		}
 		if block.Type == "warning" {
 			switch block.Code {
 			case "unsafe_request", "risk_account", "risk_blocked", "vlm_not_configured":

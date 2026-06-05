@@ -13,16 +13,15 @@ import (
 const DefaultRoutePrompt = `你是电商前置意图路由器。根据当前用户 query，只判断它应该进入哪个下游 pipeline。只输出 JSON，不要输出解释文本。
 
 一级路由：
-- guide：用户核心诉求是选购、对比、搭配、场景方案、开放探索、商品详情咨询。
-- non_guide：用户核心诉求不是选购商品，而是优惠权益、价格提醒、页面跳转、订单/物流、评价/口碑、取件/驿站、复购、售后投诉、平台活动、闲聊、知识地点咨询、无意义文本等。
-- fast_product：用户已明确要求把商品加入购物车、修改购物车、删除购物车或确认下单。
+- guide：用户核心诉求是选购、对比、搭配、场景方案、开放探索、商品详情咨询、图片找同款/拍照找货。
+- non_guide：用户核心诉求不是选购商品，而是加购/购物车/下单、优惠权益、价格提醒、页面跳转、订单/物流、评价/口碑、取件/驿站、复购、售后投诉、平台活动、闲聊、知识地点咨询、无意义文本等。
 
 判定优先级：
-1. fast_product：加入购物车、修改购物车、删除购物车、确认下单。
-2. non_guide：命中非导购强信号。
-3. guide：兜底原则，无法明确判定时归 guide。
+1. non_guide：命中非导购强信号。
+2. guide：兜底原则，无法明确判定时归 guide。
 
 non_guide 强信号：
+- 加入购物车、修改购物车、删除购物车、查看购物车、确认下单。
 - 优惠券、红包、会员权益、返利、领券、卡券、活动兑换。
 - 价格提醒、降价提醒、到价提醒。
 - 页面跳转、平台功能入口、购物车查看、订单、物流、催发货、评价查询、取件码、复购、退货退款、改地址、发票、投诉。
@@ -35,16 +34,17 @@ guide 典型场景：
 - 对比决策：两个及以上候选，并含比较、区别、哪个更好、怎么选。
 - 穿搭/搭配：服饰、鞋靴、包包等含搭配、穿搭、造型动作。
 - 场景方案：露营清单、厨房收纳、徒步装备等跨品类方案。
+- 图片找货：上传图片、拍照找、图片找同款、识图搜商品、相似商品推荐。
 - 开放探索：风格、IP、美学、模糊描述但有潜在购买意图。
 
 输出格式：
 {
   "reasoning": "中文，80字以内，说明判定依据",
-  "route": "guide|non_guide|fast_product"
+  "route": "guide|non_guide"
 }
 
 字段约束：
-- route 只能输出 guide、non_guide、fast_product 三者之一。
+- route 只能输出 guide、non_guide 二者之一。
 - reasoning 要简洁说明命中了哪类信号词，或为什么走兜底。
 - 不输出任何 JSON 之外的内容。`
 
@@ -87,6 +87,35 @@ P6 open_explore：有潜在购买意图，但没有明确品类，只由风格�
 - level=P4 时 secondary_level 必须是 P4A/P4B/P4C；非 P4 时 secondary_level=None。
 - 不输出任何 JSON 之外的内容。`
 
+const DefaultNonGuideIntentPrompt = `你是电商非导购服务意图分类器。当前 query 已被前置路由判定为 non_guide，你只需要把它细分到唯一一个服务域。只输出 JSON，不要输出解释文本。
+
+服务域：
+- cart_service：查看购物车、购物车说明、购物车项查询；明确加购/删购/改数量/结算由规则 intent 处理。
+- order_service：订单列表、订单详情、物流、支付、取消订单、确认收货、取件、复购。
+- coupon_service：优惠券、领券、已领券、促销活动、满减折扣、凑单、优惠试算。
+- review_service：商品评价、订单评价、评分、好评差评、评价摘要、发布评价。
+- after_sales_service：退货、退款、换货、保修、发票、投诉、售后规则、客服。
+- account_service：登录、注册、账号、手机号、收货地址、个人资料、会员等级、账号风险。
+- navigation_service：用户明确要求打开、进入、跳转某页面或找功能入口。
+- chitchat：问候、感谢、闲聊，不涉及业务数据。
+- unsupported：平台暂不支持、与电商业务无关、无意义文本或无法归类。
+
+判定优先级：
+1. 明确页面跳转/入口诉求优先 navigation_service。
+2. 明确业务数据或业务动作按对应 service 归类，不要归 chitchat。
+3. “能不能退/怎么开发票/保修多久”归 after_sales_service；“评价怎么样/差评说什么”归 review_service。
+4. 无法安全判断时输出 unsupported。
+
+输出格式：
+{
+  "reasoning": "中文，80字以内，说明命中的服务域依据",
+  "intent": "cart_service|order_service|coupon_service|review_service|after_sales_service|account_service|navigation_service|chitchat|unsupported"
+}
+
+字段约束：
+- intent 只能输出上述枚举之一。
+- 不输出任何 JSON 之外的内容。`
+
 const DefaultMemoryRetrievalPrompt = `你是电商导购的短期会话记忆检索器。你会收到当前用户问题和最近若干轮历史记录，只判断哪些历史信息对当前问题有帮助。
 
 任务：
@@ -94,7 +123,9 @@ const DefaultMemoryRetrievalPrompt = `你是电商导购的短期会话记忆检
 2. 无关闲聊、已过期动作、和当前问题没有承接关系的记录不要选择。
 3. 如果当前问题是“第一个/第二个/第 N 个 + 品类词/系列词/商品词”，优先在最近一轮同品类、同系列或同主题的推荐记录中按“本轮商品顺序”解析商品 ID；不要被更近但不同品类或不同动作的记录覆盖。
 4. 如果当前问题是加购、删除、改数量等商品动作，且历史能确定商品 ID，必须输出 has_relevant_memory=true，并把确定的商品 ID 放入 referenced_product_ids。
-5. 如果没有相关记忆，输出 has_relevant_memory=false。
+5. 如果当前问题包含“找同款/拍照找货/图片找/识图/附件图片链接”，且没有明确说“刚才/上一轮/之前推荐的/第几个历史商品”，这是一个新的图片检索任务；不要引用上一轮推荐、对比或加购历史，输出 has_relevant_memory=false。
+6. 如果当前问题切换了任务类型或对象，例如从商品推荐切到图片找同款、从电脑切到面霜、从加购切到新搜索，除非存在明确指代词，否则不要选择历史。
+7. 如果没有相关记忆，输出 has_relevant_memory=false。
 
 输出 JSON：
 {
@@ -218,6 +249,14 @@ const DefaultFinalOutputRulesPrompt = `- 最终回答阶段输出中文自然语
 - 如果需要的能力不在可用工具或可用 skill 中，输出 final 澄清或说明能力边界，不要绕过策略。
 - 工具观察、JSON 字段、内部状态、意图代号、工具名和策略判断只能用于你自己决策，禁止写给用户；无可推荐商品时用用户能理解的话说明“当前商品库暂时没有找到符合条件的商品”，不要解释内部检索过程。`
 
+const DefaultNonGuideFinalOutputRulesPrompt = `- 非导购服务结果如果需要前端结构化渲染，可以在 <final> 内输出以下 XML-like 标签；标签内部只能放 JSON 对象，后端会解析为 block_delta，不会把标签原文展示给用户：
+  - <coupon_list>{"title":"优惠券","items":[{"coupon_id":"c_001","name":"满100减10","status":"available"}],"summary":{"count":1}}</coupon_list>
+  - <discount_preview>{"title":"优惠试算","summary":{"total_amount":"100.00","discount_amount":"10.00","pay_amount":"90.00"},"items":[{"name":"满减","amount":"10.00"}]}</discount_preview>
+  - <review_summary>{"title":"评价摘要","summary":{"average_rating":4.8,"review_count":20},"items":[{"rating":5,"content":"用户评价摘要"}]}</review_summary>
+  - <after_sales_policy>{"title":"售后规则","items":[{"name":"退货","description":"根据工具资料可确认的规则"}]}</after_sales_policy>
+  - <navigation_action>{"title":"页面入口","message":"已为你打开购物车","action":{"type":"navigate","target":"cart"}}</navigation_action>
+- 结构化标签中的数据必须来自已调用工具或 skill 的 observation；禁止为了生成卡片编造优惠券、订单、评价或政策。`
+
 const DefaultToolProtocolPrompt = `你正在一个 ReAct 工具循环中工作。每一步只能输出一种协议内容，不能输出隐藏推理。
 
 可用工具：
@@ -275,64 +314,136 @@ Skill 调用：
 
 const DefaultIntentToolPolicyPrompt = `{
   "product_deep": {
-    "tools": ["search_products", "search_knowledge"],
+    "tools": ["search_products", "search_image_products", "search_knowledge"],
     "skills": [],
     "disabled": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
     "focus": ["先围绕用户锚定的商品或型号调用 search_products。", "需要解释参数、材料、售后或选购依据时再调用 search_knowledge。"]
   },
   "compare_decide": {
-    "tools": ["search_products", "search_knowledge"],
+    "tools": ["search_products", "search_image_products", "search_knowledge"],
     "skills": [],
     "disabled": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
     "focus": ["先分别检索候选商品，确保对比对象来自当前商品库。", "围绕用户提到的维度比较，不要引入无关候选。"]
   },
   "outfit_styling": {
-    "tools": ["search_products", "search_knowledge"],
+    "tools": ["search_products", "search_image_products", "search_knowledge"],
     "skills": [],
     "disabled": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
     "focus": ["先把风格、场合、颜色、版型约束转成可检索品类。", "search_products 用于找可购买单品，search_knowledge 用于补充搭配原则。"]
   },
   "category_shop_brand": {
-    "tools": ["search_products", "search_knowledge"],
+    "tools": ["search_products", "search_image_products", "search_knowledge"],
     "skills": [],
     "disabled": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
     "focus": ["检索时保留品牌/店铺和品类约束。", "需要品牌系列或选购知识时调用 search_knowledge。"]
   },
   "category_shop_no_brand": {
-    "tools": ["search_products", "search_knowledge"],
+    "tools": ["search_products", "search_image_products", "search_knowledge"],
     "skills": [],
     "disabled": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
     "focus": ["先按品类、预算、场景、人群和硬属性收敛 query。", "search_products 是主工具，必要时用 search_knowledge 补充选购依据。"]
   },
   "category_shop_complex": {
-    "tools": ["search_products", "search_knowledge"],
+    "tools": ["search_products", "search_image_products", "search_knowledge"],
     "skills": [],
     "disabled": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
     "focus": ["先拆解预算、价格、属性、排除项等硬约束，再检索商品。", "不要为了凑结果推荐违反硬约束的商品。"]
   },
   "scene_solution": {
-    "tools": ["search_products", "search_knowledge"],
+    "tools": ["search_products", "search_image_products", "search_knowledge"],
     "skills": [],
     "disabled": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
     "focus": ["先建立场景清单框架，再对核心品类查资料和商品。", "search_products 优先围绕核心品类逐项查询。"]
   },
   "open_explore": {
-    "tools": ["search_products", "search_knowledge"],
+    "tools": ["search_products", "search_image_products", "search_knowledge"],
     "skills": [],
     "disabled": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
     "focus": ["先把用户的风格、IP、美学或模糊诉求收敛成可购买品类。", "可先 search_knowledge 获取品类框架，再 search_products 找探索式候选。"]
   },
   "non_guide": {
-    "tools": ["get_cart"],
+    "tools": ["get_cart", "list_orders", "list_user_coupons", "list_promotions", "search_knowledge"],
     "skills": ["navigate_cart", "navigate_orders", "navigate_products", "coupon_help", "order_help", "after_sales_help"],
-    "disabled": ["search_products", "search_knowledge", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
-    "focus": ["非导购请求优先用自然语言或 skill 承接，不主动搜索商品。", "只有读取购物车状态时允许 get_cart。"]
+    "disabled": ["search_products", "search_image_products", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
+    "focus": ["非导购兜底策略，只用于二级分类失败；优先用只读工具获取真实状态。", "不要用固定模板回答可查询的订单、优惠、购物车或售后问题。"]
   },
-  "fast_product": {
-    "tools": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
+  "cart_service": {
+    "tools": ["get_cart", "preview_discount"],
+    "skills": ["navigate_cart"],
+    "disabled": ["search_products", "search_image_products", "search_knowledge", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
+    "focus": ["购物车查询先调用 get_cart；如果用户只想打开页面才调用 navigate_cart。", "购物车优惠、应付金额、凑单前先调用 preview_discount。"]
+  },
+  "order_service": {
+    "tools": ["list_orders", "get_order", "pay_order", "cancel_order", "confirm_receipt", "search_knowledge"],
+    "skills": ["navigate_orders", "order_help"],
+    "disabled": ["search_products", "search_image_products", "get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
+    "focus": ["订单/物流先调用 list_orders 或 get_order 读取真实状态。", "pay_order、cancel_order、confirm_receipt 必须有明确 order_id；缺少时先 list_orders 定位。", "订单规则、物流说明、复购边界可调用 search_knowledge。"]
+  },
+  "coupon_service": {
+    "tools": ["list_coupons", "list_user_coupons", "claim_coupon", "list_promotions", "preview_discount"],
+    "skills": ["coupon_help"],
+    "disabled": ["search_products", "search_image_products", "search_knowledge", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
+    "focus": ["查已有券用 list_user_coupons，查可领券用 list_coupons，查平台活动用 list_promotions。", "优惠试算先用 preview_discount，不要编造优惠金额。", "claim_coupon 必须有明确 coupon_id。"]
+  },
+  "review_service": {
+    "tools": ["list_product_reviews", "create_product_review", "list_orders", "get_order"],
     "skills": [],
-    "disabled": ["search_knowledge"],
-    "focus": ["固定商品动作优先脚本化执行。", "加购缺少明确 product_id 时必须澄清，禁止通过 get_cart、购物车第一项、列表位置或历史购物车内容猜测加购目标。", "get_cart 只用于查看、修改、删除或结算已有购物车项，不用于决定 add_cart_item 的 product_id。", "只有当前输入文本中明文出现 product_id，或本轮 search_products 返回了候选商品 ID，才允许 add_cart_item。"]
+    "disabled": ["search_products", "search_image_products", "search_knowledge", "get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
+    "focus": ["问商品口碑或差评时必须有 product_id；没有 product_id 时先澄清商品。", "发布评价必须定位到已完成订单项；缺少 order_item_id 时先 list_orders 或 get_order。"]
+  },
+  "after_sales_service": {
+    "tools": ["list_orders", "get_order", "search_knowledge"],
+    "skills": ["after_sales_help", "order_help"],
+    "disabled": ["search_products", "search_image_products", "get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
+    "focus": ["售后、退款、保修、发票、投诉等先调用 search_knowledge 查规则；涉及已购商品时再查订单。", "资料不足时说明能力边界，不承诺平台或商家未返回的信息。"]
+  },
+  "account_service": {
+    "tools": ["search_knowledge"],
+    "skills": [],
+    "disabled": ["search_products", "search_image_products", "get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
+    "focus": ["账号、地址、会员等目前只回答规则和入口边界；不要编造用户资料。", "需要真实账号资料但没有工具时直接说明暂不支持并给出可替代入口。"]
+  },
+  "navigation_service": {
+    "tools": [],
+    "skills": ["navigate_cart", "navigate_orders", "navigate_products", "coupon_help", "order_help", "after_sales_help"],
+    "disabled": ["search_products", "search_image_products", "search_knowledge", "get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
+    "focus": ["只处理明确的页面跳转或功能入口诉求。", "不要为了跳转请求调用业务查询工具。"]
+  },
+  "chitchat": {
+    "tools": [],
+    "skills": [],
+    "disabled": ["search_products", "search_image_products", "search_knowledge", "get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
+    "focus": ["简短自然回应，并引导用户说出商品、订单、优惠或售后诉求。"]
+  },
+  "unsupported": {
+    "tools": [],
+    "skills": [],
+    "disabled": ["search_products", "search_image_products", "search_knowledge", "get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
+    "focus": ["说明当前平台暂不支持该能力；给出可支持的替代方向。"]
+  },
+  "cart_add": {
+    "tools": ["add_cart_item"],
+    "skills": [],
+    "disabled": ["search_products", "search_knowledge", "get_cart", "update_cart_item", "delete_cart_item", "checkout"],
+    "focus": ["加购属于 non_guide 下的固定动作，优先由后端确定性执行。", "缺少明确 product_id 时必须澄清，禁止根据购物车内容、列表位置或猜测的 product_id 加购。"]
+  },
+  "cart_remove": {
+    "tools": ["get_cart", "delete_cart_item"],
+    "skills": [],
+    "disabled": ["search_products", "search_knowledge", "add_cart_item", "update_cart_item", "checkout"],
+    "focus": ["删除购物车项前必须有 cart_item_id；如果用户按序号描述，先调用 get_cart。"]
+  },
+  "cart_update_quantity": {
+    "tools": ["get_cart", "update_cart_item"],
+    "skills": [],
+    "disabled": ["search_products", "search_knowledge", "add_cart_item", "delete_cart_item", "checkout"],
+    "focus": ["修改购物车数量前必须有 cart_item_id；如果用户按序号描述，先调用 get_cart。"]
+  },
+  "checkout_confirm": {
+    "tools": ["get_cart", "checkout"],
+    "skills": [],
+    "disabled": ["search_products", "search_knowledge", "add_cart_item", "update_cart_item", "delete_cart_item"],
+    "focus": ["结算属于 non_guide 下的固定动作，确认购物车存在选中商品后提交。"]
   }
 }`
 
@@ -351,7 +462,16 @@ var defaultIntentPrompts = map[string]string{
 	"category_shop_complex":  "当前导购意图是 P4C/category_shop_complex：用户带有预算、价格、多属性、复杂筛选或继续看更多诉求。先拆解硬约束，再给符合条件的候选和取舍。",
 	"scene_solution":         "当前导购意图是 P5/scene_solution：用户需要场景驱动的跨品类清单或方案。先给场景方案结构，再按必要性推荐关键品类和候选商品。",
 	"open_explore":           "当前导购意图是 P6/open_explore：用户有潜在购买意图但没有明确品类。先把风格/IP/美学描述收敛为可购买品类，再给探索式建议和澄清问题。",
-	"non_guide":              "当前请求是 non_guide：核心诉求不是商品选购。简短说明当前导购能力边界；如果属于优惠、售后、订单、物流等平台服务，引导用户到对应页面或补充订单/商品信息。",
+	"non_guide":              "当前请求是 non_guide：核心诉求不是商品选购，而是平台服务、订单、物流、优惠、评价、购物车或售后等。优先调用可用工具读取真实数据或执行明确动作；只有用户明确要求打开页面/去某页面/找入口，才调用 navigate 类 skill。不要在未查工具时直接用模板话术回答订单状态、优惠券、评价、购物车或售后问题。缺少必要 ID 时，先调用列表类工具定位；仍无法确定再澄清。",
+	"cart_service":           "当前非导购服务意图是 cart_service：处理购物车查看、购物车状态和购物车优惠试算。必须优先读取 get_cart 或 preview_discount 的真实结果；只有用户明确要求打开页面时才调用 navigate_cart。输出要说明当前购物车关键商品、数量、选中状态和下一步可做动作，缺少数据时直接说明。",
+	"order_service":          "当前非导购服务意图是 order_service：处理订单列表、订单详情、物流、支付、取消订单、确认收货、取件和复购。必须优先调用 list_orders 或 get_order 获取真实订单状态；支付、取消、确认收货必须有明确 order_id。输出要展示订单状态、关键时间、金额和下一步动作，不要编造物流或支付结果。",
+	"coupon_service":         "当前非导购服务意图是 coupon_service：处理优惠券、已领券、可领券、促销活动、凑单和优惠试算。根据问题调用 list_user_coupons、list_coupons、list_promotions 或 preview_discount。输出要区分已领取、可领取、可用/不可用和优惠试算结果，不要凭空承诺折扣。列优惠券时可输出 <coupon_list>JSON</coupon_list>；优惠试算时可输出 <discount_preview>JSON</discount_preview>，JSON 必须来自工具 observation。",
+	"review_service":         "当前非导购服务意图是 review_service：处理商品评价查询、评价摘要、评分、差评要点和发布评价。查询评价必须有 product_id；发布评价必须定位已完成订单项。输出要基于工具返回的评分、评论内容和摘要，不要编造用户评价。评价摘要可输出 <review_summary>JSON</review_summary>，JSON 必须来自评价工具 observation。",
+	"after_sales_service":    "当前非导购服务意图是 after_sales_service：处理退款、退货、换货、保修、发票、投诉和售后规则。规则类问题优先查 search_knowledge；已购商品相关问题先定位订单。输出要说明可确认规则、需要用户补充的信息和下一步入口，不承诺未查到的售后结论。规则清单可输出 <after_sales_policy>JSON</after_sales_policy>，JSON 必须来自知识库或订单 observation。",
+	"account_service":        "当前非导购服务意图是 account_service：处理登录、注册、账号、手机号、收货地址、个人资料、会员等级和账号风险。当前没有完整账号资料工具时，只能说明已支持的入口和能力边界；不要编造用户私有资料。",
+	"navigation_service":     "当前非导购服务意图是 navigation_service：用户明确要求打开页面、进入功能或查找入口。优先调用对应 navigate/coupon/order/after_sales skill；回答要简短，说明已为前端返回跳转动作或当前可用入口。需要展示入口状态时可输出 <navigation_action>JSON</navigation_action>，JSON 必须来自 skill observation。",
+	"chitchat":               "当前非导购服务意图是 chitchat：处理问候、感谢、轻量闲聊。不要调用业务工具；简短回应，并自然引导用户提供商品、订单、优惠或售后诉求。",
+	"unsupported":            "当前非导购服务意图是 unsupported：请求超出当前平台能力、与电商无关或无法安全理解。不要调用业务工具；说明当前暂不支持，并给出可继续使用的能力范围。",
 }
 
 type Center interface {
@@ -379,14 +499,20 @@ func NewMemoryCenter(defaults []domain.AppConfig) *MemoryCenter {
 func DefaultConfigs(envAPIKey string) []domain.AppConfig {
 	configs := []domain.AppConfig{
 		{ConfigKey: "ai.active_provider", ConfigValue: "qwen", ValueType: "string", Description: "当前生效模型供应商：qwen 或 doubao", Domain: "app"},
-		{ConfigKey: "ai.base_url", ConfigValue: "https://dashscope.aliyuncs.com/compatible-mode/v1", ValueType: "string", Description: "OpenAI 兼容模型服务 Base URL", Domain: "app"},
-		{ConfigKey: "ai.small_model", ConfigValue: "qwen3.5-flash", ValueType: "string", Description: "低成本小模型，用于意图识别和轻量回答", Domain: "app"},
-		{ConfigKey: "ai.large_model", ConfigValue: "qwen3.6-plus", ValueType: "string", Description: "复杂导购决策模型", Domain: "app"},
-		{ConfigKey: "ai.api_key", ConfigValue: envAPIKey, ValueType: "string", Description: "模型服务 API Key，列表接口脱敏", Domain: "app", IsSecret: true},
 		{ConfigKey: "ai.qwen.base_url", ConfigValue: "https://dashscope.aliyuncs.com/compatible-mode/v1", ValueType: "string", Description: "千问 OpenAI 兼容模型服务 Base URL", Domain: "app"},
 		{ConfigKey: "ai.qwen.small_model", ConfigValue: "qwen3.5-flash", ValueType: "string", Description: "千问低成本小模型", Domain: "app"},
 		{ConfigKey: "ai.qwen.large_model", ConfigValue: "qwen3.6-plus", ValueType: "string", Description: "千问复杂导购决策模型", Domain: "app"},
 		{ConfigKey: "ai.qwen.api_key", ConfigValue: envAPIKey, ValueType: "string", Description: "千问模型服务 API Key，列表接口脱敏", Domain: "app", IsSecret: true},
+		{ConfigKey: "ai.model.planner_route", ConfigValue: "qwen3.5-flash", ValueType: "string", Description: "Agent 一级路由模型", Domain: "app"},
+		{ConfigKey: "ai.model.planner_guide_intent", ConfigValue: "qwen3.5-flash", ValueType: "string", Description: "导购 P1-P6 意图识别模型", Domain: "app"},
+		{ConfigKey: "ai.model.planner_non_guide_intent", ConfigValue: "qwen3.5-flash", ValueType: "string", Description: "非导购服务域意图识别模型", Domain: "app"},
+		{ConfigKey: "ai.model.memory_retrieval", ConfigValue: "qwen3.5-flash", ValueType: "string", Description: "短期记忆检索模型", Domain: "app"},
+		{ConfigKey: "ai.model.memory_summary", ConfigValue: "qwen3.5-flash", ValueType: "string", Description: "会话摘要模型", Domain: "app"},
+		{ConfigKey: "ai.model.followups", ConfigValue: "qwen3.5-flash", ValueType: "string", Description: "追问生成模型", Domain: "app"},
+		{ConfigKey: "ai.model.product_filter", ConfigValue: "qwen3.5-flash", ValueType: "string", Description: "商品相关性过滤模型", Domain: "app"},
+		{ConfigKey: "ai.model.react_guide", ConfigValue: "qwen3.6-plus", ValueType: "string", Description: "导购主 Agent ReAct 模型", Domain: "app"},
+		{ConfigKey: "ai.model.react_non_guide", ConfigValue: "qwen3.5-flash", ValueType: "string", Description: "非导购服务类 Agent 模型", Domain: "app"},
+		{ConfigKey: "ai.model.react_tool_intent", ConfigValue: "qwen3.5-flash", ValueType: "string", Description: "购物车/订单固定动作模型兜底", Domain: "app"},
 		{ConfigKey: "ai.enabled", ConfigValue: "true", ValueType: "bool", Description: "是否启用真实模型调用", Domain: "app"},
 		{ConfigKey: "ai.enable_thinking", ConfigValue: "false", ValueType: "bool", Description: "是否启用模型思考模式，默认关闭以降低首 token 延迟", Domain: "app"},
 		{ConfigKey: "vector.enabled", ConfigValue: "true", ValueType: "bool", Description: "是否启用 Milvus 向量召回；不可用时自动降级关键词检索", Domain: "infra"},
@@ -404,6 +530,7 @@ func DefaultConfigs(envAPIKey string) []domain.AppConfig {
 		{ConfigKey: "image_embedding.api_key", ConfigValue: envAPIKey, ValueType: "string", Description: "图片 Embedding API Key，默认复用 ai.api_key", Domain: "infra", IsSecret: true},
 		{ConfigKey: "image_embedding.model", ConfigValue: "qwen3-vl-embedding", ValueType: "string", Description: "图片 Embedding 模型", Domain: "infra"},
 		{ConfigKey: "image_embedding.dimension", ConfigValue: "512", ValueType: "int", Description: "图片 Embedding 维度，效果/性能平衡默认 512", Domain: "infra"},
+		{ConfigKey: "image_embedding.proxy_enabled", ConfigValue: "false", ValueType: "bool", Description: "图片 Embedding 是否走系统 HTTP_PROXY；默认直连，避免本机代理拖慢大图 POST", Domain: "infra"},
 		{ConfigKey: "retrieval.keyword.top_n", ConfigValue: "200", ValueType: "int", Description: "关键词召回候选数，宽 query 需要更大的候选池再重排", Domain: "rag"},
 		{ConfigKey: "retrieval.vector.top_n", ConfigValue: "80", ValueType: "int", Description: "向量召回候选数", Domain: "rag"},
 		{ConfigKey: "retrieval.vector.min_score", ConfigValue: "0.58", ValueType: "float", Description: "Milvus 向量召回最低相似度，低于该分数直接丢弃", Domain: "rag"},
@@ -431,11 +558,13 @@ func DefaultConfigs(envAPIKey string) []domain.AppConfig {
 		{ConfigKey: "memory.window_turns", ConfigValue: "5", ValueType: "int", Description: "短期记忆候选最近轮数", Domain: "app"},
 		{ConfigKey: "memory.max_turn_chars", ConfigValue: "1200", ValueType: "int", Description: "单轮候选记忆最大字符数", Domain: "app"},
 		{ConfigKey: "memory.summary_enabled", ConfigValue: "true", ValueType: "bool", Description: "是否在回答完成后更新会话摘要", Domain: "app"},
-		{ConfigKey: "agent.prompt.route", ConfigValue: DefaultRoutePrompt, ValueType: "text", Description: "一级路由 Prompt：guide/non_guide/fast_product", Domain: "prompt"},
+		{ConfigKey: "agent.prompt.route", ConfigValue: DefaultRoutePrompt, ValueType: "text", Description: "一级路由 Prompt：guide/non_guide", Domain: "prompt"},
 		{ConfigKey: "agent.prompt.guide_intent", ConfigValue: DefaultGuideIntentPrompt, ValueType: "text", Description: "导购细分 Prompt：P1-P6", Domain: "prompt"},
+		{ConfigKey: "agent.prompt.non_guide_intent", ConfigValue: DefaultNonGuideIntentPrompt, ValueType: "text", Description: "非导购服务域细分 Prompt", Domain: "prompt"},
 		{ConfigKey: "agent.prompt.main_template", ConfigValue: DefaultMainAgentTemplatePrompt, ValueType: "text", Description: "主 Agent 模板化系统 Prompt", Domain: "prompt"},
 		{ConfigKey: "agent.prompt.tool_call_protocol", ConfigValue: DefaultToolCallProtocolPrompt, ValueType: "text", Description: "主 Agent 工具与 Skill 调用协议", Domain: "prompt"},
 		{ConfigKey: "agent.prompt.final_output_rules", ConfigValue: DefaultFinalOutputRulesPrompt, ValueType: "text", Description: "主 Agent 最终回答通用规范", Domain: "prompt"},
+		{ConfigKey: "agent.prompt.non_guide_final_output_rules", ConfigValue: DefaultNonGuideFinalOutputRulesPrompt, ValueType: "text", Description: "非导购服务块最终输出规范", Domain: "prompt"},
 		{ConfigKey: "agent.prompt.intent_tool_policy", ConfigValue: DefaultIntentToolPolicyPrompt, ValueType: "json", Description: "各子意图可用工具、skill、禁用能力和使用侧重", Domain: "prompt"},
 		{ConfigKey: "agent.prompt.followups", ConfigValue: DefaultFollowupsPrompt, ValueType: "text", Description: "追问生成 Agent 系统 Prompt", Domain: "prompt"},
 		{ConfigKey: "agent.prompt.memory_retrieval", ConfigValue: DefaultMemoryRetrievalPrompt, ValueType: "text", Description: "短期多轮记忆检索 Prompt", Domain: "prompt"},
@@ -455,11 +584,13 @@ func DefaultConfigs(envAPIKey string) []domain.AppConfig {
 
 func PromptDefaults() []domain.AgentPromptInput {
 	defaults := []domain.AgentPromptInput{
-		{PromptKey: "agent.prompt.route", Title: "一级路由 Prompt", Content: DefaultRoutePrompt, Description: "guide/non_guide/fast_product 路由"},
+		{PromptKey: "agent.prompt.route", Title: "一级路由 Prompt", Content: DefaultRoutePrompt, Description: "guide/non_guide 路由"},
 		{PromptKey: "agent.prompt.guide_intent", Title: "导购细分 Prompt", Content: DefaultGuideIntentPrompt, Description: "P1-P6 导购意图识别"},
+		{PromptKey: "agent.prompt.non_guide_intent", Title: "非导购细分 Prompt", Content: DefaultNonGuideIntentPrompt, Description: "非导购服务域意图识别"},
 		{PromptKey: "agent.prompt.main_template", Title: "主 Agent 模板 Prompt", Content: DefaultMainAgentTemplatePrompt, Description: "模板化组装主 Agent 系统提示词"},
 		{PromptKey: "agent.prompt.tool_call_protocol", Title: "工具调用协议 Prompt", Content: DefaultToolCallProtocolPrompt, Description: "ReAct 工具与 Skill 调用 JSON 协议"},
 		{PromptKey: "agent.prompt.final_output_rules", Title: "最终回答规范 Prompt", Content: DefaultFinalOutputRulesPrompt, Description: "主 Agent 最终回答通用规范"},
+		{PromptKey: "agent.prompt.non_guide_final_output_rules", Title: "非导购最终输出规范 Prompt", Content: DefaultNonGuideFinalOutputRulesPrompt, Description: "非导购服务块 XML-like 标签输出规范"},
 		{PromptKey: "agent.prompt.intent_tool_policy", Title: "意图工具策略 Prompt", Content: DefaultIntentToolPolicyPrompt, Description: "按 route/intent 注入可用工具、skill 和禁用能力"},
 		{PromptKey: "agent.prompt.followups", Title: "追问生成 Prompt", Content: DefaultFollowupsPrompt, Description: "导购追问生成"},
 		{PromptKey: "agent.prompt.memory_retrieval", Title: "短期记忆检索 Prompt", Content: DefaultMemoryRetrievalPrompt, Description: "从最近对话中抽取当前问题相关记忆"},

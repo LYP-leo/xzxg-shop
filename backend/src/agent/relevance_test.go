@@ -142,8 +142,10 @@ func TestStreamTextFilterDropsBuyerTagContent(t *testing.T) {
 
 func TestStreamTextFilterEmitsAllowedItemOnce(t *testing.T) {
 	var emitted []string
-	filter := newStreamTextFilter([]string{"p_001"}, func(productID string) {
-		emitted = append(emitted, productID)
+	filter := newStreamTextFilter([]string{"p_001"}, streamFilterCallbacks{
+		OnItem: func(productID string) {
+			emitted = append(emitted, productID)
+		},
 	})
 	got := filter.Clean("a<item>p_001</item>b<item>p_001</item>c<item>p_002</item>d")
 	if got != "abcd" {
@@ -151,5 +153,24 @@ func TestStreamTextFilterEmitsAllowedItemOnce(t *testing.T) {
 	}
 	if len(emitted) != 1 || emitted[0] != "p_001" {
 		t.Fatalf("emitted = %v, want [p_001]", emitted)
+	}
+}
+
+func TestStreamTextFilterEmitsStructuredServiceBlock(t *testing.T) {
+	var blocks []domain.AgentBlock
+	filter := newStreamTextFilter(nil, streamFilterCallbacks{
+		OnBlock: func(block domain.AgentBlock) {
+			blocks = append(blocks, block)
+		},
+	})
+	got := filter.Clean(`前文<coupon_list>{"title":"可用券","items":[{"coupon_id":"c_1","name":"满100减10"}],"summary":{"count":1}}</coupon_list>后文`)
+	if got != "前文后文" {
+		t.Fatalf("cleaned = %q, want 前文后文", got)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("blocks len = %d, want 1", len(blocks))
+	}
+	if blocks[0].Type != "coupon_list" || blocks[0].Title != "可用券" || len(blocks[0].Items) != 1 {
+		t.Fatalf("block = %#v", blocks[0])
 	}
 }
