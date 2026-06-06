@@ -29,6 +29,9 @@ class PcmRecorder {
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT
         );
+        if (minBuffer <= 0) {
+            throw new IllegalStateException("当前设备不支持 16k 单声道录音");
+        }
         int bufferSize = Math.max(minBuffer, FRAME_BYTES * 4);
         recorder = new AudioRecord(
                 MediaRecorder.AudioSource.MIC,
@@ -37,8 +40,26 @@ class PcmRecorder {
                 AudioFormat.ENCODING_PCM_16BIT,
                 bufferSize
         );
+        if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
+            recorder.release();
+            recorder = null;
+            throw new IllegalStateException("录音设备初始化失败");
+        }
         running = true;
-        recorder.startRecording();
+        try {
+            recorder.startRecording();
+        } catch (Exception error) {
+            running = false;
+            recorder.release();
+            recorder = null;
+            throw error;
+        }
+        if (recorder.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
+            running = false;
+            recorder.release();
+            recorder = null;
+            throw new IllegalStateException("录音设备启动失败");
+        }
         worker = new Thread(() -> readFrames(listener), "xzxg-pcm-recorder");
         worker.start();
     }

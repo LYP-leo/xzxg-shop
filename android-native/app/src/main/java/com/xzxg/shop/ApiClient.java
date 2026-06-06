@@ -357,6 +357,20 @@ public class ApiClient {
         }
     }
 
+    public JSONObject uploadAttachment(String name, String mimeType, String type, long size, InputStream data) throws Exception {
+        if (data == null) {
+            throw new IOException("附件内容为空，无法发送");
+        }
+        if (size <= 0) {
+            throw new IOException("附件内容为空，无法发送");
+        }
+        if (size > 10 * 1024 * 1024) {
+            throw new IOException("单个附件不能超过 10MB");
+        }
+        String boundary = "----xzxgAndroid" + System.currentTimeMillis();
+        return uploadAttachmentStream(boundary, name, mimeType, type, size, data);
+    }
+
     private JSONObject uploadAttachmentBody(String boundary, byte[] body, String name, String type) throws Exception {
         HttpURLConnection conn = openRaw("/files", "POST");
         conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
@@ -385,6 +399,60 @@ public class ApiClient {
         body.write(data);
         body.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
         return body.toByteArray();
+    }
+
+    private JSONObject uploadAttachmentStream(String boundary, String name, String mimeType, String type, long size, InputStream data) throws Exception {
+        byte[] typePart = formFieldBytes(boundary, "type", type == null || type.trim().isEmpty() ? "file" : type.trim());
+        byte[] fileHeader = (("--" + boundary + "\r\n")
+                + "Content-Disposition: form-data; name=\"file\"; filename=\"" + safeFileName(name) + "\"\r\n"
+                + "Content-Type: " + (mimeType == null || mimeType.isEmpty() ? "application/octet-stream" : mimeType) + "\r\n\r\n").getBytes(StandardCharsets.UTF_8);
+        byte[] fileFooter = ("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8);
+        long bodyLength = typePart.length + fileHeader.length + size + fileFooter.length;
+
+        HttpURLConnection conn = openRaw("/files", "POST");
+        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+        conn.setRequestProperty("Connection", "close");
+        conn.setFixedLengthStreamingMode(bodyLength);
+        try (OutputStream out = conn.getOutputStream(); InputStream in = data) {
+            out.write(typePart);
+            out.write(fileHeader);
+            copyAttachmentBytes(in, out, size);
+            out.write(fileFooter);
+            out.flush();
+        } catch (Exception error) {
+            conn.disconnect();
+            throw error;
+        }
+        try {
+            return fileUploadToAttachment(readJSON(conn), name, type);
+        } finally {
+            conn.disconnect();
+        }
+    }
+
+    private void copyAttachmentBytes(InputStream in, OutputStream out, long expectedSize) throws Exception {
+        byte[] buffer = new byte[8192];
+        long total = 0;
+        int read;
+        while ((read = in.read(buffer)) != -1) {
+            total += read;
+            if (total > 10 * 1024 * 1024) {
+                throw new IOException("单个附件不能超过 10MB");
+            }
+            out.write(buffer, 0, read);
+        }
+        if (total == 0) {
+            throw new IOException("附件内容为空，无法发送");
+        }
+        if (expectedSize > 0 && total != expectedSize) {
+            throw new IOException("附件读取不完整，请重试");
+        }
+    }
+
+    private byte[] formFieldBytes(String boundary, String name, String value) {
+        return (("--" + boundary + "\r\n")
+                + "Content-Disposition: form-data; name=\"" + name + "\"\r\n\r\n"
+                + value + "\r\n").getBytes(StandardCharsets.UTF_8);
     }
 
     private boolean shouldRetryUpload(Exception error) {
@@ -438,6 +506,13 @@ public class ApiClient {
 
     public StreamCall streamMessage(String sessionId, String clientMessageId, String content, JSONArray attachments, SseCallback callback) {
         StreamCall call = new StreamCall();
+        if (sessionId == null || sessionId.trim().isEmpty()) {
+            call.canceled = true;
+            if (callback != null) {
+                callback.onError(new IOException("会话 ID 为空，无法发送消息"));
+            }
+            return call;
+        }
         Thread thread = new Thread(() -> {
             HttpURLConnection conn = null;
             try {

@@ -8,16 +8,18 @@ import android.database.sqlite.SQLiteOpenHelper;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 public class LocalChatStore extends SQLiteOpenHelper {
     public LocalChatStore(Context context) {
-        super(context, "xzxg_chat.db", null, 4);
+        super(context, "xzxg_chat.db", null, 5);
     }
 
     @Override
     public void onCreate(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE sessions (local_session_id TEXT PRIMARY KEY, server_session_id TEXT, title TEXT, summary TEXT, sync_state TEXT, created_at INTEGER, updated_at INTEGER, pinned_at INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER NOT NULL DEFAULT 0)");
         db.execSQL("CREATE TABLE messages (local_message_id TEXT PRIMARY KEY, local_session_id TEXT, role TEXT, content TEXT, attachments_json TEXT NOT NULL DEFAULT '[]', blocks_json TEXT, followups_json TEXT NOT NULL DEFAULT '[]', segments_json TEXT NOT NULL DEFAULT '[]', status TEXT, created_at INTEGER)");
+        createIndexes(db);
     }
 
     @Override
@@ -32,6 +34,9 @@ public class LocalChatStore extends SQLiteOpenHelper {
         }
         if (oldVersion < 4) {
             addColumnIfMissing(db, "messages", "attachments_json", "TEXT NOT NULL DEFAULT '[]'");
+        }
+        if (oldVersion < 5) {
+            createIndexes(db);
         }
     }
 
@@ -122,28 +127,38 @@ public class LocalChatStore extends SQLiteOpenHelper {
     }
 
     public void saveMessageWithAttachments(String localSessionId, String role, String content, String attachmentsJson, String blocksJson, String followupsJson, String segmentsJson, String status) {
-        ContentValues values = new ContentValues();
-        long now = System.currentTimeMillis();
-        String safeContent = content == null ? "" : content;
-        values.put("local_message_id", "local_msg_" + now + "_" + Math.abs(safeContent.hashCode()));
-        values.put("local_session_id", localSessionId);
-        values.put("role", role);
-        values.put("content", safeContent);
-        values.put("attachments_json", attachmentsJson == null || attachmentsJson.isEmpty() ? "[]" : attachmentsJson);
-        values.put("blocks_json", blocksJson == null || blocksJson.isEmpty() ? "[]" : blocksJson);
-        values.put("followups_json", followupsJson == null || followupsJson.isEmpty() ? "[]" : followupsJson);
-        values.put("segments_json", segmentsJson == null || segmentsJson.isEmpty() ? "[]" : segmentsJson);
-        values.put("status", status);
-        values.put("created_at", now);
-        getWritableDatabase().insert("messages", null, values);
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            ContentValues values = new ContentValues();
+            long now = System.currentTimeMillis();
+            String safeContent = content == null ? "" : content;
+            values.put("local_message_id", "local_msg_" + UUID.randomUUID().toString());
+            values.put("local_session_id", localSessionId);
+            values.put("role", role);
+            values.put("content", safeContent);
+            values.put("attachments_json", attachmentsJson == null || attachmentsJson.isEmpty() ? "[]" : attachmentsJson);
+            values.put("blocks_json", blocksJson == null || blocksJson.isEmpty() ? "[]" : blocksJson);
+            values.put("followups_json", followupsJson == null || followupsJson.isEmpty() ? "[]" : followupsJson);
+            values.put("segments_json", segmentsJson == null || segmentsJson.isEmpty() ? "[]" : segmentsJson);
+            values.put("status", status);
+            values.put("created_at", now);
+            long inserted = db.insert("messages", null, values);
+            if (inserted == -1) {
+                throw new IllegalStateException("本地消息保存失败");
+            }
 
-        ContentValues sessionValues = new ContentValues();
-        sessionValues.put("updated_at", now);
-        if ("user".equals(role)) {
-            sessionValues.put("title", titleFromMessage(safeContent));
-            sessionValues.put("summary", safeContent);
+            ContentValues sessionValues = new ContentValues();
+            sessionValues.put("updated_at", now);
+            if ("user".equals(role)) {
+                sessionValues.put("title", titleFromMessage(safeContent));
+                sessionValues.put("summary", safeContent);
+            }
+            db.update("sessions", sessionValues, "local_session_id = ?", new String[]{localSessionId});
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
         }
-        getWritableDatabase().update("sessions", sessionValues, "local_session_id = ?", new String[]{localSessionId});
     }
 
     public void saveRemoteMessageSnapshot(String localSessionId, String role, String content, String blocksJson, String followupsJson, String status, long createdAt) {
@@ -295,6 +310,12 @@ public class LocalChatStore extends SQLiteOpenHelper {
             cursor.close();
         }
         db.execSQL("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
+    }
+
+    private void createIndexes(SQLiteDatabase db) {
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_sessions_server_session_id ON sessions(server_session_id)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_sessions_history_order ON sessions(deleted_at, pinned_at, updated_at)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_messages_session_created ON messages(local_session_id, created_at)");
     }
 
     public void touchSession(String localSessionId) {

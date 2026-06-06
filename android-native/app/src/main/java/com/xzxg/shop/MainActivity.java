@@ -65,13 +65,17 @@ import java.io.InputStream;
 import java.net.URL;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.Collections;
 import java.util.Date;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Matcher;
@@ -86,13 +90,36 @@ public class MainActivity extends Activity {
     private static final int REQUEST_SPEECH_INPUT = 3105;
     private static final int PRODUCT_PAGE_SIZE = 20;
     private static final int HISTORY_PAGE_SIZE = 20;
-    private static final boolean DEBUG_AGENT_BLOCKS = true;
+    private static final boolean DEBUG_AGENT_BLOCKS = BuildConfig.DEBUG;
     private static final String TAG = "XzxgShop";
+    private static final String[] DEFAULT_HOME_PROMPTS = new String[]{
+            "城市通勤自行车推荐", "为我推荐一些护肤品", "预算三千以内的手机怎么选", "适合送父母的按摩仪推荐", "干皮秋冬保湿水怎么选",
+            "帮我找适合办公室的咖啡机", "儿童安全座椅怎么挑", "入门跑步鞋推荐", "油皮夏天底妆怎么选", "敏感肌可以用的面霜推荐",
+            "学生党平价防晒推荐", "通勤用双肩包怎么选", "适合小户型的空气炸锅推荐", "租房党投影仪怎么选", "两千以内洗地机推荐",
+            "扫地机器人避坑指南", "新手露营装备清单", "适合办公室久坐的腰靠推荐", "送女朋友生日礼物推荐", "送男朋友实用礼物推荐",
+            "父亲节礼物怎么选", "母亲节护肤礼盒推荐", "宝宝湿巾和纸尿裤怎么选", "新生儿奶瓶推荐", "孕妇可用护肤品推荐",
+            "儿童学习桌椅怎么挑", "家用净水器怎么选", "厨房小家电哪些值得买", "适合一人食的电饭煲推荐", "家用咖啡豆和咖啡机搭配",
+            "降噪耳机通勤推荐", "运动耳机怎么选", "平板电脑学习记笔记推荐", "轻薄本办公怎么选", "游戏本预算六千推荐",
+            "拍照好的手机推荐", "老人用手机怎么选", "儿童电话手表推荐", "智能手表健康监测怎么选", "家庭 NAS 入门推荐",
+            "路由器大户型怎么选", "显示器办公护眼推荐", "机械键盘新手推荐", "人体工学椅怎么选", "护眼台灯学生党推荐",
+            "卧室香薰和加湿器推荐", "床垫软硬怎么选", "四件套材质怎么挑", "猫砂和猫粮怎么选", "狗狗自动喂食器推荐",
+            "车载吸尘器推荐", "行车记录仪怎么选", "电动车头盔推荐", "长途旅行行李箱怎么选", "防晒衣和遮阳伞怎么选",
+            "户外徒步鞋推荐", "骑行头盔和手套推荐", "健身新手哑铃怎么选", "家用跑步机避坑", "瑜伽垫厚度怎么选",
+            "游泳装备新手推荐", "男士控油洗面奶推荐", "男士剃须刀怎么选", "头发干枯毛躁护发推荐", "防脱洗发水怎么选",
+            "口红色号日常通勤推荐", "粉底液色号怎么选", "新手化妆刷套装推荐", "香水入门怎么选", "美白精华怎么避坑",
+            "抗老精华适合多少岁用", "眼霜黑眼圈推荐", "身体乳秋冬推荐", "牙刷电动还是手动好", "冲牙器新手推荐",
+            "益生菌和维生素怎么选", "低糖零食推荐", "早餐麦片怎么选", "办公室咖啡和茶包推荐", "年货礼盒推荐",
+            "端午礼盒怎么选", "中秋月饼礼盒推荐", "搬家清洁用品清单", "浴室收纳怎么做", "厨房锅具套装推荐",
+            "不粘锅和铁锅怎么选", "保温杯材质怎么选", "雨天通勤鞋推荐", "冬季保暖内衣推荐", "羽绒服充绒量怎么选",
+            "夏季凉感床品推荐", "通勤衬衫不易皱推荐", "牛仔裤版型怎么选", "女生面试穿搭推荐", "男生日常通勤鞋推荐",
+            "儿童书包护脊推荐", "学习机和平板怎么选", "蓝牙音箱户外推荐", "家庭影院音响怎么选", "相机新手入门推荐"
+    };
     private SessionStore sessionStore;
     private LocalChatStore chatStore;
     private ApiClient api;
     private ImageLoader imageLoader;
     private FrameLayout root;
+    private View statusBarScrim;
     private LinearLayout content;
     private LinearLayout chatViewport;
     private LinearLayout chatList;
@@ -103,8 +130,6 @@ public class MainActivity extends Activity {
     private LinearLayout composerOuter;
     private LinearLayout attachmentBufferView;
     private LinearLayout attachmentPanelView;
-    private int lastImeBottom;
-    private boolean wasChatAtBottomBeforeIme = true;
     private boolean voiceMode;
     private SpeechRecognizer speechRecognizer;
     private String lastPartialSpeech = "";
@@ -128,6 +153,10 @@ public class MainActivity extends Activity {
     private boolean drawerHistoryHasMore = true;
     private boolean drawerHistoryLoading;
     private boolean drawerHistoryLocallyMutated;
+    private boolean hasSavedDrawerHistoryState;
+    private int savedDrawerHistoryScrollY;
+    private int savedDrawerHistoryOffset;
+    private String savedDrawerHistoryQuery = "";
     private String drawerHistoryQuery = "";
     private String localSessionId;
     private String serverSessionId = "";
@@ -135,10 +164,19 @@ public class MainActivity extends Activity {
     private LinearLayout activeAssistantMessageBubble;
     private TextView loadingAssistant;
     private LinearLayout activeThinkingPanel;
+    private LinearLayout activeThinkingHeader;
     private LinearLayout activeThinkingList;
     private TextView activeThinkingTitle;
+    private TextView activeThinkingDots;
+    private TextView activeThinkingAction;
     private boolean activeThinkingExpanded = true;
+    private boolean activeThinkingCompleted;
+    private boolean activeThinkingUserToggled;
+    private boolean thinkingAutoCollapsed;
     private final Map<String, JSONObject> activeThinkingSteps = new HashMap<>();
+    private final Handler thinkingAnimationHandler = new Handler(Looper.getMainLooper());
+    private Runnable thinkingDotsRunnable;
+    private int thinkingDotsFrame;
     private StringBuilder activeAssistantMarkdown;
     private StringBuilder activeAssistantFullMarkdown;
     private boolean activeAssistantFormMode;
@@ -168,9 +206,12 @@ public class MainActivity extends Activity {
     private boolean loadingProducts;
     private ProductListState currentProductState;
     private String activeProductTab = "list";
+    private final Set<String> loadingProductKeys = new HashSet<>();
     private FrameLayout productCartFab;
     private TextView productCartBadge;
     private int cartItemCountCache;
+    private LinearLayout cartCheckoutBar;
+    private JSONObject activeCartSnapshot;
     private final Map<String, ProductListState> productListCache = new HashMap<>();
     private final Map<String, JSONObject> productDetailCache = new HashMap<>();
     private final Set<String> activeRenderedProductIds = new HashSet<>();
@@ -191,6 +232,11 @@ public class MainActivity extends Activity {
     private String pendingAvatarMime = "image/jpeg";
     private Bitmap pendingAvatarPreview;
     private Runnable pendingAvatarChanged;
+    private boolean manualWindowInsets;
+    private int appliedTopInset;
+    private int appliedBottomInset;
+    private boolean chatAutoScrollEnabled = true;
+    private boolean userDetachedFromBottom;
 
     private static class PendingAttachment {
         Uri uri;
@@ -358,13 +404,11 @@ public class MainActivity extends Activity {
     }
 
     private void baseScreen() {
-        if (root != null) {
-            root.setOnApplyWindowInsetsListener(null);
-        }
         chatViewport = null;
-        lastImeBottom = 0;
-        wasChatAtBottomBeforeIme = true;
+        appliedTopInset = -1;
+        appliedBottomInset = -1;
         root = new FrameLayout(this);
+        statusBarScrim = null;
         productCartFab = null;
         productCartBadge = null;
         root.setBackgroundColor(BG_COLOR);
@@ -376,7 +420,15 @@ public class MainActivity extends Activity {
         content.setClipToPadding(false);
         content.setPadding(0, 0, 0, 0);
         root.addView(content, new FrameLayout.LayoutParams(-1, -1));
+        if (manualWindowInsets) {
+            statusBarScrim = new View(this);
+            statusBarScrim.setBackgroundColor(BG_COLOR);
+            FrameLayout.LayoutParams scrimParams = new FrameLayout.LayoutParams(-1, 0);
+            scrimParams.gravity = Gravity.TOP;
+            root.addView(statusBarScrim, scrimParams);
+        }
         setContentView(root);
+        bindRootWindowInsets();
     }
 
     private void renderChatHome() {
@@ -398,44 +450,7 @@ public class MainActivity extends Activity {
         chatViewport.addView(createTopBar("AI导购", null), new LinearLayout.LayoutParams(-1, dp(56)));
         chatViewport.addView(createChatMessageLayer(), new LinearLayout.LayoutParams(-1, 0, 1));
         chatViewport.addView(createComposerBar(), new LinearLayout.LayoutParams(-1, -2));
-        bindImeInsets();
-        root.requestApplyInsets();
-    }
-
-    private void bindImeInsets() {
-        root.setOnApplyWindowInsetsListener((view, insets) -> {
-            int imeBottom = 0;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                imeBottom = insets.getInsets(WindowInsets.Type.ime()).bottom;
-            }
-            applyChatImeInset(imeBottom);
-            return insets;
-        });
-    }
-
-    private void applyChatImeInset(int imeBottom) {
-        if (chatViewport == null) {
-            return;
-        }
-        boolean imeWillShow = imeBottom > 0;
-        boolean imeWasHidden = lastImeBottom == 0;
-        if (imeWillShow && imeWasHidden) {
-            wasChatAtBottomBeforeIme = isChatScrolledToBottom();
-        }
-        ViewGroup.LayoutParams currentParams = chatViewport.getLayoutParams();
-        if (!(currentParams instanceof FrameLayout.LayoutParams)) {
-            return;
-        }
-        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) currentParams;
-        if (params.height != FrameLayout.LayoutParams.MATCH_PARENT || params.bottomMargin != imeBottom) {
-            params.height = FrameLayout.LayoutParams.MATCH_PARENT;
-            params.bottomMargin = imeBottom;
-            chatViewport.setLayoutParams(params);
-        }
-        lastImeBottom = imeBottom;
-        if (imeWillShow && wasChatAtBottomBeforeIme) {
-            chatViewport.post(this::scrollBottom);
-        }
+        applyContentInsets(appliedTopInset < 0 ? 0 : appliedTopInset, appliedBottomInset < 0 ? 0 : appliedBottomInset);
     }
 
     private boolean isChatScrolledToBottom() {
@@ -552,31 +567,48 @@ public class MainActivity extends Activity {
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
                 hideAttachmentPanel();
                 hideKeyboard();
+                if (streaming && !isChatScrolledToBottom()) {
+                    chatAutoScrollEnabled = false;
+                    userDetachedFromBottom = true;
+                }
+            } else if (event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL) {
+                updateChatAutoScrollFromPosition();
             }
             return false;
+        });
+        chatScroll.setOnScrollChangeListener((v, scrollX, scrollY, oldScrollX, oldScrollY) -> {
+            if (isChatScrolledToBottom()) {
+                chatAutoScrollEnabled = true;
+                userDetachedFromBottom = false;
+            } else if (streaming && scrollY < oldScrollY) {
+                chatAutoScrollEnabled = false;
+                userDetachedFromBottom = true;
+            }
         });
 
         TextView welcome = new TextView(this);
         welcome.setTag("welcome");
-        welcome.setText("");
-        welcome.setTextSize(22);
+        welcome.setText(greetingText());
+        welcome.setTextSize(24);
+        welcome.setTypeface(Typeface.DEFAULT_BOLD);
         welcome.setTextColor(Color.rgb(20, 24, 30));
         welcome.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams welcomeParams = new LinearLayout.LayoutParams(-1, -2);
         welcomeParams.topMargin = dp(96);
         chatList.addView(welcome, welcomeParams);
 
-        TextView hint = muted(sessionStore.token().isEmpty() ? "登录以提供个性化建议" : "");
+        TextView hint = muted("");
         hint.setGravity(Gravity.CENTER);
         chatList.addView(hint, new LinearLayout.LayoutParams(-1, -2));
 
         LinearLayout suggestions = new LinearLayout(this);
         suggestions.setTag("suggestions");
-        suggestions.setOrientation(LinearLayout.HORIZONTAL);
-        HorizontalScrollView scroll = new HorizontalScrollView(this);
-        scroll.setHorizontalScrollBarEnabled(false);
-        scroll.addView(suggestions);
-        chatList.addView(scroll, new LinearLayout.LayoutParams(-1, -2));
+        suggestions.setOrientation(LinearLayout.VERTICAL);
+        suggestions.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams suggestionParams = new LinearLayout.LayoutParams(-1, -2);
+        suggestionParams.topMargin = dp(18);
+        chatList.addView(suggestions, suggestionParams);
+        renderHomeSuggestions(suggestions, null);
 
         activeRenderedProductIds.clear();
         renderStoredMessagesIfAny();
@@ -630,12 +662,6 @@ public class MainActivity extends Activity {
         input.setOnFocusChangeListener((v, hasFocus) -> {
             if (hasFocus) {
                 hideAttachmentPanel();
-                wasChatAtBottomBeforeIme = isChatScrolledToBottom();
-                input.postDelayed(() -> {
-                    if (input != null && input.hasFocus() && wasChatAtBottomBeforeIme) {
-                        scrollBottom();
-                    }
-                }, 220);
             }
         });
         input.addTextChangedListener(new TextWatcher() {
@@ -676,6 +702,7 @@ public class MainActivity extends Activity {
         composerOuter.addView(bar, new LinearLayout.LayoutParams(-1, dp(52)));
         renderAttachmentPanel();
         renderAttachmentBuffer();
+        applyComposerBottomInset(appliedBottomInset);
         return composerOuter;
     }
 
@@ -755,11 +782,18 @@ public class MainActivity extends Activity {
                     if (attachment.size > 10 * 1024 * 1024) {
                         throw new RuntimeException("单个附件不能超过 10MB");
                     }
-                    byte[] data = readAttachmentBytes(attachment.uri);
-                    if (data.length == 0) {
-                        throw new RuntimeException("附件内容为空，无法发送");
+                    JSONObject item;
+                    if (attachment.size > 0) {
+                        try (InputStream in = getContentResolver().openInputStream(attachment.uri)) {
+                            item = api.uploadAttachment(attachment.name, attachment.mimeType, attachment.type, attachment.size, in);
+                        }
+                    } else {
+                        byte[] data = readAttachmentBytes(attachment.uri);
+                        if (data.length == 0) {
+                            throw new RuntimeException("附件内容为空，无法发送");
+                        }
+                        item = api.uploadAttachment(attachment.name, attachment.mimeType, attachment.type, data);
                     }
-                    JSONObject item = api.uploadAttachment(attachment.name, attachment.mimeType, attachment.type, data);
                     try {
                         item.put("mime_type", attachment.mimeType == null ? "application/octet-stream" : attachment.mimeType);
                         item.put("size", Math.max(0, attachment.size));
@@ -1092,7 +1126,6 @@ public class MainActivity extends Activity {
                         input.setHint("正在聆听...");
                     }
                     try {
-                        realtimeRecorderStarted = true;
                         pcmRecorder.start(new PcmRecorder.FrameListener() {
                             @Override
                             public void onFrame(byte[] frame) {
@@ -1107,6 +1140,7 @@ public class MainActivity extends Activity {
                                 runOnUiThread(() -> handleRealtimeSpeechError("speech_recognition_failed", "录音失败，请重试"));
                             }
                         });
+                        realtimeRecorderStarted = true;
                     } catch (Exception error) {
                         handleRealtimeSpeechError("speech_recognition_failed", "录音失败，请重试");
                     }
@@ -1449,27 +1483,246 @@ public class MainActivity extends Activity {
         }
         TextView welcome = findTaggedText(chatList, "welcome");
         if (welcome != null) {
-            String text = home.optString("welcome_text", "");
-            welcome.setText(text.isEmpty() ? "这里展示新会话欢迎语" : text);
+            welcome.setText(greetingText());
         }
         LinearLayout suggestions = findTaggedLayout(chatList, "suggestions");
-        if (suggestions == null || sessionStore.token().isEmpty()) {
+        if (suggestions == null) {
+            return;
+        }
+        renderHomeSuggestions(suggestions, home == null ? null : home.optJSONArray("suggestions"));
+    }
+
+    private String greetingText() {
+        String greeting = greetingPrefix();
+        if (sessionStore == null || sessionStore.token().isEmpty()) {
+            return greeting;
+        }
+        return greeting + "，" + displayNickname();
+    }
+
+    private String greetingPrefix() {
+        Calendar calendar = Calendar.getInstance();
+        int hour = calendar.get(Calendar.HOUR_OF_DAY);
+        if (hour >= 5 && hour < 11) {
+            return "早上好";
+        }
+        if (hour >= 11 && hour < 14) {
+            return "中午好";
+        }
+        if (hour >= 14 && hour < 24) {
+            return "晚上好";
+        }
+        return "夜深了";
+    }
+
+    private String displayNickname() {
+        String nickname = sessionStore == null ? "" : sessionStore.nickname();
+        return nickname == null || nickname.trim().isEmpty() ? "用户名" : nickname.trim();
+    }
+
+    private void renderHomeSuggestions(LinearLayout suggestions, JSONArray remoteItems) {
+        if (suggestions == null) {
             return;
         }
         suggestions.removeAllViews();
-        JSONArray items = home.optJSONArray("suggestions");
-        if (items == null) {
+        List<String> items = randomHomePrompts(remoteItems);
+        for (String text : items) {
+            Button chip = secondaryButton(text);
+            chip.setTextSize(14);
+            chip.setGravity(Gravity.CENTER);
+            chip.setPadding(dp(14), 0, dp(14), 0);
+            chip.setOnClickListener(v -> {
+                chatAutoScrollEnabled = true;
+                userDetachedFromBottom = false;
+                sendMessage(((Button) v).getText().toString());
+            });
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, dp(44));
+            params.gravity = Gravity.CENTER_HORIZONTAL;
+            params.setMargins(0, 0, 0, dp(10));
+            suggestions.addView(chip, params);
+        }
+    }
+
+    private List<String> randomHomePrompts(JSONArray remoteItems) {
+        LinkedHashSet<String> pool = new LinkedHashSet<>();
+        if (remoteItems != null) {
+            for (int i = 0; i < remoteItems.length(); i++) {
+                JSONObject item = remoteItems.optJSONObject(i);
+                String text = item == null ? remoteItems.optString(i, "") : item.optString("text", "");
+                if (text != null && !text.trim().isEmpty()) {
+                    pool.add(text.trim());
+                }
+            }
+        }
+        Collections.addAll(pool, DEFAULT_HOME_PROMPTS);
+        List<String> prompts = new ArrayList<>(pool);
+        if (prompts.size() <= 3) {
+            return prompts;
+        }
+        long seed = System.currentTimeMillis();
+        if (localSessionId != null) {
+            seed ^= localSessionId.hashCode();
+        }
+        Collections.shuffle(prompts, new Random(seed));
+        return new ArrayList<>(prompts.subList(0, 3));
+    }
+
+    private void updateChatAutoScrollFromPosition() {
+        if (isChatScrolledToBottom()) {
+            chatAutoScrollEnabled = true;
+            userDetachedFromBottom = false;
+        }
+    }
+
+    private void forceScrollBottom() {
+        if (chatScroll != null) {
+            chatScroll.post(() -> chatScroll.fullScroll(View.FOCUS_DOWN));
+        }
+    }
+
+    private void scrollBottomIfAllowed() {
+        if (!streaming || chatAutoScrollEnabled || !userDetachedFromBottom) {
+            forceScrollBottom();
+        }
+    }
+
+    private String trimDanglingProductPunctuation(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text.replaceAll("[\\s，。、、,.;；:：]+$", "");
+    }
+
+    private boolean isOnlyDanglingProductPunctuation(String text) {
+        return text != null && text.trim().matches("[，。、、,.;；:：]+");
+    }
+
+    private void removeDanglingPunctuationFromActiveAssistant() {
+        if (activeAssistant == null || activeAssistantMarkdown == null) {
             return;
         }
-        for (int i = 0; i < items.length(); i++) {
-            String text = items.optJSONObject(i).optString("text", "");
-            if (text.isEmpty()) {
-                continue;
-            }
-            Button chip = secondaryButton(text);
-            chip.setOnClickListener(v -> sendMessage(((Button) v).getText().toString()));
-            suggestions.addView(chip);
+        String trimmed = trimDanglingProductPunctuation(activeAssistantMarkdown.toString());
+        if (trimmed.equals(activeAssistantMarkdown.toString())) {
+            return;
         }
+        activeAssistantMarkdown = new StringBuilder(trimmed);
+        RenderedMarkdown rendered = sanitizeAgentMarkdown(trimmed);
+        MarkdownRenderer.setMarkdown(activeAssistant, rendered.visibleMarkdown);
+    }
+
+    private void removeDanglingPunctuationFromHistoricalBubble(LinearLayout bubble) {
+        if (bubble == null || bubble.getChildCount() == 0) {
+            return;
+        }
+        View last = bubble.getChildAt(bubble.getChildCount() - 1);
+        if (!(last instanceof TextView)) {
+            return;
+        }
+        TextView textView = (TextView) last;
+        String trimmed = trimDanglingProductPunctuation(textView.getText().toString());
+        if (trimmed.trim().isEmpty()) {
+            bubble.removeView(last);
+            return;
+        }
+        if (!trimmed.equals(textView.getText().toString())) {
+            MarkdownRenderer.setMarkdown(textView, sanitizeAgentMarkdown(trimmed).visibleMarkdown);
+        }
+    }
+
+    private int currentTopSafeInset() {
+        if (!manualWindowInsets) {
+            return 0;
+        }
+        return stableTopInset(appliedTopInset < 0 ? 0 : appliedTopInset);
+    }
+
+    private int currentBottomSafeInset() {
+        if (!manualWindowInsets) {
+            return 0;
+        }
+        return Math.max(0, appliedBottomInset);
+    }
+
+    private LinearLayout makeBottomSheetBox() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(18), dp(20), dp(16));
+        box.setBackground(rounded(Color.WHITE, dp(22)));
+        return box;
+    }
+
+    private AlertDialog showBottomSheetDialog(View body) {
+        return showBottomSheetDialog(body, true);
+    }
+
+    private AlertDialog showBottomSheetDialog(View body, boolean animated) {
+        AlertDialog dialog = new AlertDialog.Builder(this).create();
+        dialog.setView(body);
+        dialog.setOnShowListener(d -> {
+            Window window = dialog.getWindow();
+            if (window == null) {
+                return;
+            }
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.setGravity(Gravity.BOTTOM);
+            if (!animated) {
+                window.setWindowAnimations(0);
+            }
+            WindowManager.LayoutParams params = new WindowManager.LayoutParams();
+            params.copyFrom(window.getAttributes());
+            params.width = WindowManager.LayoutParams.MATCH_PARENT;
+            params.height = WindowManager.LayoutParams.WRAP_CONTENT;
+            params.dimAmount = 0.32f;
+            window.setAttributes(params);
+            window.getDecorView().setPadding(dp(12), 0, dp(12), dp(12) + currentBottomSafeInset());
+        });
+        dialog.show();
+        Window window = dialog.getWindow();
+        if (window != null && !animated) {
+            window.setWindowAnimations(0);
+        }
+        return dialog;
+    }
+
+    private void showConfirmBottomSheet(String titleText, String message, String confirmText, boolean danger, Runnable onConfirm) {
+        showConfirmBottomSheet(titleText, message, confirmText, danger, true, onConfirm);
+    }
+
+    private void showConfirmBottomSheet(String titleText, String message, String confirmText, boolean danger, boolean animated, Runnable onConfirm) {
+        LinearLayout box = makeBottomSheetBox();
+        TextView titleView = title(titleText);
+        titleView.setTextSize(20);
+        box.addView(titleView, new LinearLayout.LayoutParams(-1, -2));
+        TextView messageView = muted(message);
+        messageView.setPadding(0, dp(8), 0, dp(18));
+        box.addView(messageView, new LinearLayout.LayoutParams(-1, -2));
+        final AlertDialog[] dialogRef = new AlertDialog[1];
+        LinearLayout actions = new LinearLayout(this);
+        actions.setGravity(Gravity.CENTER_VERTICAL);
+        Button cancel = secondaryButton("取消");
+        cancel.setOnClickListener(v -> {
+            if (dialogRef[0] != null) {
+                dialogRef[0].dismiss();
+            }
+        });
+        Button confirm = primaryButton(confirmText);
+        if (danger) {
+            confirm.setBackground(rounded(Color.rgb(220, 38, 38), dp(24)));
+        }
+        confirm.setOnClickListener(v -> {
+            if (dialogRef[0] != null) {
+                dialogRef[0].dismiss();
+            }
+            if (onConfirm != null) {
+                onConfirm.run();
+            }
+        });
+        actions.addView(cancel, new LinearLayout.LayoutParams(0, dp(48), 1));
+        LinearLayout.LayoutParams confirmParams = new LinearLayout.LayoutParams(0, dp(48), 1);
+        confirmParams.leftMargin = dp(10);
+        actions.addView(confirm, confirmParams);
+        box.addView(actions, new LinearLayout.LayoutParams(-1, -2));
+        dialogRef[0] = showBottomSheetDialog(box, animated);
     }
 
     private void showDrawer() {
@@ -1489,7 +1742,7 @@ public class MainActivity extends Activity {
         LinearLayout drawer = new LinearLayout(this);
         drawerPanel = drawer;
         drawer.setOrientation(LinearLayout.VERTICAL);
-        drawer.setPadding(dp(14), dp(10), dp(14), dp(10));
+        drawer.setPadding(dp(14), dp(10) + currentTopSafeInset(), dp(14), dp(10));
         drawer.setBackgroundColor(Color.WHITE);
 
         LinearLayout top = new LinearLayout(this);
@@ -1525,8 +1778,6 @@ public class MainActivity extends Activity {
         navGroup.addView(drawerNavButton("🏷", "商品", "products", v -> renderProducts()));
         navGroup.addView(drawerNavButton("🛒", "购物车", "cart", v -> renderCart()));
         navGroup.addView(drawerNavButton("📦", "订单", "orders", v -> renderOrders()));
-        navGroup.addView(drawerNavButton("券", "优惠券", "coupons", v -> renderCoupons()));
-        navGroup.addView(drawerNavButton("促", "活动", "promotions", v -> renderPromotions()));
         drawer.addView(navGroup);
 
         View divider = new View(this);
@@ -1547,9 +1798,13 @@ public class MainActivity extends Activity {
         drawerHistoryLocallyMutated = false;
         int historyBottomPadding = sessionStore.showDrawerReturnChat() ? dp(72) : dp(16);
         historyList.setPadding(0, dp(12), 0, historyBottomPadding);
-        resetHistoryPaging("");
-        renderHistoryList(historyList, loadHistoryPage("", 0));
-        loadRemoteHistoryPage("", 0, false);
+        String initialHistoryQuery = hasSavedDrawerHistoryState ? savedDrawerHistoryQuery : "";
+        if (!initialHistoryQuery.isEmpty()) {
+            search.setText(initialHistoryQuery);
+        }
+        resetHistoryPaging(initialHistoryQuery);
+        renderInitialHistoryList(historyList, initialHistoryQuery);
+        loadRemoteHistoryPage(initialHistoryQuery, 0, false);
         final int[] searchVersion = {0};
         drawerLayer.setOnClickListener(v -> closeDrawerAnimated());
         drawer.setOnClickListener(v -> {});
@@ -1567,7 +1822,7 @@ public class MainActivity extends Activity {
                 String query = editable.toString().trim();
                 int version = ++searchVersion[0];
                 resetHistoryPaging(query);
-                renderHistoryList(historyList, loadHistoryPage(query, 0));
+                renderInitialHistoryList(historyList, query);
                 new Thread(() -> {
                     try {
                         Thread.sleep(300);
@@ -1648,7 +1903,7 @@ public class MainActivity extends Activity {
                     chatStore.upsertRemoteSession(item.optString("session_id", ""), item.optString("title", "导购会话"), item.optString("summary", ""), remoteSessionTime(item));
                 }
             } catch (Exception error) {
-                handleApiError(error);
+                runOnUiThread(() -> handleApiError(error));
             } finally {
                 if (onDone != null) {
                     runOnUiThread(onDone);
@@ -1721,11 +1976,42 @@ public class MainActivity extends Activity {
         if (historyList == null || histories == null || histories.isEmpty()) {
             return;
         }
+        Set<String> existingIds = existingHistoryIds(historyList);
         for (LocalChatStore.SessionSummary item : histories) {
-            if (item != null) {
+            if (item != null && existingIds.add(item.localSessionId)) {
                 historyList.addView(historyButton(item));
             }
         }
+    }
+
+    private Set<String> existingHistoryIds(LinearLayout historyList) {
+        HashSet<String> ids = new HashSet<>();
+        if (historyList == null) {
+            return ids;
+        }
+        for (int i = 0; i < historyList.getChildCount(); i++) {
+            Object tag = historyList.getChildAt(i).getTag();
+            if (tag instanceof String && ((String) tag).startsWith("history:")) {
+                ids.add(((String) tag).substring("history:".length()));
+            }
+        }
+        return ids;
+    }
+
+    private void renderInitialHistoryList(LinearLayout historyList, String query) {
+        String keyword = query == null ? "" : query.trim();
+        List<LocalChatStore.SessionSummary> histories = shouldRestoreSavedHistoryState(keyword)
+                ? loadHistoryPageForSavedState(keyword)
+                : loadHistoryPage(keyword, 0);
+        renderHistoryList(historyList, histories);
+        if (shouldRestoreSavedHistoryState(keyword)) {
+            restoreSavedHistoryScroll();
+        }
+    }
+
+    private boolean shouldRestoreSavedHistoryState(String query) {
+        String keyword = query == null ? "" : query.trim();
+        return hasSavedDrawerHistoryState && keyword.equals(savedDrawerHistoryQuery);
     }
 
     private void resetHistoryPaging(String query) {
@@ -1741,11 +2027,11 @@ public class MainActivity extends Activity {
         }
         String requestedQuery = query == null ? "" : query.trim();
         if (sessionStore.token().isEmpty()) {
-            List<LocalChatStore.SessionSummary> page = loadHistoryPage(requestedQuery, offset);
             if (append) {
+                List<LocalChatStore.SessionSummary> page = loadHistoryPage(requestedQuery, offset);
                 appendHistoryList(drawerHistoryList, page);
             } else {
-                renderHistoryList(drawerHistoryList, page);
+                renderInitialHistoryList(drawerHistoryList, requestedQuery);
             }
             return;
         }
@@ -1766,12 +2052,18 @@ public class MainActivity extends Activity {
                         drawerHistoryLoading = false;
                         return;
                     }
-                    drawerHistoryQuery = requestedQuery;
-                    drawerHistoryOffset = offset + remotePage.items.length();
-                    drawerHistoryHasMore = remotePage.hasMore;
                     if (append) {
+                        drawerHistoryQuery = requestedQuery;
+                        drawerHistoryOffset = offset + remotePage.items.length();
+                        drawerHistoryHasMore = remotePage.hasMore;
                         appendHistoryList(drawerHistoryList, summaries);
+                    } else if (shouldRestoreSavedHistoryState(requestedQuery)) {
+                        renderInitialHistoryList(drawerHistoryList, requestedQuery);
+                        drawerHistoryHasMore = drawerHistoryHasMore || remotePage.hasMore;
                     } else {
+                        drawerHistoryQuery = requestedQuery;
+                        drawerHistoryOffset = offset + remotePage.items.length();
+                        drawerHistoryHasMore = remotePage.hasMore;
                         renderHistoryList(drawerHistoryList, summaries);
                     }
                     drawerHistoryLoading = false;
@@ -1779,11 +2071,11 @@ public class MainActivity extends Activity {
             } catch (Exception error) {
                 runOnUiThread(() -> {
                     if (drawerHistoryList != null) {
-                        List<LocalChatStore.SessionSummary> pageItems = loadHistoryPage(requestedQuery, offset);
                         if (append) {
+                            List<LocalChatStore.SessionSummary> pageItems = loadHistoryPage(requestedQuery, offset);
                             appendHistoryList(drawerHistoryList, pageItems);
                         } else {
-                            renderHistoryList(drawerHistoryList, pageItems);
+                            renderInitialHistoryList(drawerHistoryList, requestedQuery);
                         }
                     }
                     drawerHistoryLoading = false;
@@ -1804,6 +2096,61 @@ public class MainActivity extends Activity {
         drawerHistoryOffset = offset + (page == null ? 0 : page.size());
         drawerHistoryHasMore = page != null && page.size() >= HISTORY_PAGE_SIZE;
         return page;
+    }
+
+    private List<LocalChatStore.SessionSummary> loadHistoryPageForSavedState(String query) {
+        ArrayList<LocalChatStore.SessionSummary> result = new ArrayList<>();
+        HashSet<String> seen = new HashSet<>();
+        int offset = 0;
+        boolean hasMore = false;
+        int targetCount = Math.max(HISTORY_PAGE_SIZE, savedDrawerHistoryOffset);
+        while (true) {
+            List<LocalChatStore.SessionSummary> page;
+            String keyword = query == null ? "" : query.trim();
+            if (keyword.isEmpty()) {
+                page = chatStore.recentSessionsWithMessages(HISTORY_PAGE_SIZE, offset);
+            } else {
+                page = chatStore.searchSessionsLocal(keyword, HISTORY_PAGE_SIZE, offset);
+            }
+            if (page == null || page.isEmpty()) {
+                hasMore = false;
+                break;
+            }
+            offset += page.size();
+            hasMore = page.size() >= HISTORY_PAGE_SIZE;
+            for (LocalChatStore.SessionSummary item : page) {
+                if (item == null || !seen.add(item.localSessionId)) {
+                    continue;
+                }
+                result.add(item);
+            }
+            if (result.size() >= targetCount) {
+                break;
+            }
+            if (!hasMore) {
+                break;
+            }
+        }
+        drawerHistoryQuery = query == null ? "" : query.trim();
+        drawerHistoryOffset = offset;
+        drawerHistoryHasMore = hasMore;
+        return result;
+    }
+
+    private void restoreSavedHistoryScroll() {
+        if (drawerHistoryScroll == null) {
+            return;
+        }
+        drawerHistoryScroll.post(() -> {
+            if (drawerHistoryScroll == null) {
+                return;
+            }
+            int contentHeight = drawerHistoryScroll.getChildCount() > 0
+                    ? drawerHistoryScroll.getChildAt(0).getHeight()
+                    : (drawerHistoryList == null ? 0 : drawerHistoryList.getHeight());
+            int maxScrollY = Math.max(0, contentHeight - drawerHistoryScroll.getHeight());
+            drawerHistoryScroll.scrollTo(0, Math.max(0, Math.min(savedDrawerHistoryScrollY, maxScrollY)));
+        });
     }
 
     private void maybeLoadMoreHistory(LinearLayout historyList, ScrollView scrollView) {
@@ -1843,7 +2190,7 @@ public class MainActivity extends Activity {
         }
         String query = drawerSearchInput == null ? "" : drawerSearchInput.getText().toString().trim();
         resetHistoryPaging(query);
-        renderHistoryList(drawerHistoryList, loadHistoryPage(query, 0));
+        renderInitialHistoryList(drawerHistoryList, query);
         if (includeRemote) {
             loadRemoteHistoryPage(query, 0, false);
         }
@@ -2028,6 +2375,8 @@ public class MainActivity extends Activity {
     }
 
     private void sendMessage(String text, JSONArray attachments) {
+        chatAutoScrollEnabled = true;
+        userDetachedFromBottom = false;
         clearWelcomeIfNeeded();
         if (input != null && !voiceMode) {
             input.setText("");
@@ -2067,6 +2416,9 @@ public class MainActivity extends Activity {
             try {
                 JSONObject session = api.createSession("Android 新聊天");
                 String createdServerSessionId = session.optString("session_id", "");
+                if (createdServerSessionId.trim().isEmpty()) {
+                    throw new IllegalStateException("创建会话失败：后端未返回 session_id");
+                }
                 chatStore.bindServerSession(ownerLocalSessionId, createdServerSessionId);
                 enqueueSessionSync(ownerLocalSessionId, createdServerSessionId, titleFromChatText(text), text);
                 runOnUiThread(() -> {
@@ -2104,11 +2456,7 @@ public class MainActivity extends Activity {
         activeAssistantMessageBubble = null;
         activeAssistantBlocks = new JSONArray();
         activeAssistantSegments = new JSONArray();
-        activeThinkingSteps.clear();
-        activeThinkingPanel = null;
-        activeThinkingList = null;
-        activeThinkingTitle = null;
-        activeThinkingExpanded = true;
+        resetActiveThinkingState();
         activeFollowups = new JSONArray();
         activeFollowupsView = null;
         activeRenderedProductIds.clear();
@@ -2239,6 +2587,21 @@ public class MainActivity extends Activity {
         loadingAssistant.setText(text == null || text.isEmpty() ? "正在处理..." : text);
     }
 
+    private void resetActiveThinkingState() {
+        stopThinkingDotsAnimation();
+        activeThinkingSteps.clear();
+        activeThinkingPanel = null;
+        activeThinkingList = null;
+        activeThinkingHeader = null;
+        activeThinkingTitle = null;
+        activeThinkingDots = null;
+        activeThinkingAction = null;
+        activeThinkingExpanded = true;
+        activeThinkingCompleted = false;
+        activeThinkingUserToggled = false;
+        thinkingAutoCollapsed = false;
+    }
+
     private void updateThinkingPanel(JSONObject step) {
         if (step == null) {
             return;
@@ -2254,6 +2617,10 @@ public class MainActivity extends Activity {
             activeThinkingSteps.put(id, step);
         }
         ensureThinkingPanel();
+        activeThinkingCompleted = activeThinkingCompleted || areThinkingStepsComplete();
+        if (!isAnswerStarted()) {
+            activeThinkingExpanded = true;
+        }
         renderThinkingPanel();
         scrollBottom();
     }
@@ -2264,23 +2631,49 @@ public class MainActivity extends Activity {
         }
         activeThinkingPanel = new LinearLayout(this);
         activeThinkingPanel.setOrientation(LinearLayout.VERTICAL);
-        activeThinkingPanel.setPadding(dp(12), dp(10), dp(12), dp(10));
-        activeThinkingPanel.setBackground(rounded(Color.WHITE, dp(16)));
+        activeThinkingPanel.setPadding(dp(4), dp(6), dp(4), dp(6));
+        activeThinkingPanel.setBackgroundColor(Color.TRANSPARENT);
         int bubbleWidth = (int) (getResources().getDisplayMetrics().widthPixels * 0.82f);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(bubbleWidth, ViewGroup.LayoutParams.WRAP_CONTENT);
         params.gravity = Gravity.LEFT;
         params.setMargins(0, dp(4), 0, dp(8));
         chatList.addView(activeThinkingPanel, params);
 
+        activeThinkingHeader = new LinearLayout(this);
+        activeThinkingHeader.setGravity(Gravity.CENTER_VERTICAL);
+        activeThinkingHeader.setClickable(true);
+        activeThinkingHeader.setOnClickListener(v -> {
+            if (!activeThinkingCompleted && streaming && !isAnswerStarted()) {
+                return;
+            }
+            int beforeScrollY = chatScroll == null ? 0 : chatScroll.getScrollY();
+            activeThinkingExpanded = !activeThinkingExpanded;
+            activeThinkingUserToggled = true;
+            renderThinkingPanel();
+            if (chatScroll != null) {
+                chatScroll.post(() -> chatScroll.setScrollY(beforeScrollY));
+            }
+        });
+
         activeThinkingTitle = new TextView(this);
         activeThinkingTitle.setTextSize(15);
-        activeThinkingTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        activeThinkingTitle.setTextColor(Color.rgb(31, 41, 55));
-        activeThinkingTitle.setOnClickListener(v -> {
-            activeThinkingExpanded = !activeThinkingExpanded;
-            renderThinkingPanel();
-        });
-        activeThinkingPanel.addView(activeThinkingTitle, new LinearLayout.LayoutParams(-1, -2));
+        activeThinkingTitle.setTypeface(Typeface.DEFAULT);
+        activeThinkingTitle.setTextColor(Color.rgb(107, 114, 128));
+        activeThinkingHeader.addView(activeThinkingTitle, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        activeThinkingDots = new TextView(this);
+        activeThinkingDots.setTextSize(15);
+        activeThinkingDots.setTypeface(Typeface.MONOSPACE);
+        activeThinkingDots.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
+        activeThinkingDots.setTextColor(Color.rgb(107, 114, 128));
+        activeThinkingHeader.addView(activeThinkingDots, new LinearLayout.LayoutParams(dp(28), ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        activeThinkingAction = new TextView(this);
+        activeThinkingAction.setTextSize(15);
+        activeThinkingAction.setTypeface(Typeface.DEFAULT);
+        activeThinkingAction.setTextColor(Color.rgb(107, 114, 128));
+        activeThinkingHeader.addView(activeThinkingAction, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        activeThinkingPanel.addView(activeThinkingHeader, new LinearLayout.LayoutParams(-1, -2));
 
         activeThinkingList = new LinearLayout(this);
         activeThinkingList.setOrientation(LinearLayout.VERTICAL);
@@ -2290,18 +2683,23 @@ public class MainActivity extends Activity {
     }
 
     private void renderThinkingPanel() {
-        if (activeThinkingPanel == null || activeThinkingTitle == null || activeThinkingList == null) {
+        if (activeThinkingPanel == null || activeThinkingTitle == null || activeThinkingDots == null || activeThinkingAction == null || activeThinkingList == null) {
             return;
         }
-        boolean allDone = !activeThinkingSteps.isEmpty();
-        for (JSONObject step : sortedThinkingSteps()) {
-            String status = step.optString("status", "");
-            if (!"done".equals(status) && !"skipped".equals(status) && !"failed".equals(status)) {
-                allDone = false;
-                break;
-            }
+        activeThinkingCompleted = activeThinkingCompleted || thinkingAutoCollapsed || areThinkingStepsComplete();
+        String action = activeThinkingExpanded ? "收起" : "展开";
+        int titleColor = activeThinkingCompleted ? Color.rgb(156, 163, 175) : Color.rgb(107, 114, 128);
+        activeThinkingTitle.setText(activeThinkingCompleted ? "✦  已完成思考  " : "✦  正在思考");
+        activeThinkingTitle.setTextColor(titleColor);
+        activeThinkingDots.setTextColor(titleColor);
+        activeThinkingAction.setTextColor(titleColor);
+        activeThinkingAction.setText(action);
+        if (activeThinkingCompleted) {
+            stopThinkingDotsAnimation();
+            activeThinkingDots.setText("");
+        } else {
+            startThinkingDotsAnimation();
         }
-        activeThinkingTitle.setText((allDone ? "已完成思考 " : "正在思考 ") + (activeThinkingExpanded ? "⌃" : "⌄"));
         activeThinkingList.removeAllViews();
         activeThinkingList.setVisibility(activeThinkingExpanded ? View.VISIBLE : View.GONE);
         if (!activeThinkingExpanded) {
@@ -2310,6 +2708,63 @@ public class MainActivity extends Activity {
         for (JSONObject step : sortedThinkingSteps()) {
             activeThinkingList.addView(thinkingStepView(step));
         }
+    }
+
+    private void startThinkingDotsAnimation() {
+        if (activeThinkingDots == null || thinkingDotsRunnable != null) {
+            return;
+        }
+        thinkingDotsRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (activeThinkingDots == null || activeThinkingCompleted) {
+                    stopThinkingDotsAnimation();
+                    return;
+                }
+                String[] frames = {".", "..", "..."};
+                activeThinkingDots.setText(frames[thinkingDotsFrame % frames.length]);
+                thinkingDotsFrame++;
+                thinkingAnimationHandler.postDelayed(this, 450);
+            }
+        };
+        thinkingAnimationHandler.post(thinkingDotsRunnable);
+    }
+
+    private void stopThinkingDotsAnimation() {
+        if (thinkingDotsRunnable != null) {
+            thinkingAnimationHandler.removeCallbacks(thinkingDotsRunnable);
+            thinkingDotsRunnable = null;
+        }
+        thinkingDotsFrame = 0;
+    }
+
+    private boolean areThinkingStepsComplete() {
+        if (activeThinkingSteps.isEmpty()) {
+            return false;
+        }
+        for (JSONObject step : sortedThinkingSteps()) {
+            String status = normalizeThinkingStatus(step.optString("status", ""));
+            if (!"done".equals(status) && !"skipped".equals(status) && !"failed".equals(status)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean isAnswerStarted() {
+        return (activeAssistantFullMarkdown != null && activeAssistantFullMarkdown.length() > 0)
+            || activeAssistant != null
+            || activeAssistantMessageBubble != null;
+    }
+
+    private void collapseThinkingWhenAnswerStarts() {
+        if (thinkingAutoCollapsed || activeThinkingPanel == null || activeThinkingSteps.isEmpty()) {
+            return;
+        }
+        activeThinkingCompleted = true;
+        activeThinkingExpanded = false;
+        thinkingAutoCollapsed = true;
+        renderThinkingPanel();
     }
 
     private List<JSONObject> sortedThinkingSteps() {
@@ -2331,7 +2786,7 @@ public class MainActivity extends Activity {
         wrap.setPadding(0, dp(4), 0, dp(4));
 
         TextView icon = new TextView(this);
-        String status = step.optString("status", "running");
+        String status = normalizeThinkingStatus(step.optString("status", "running"));
         icon.setText(thinkingStatusIcon(status));
         icon.setTextSize(16);
         icon.setGravity(Gravity.TOP | Gravity.CENTER_HORIZONTAL);
@@ -2365,6 +2820,7 @@ public class MainActivity extends Activity {
     }
 
     private String thinkingStatusIcon(String status) {
+        status = normalizeThinkingStatus(status);
         if ("done".equals(status)) {
             return "✓";
         }
@@ -2378,6 +2834,7 @@ public class MainActivity extends Activity {
     }
 
     private int thinkingStatusColor(String status) {
+        status = normalizeThinkingStatus(status);
         if ("done".equals(status)) {
             return Color.rgb(143, 150, 165);
         }
@@ -2388,6 +2845,7 @@ public class MainActivity extends Activity {
     }
 
     private String thinkingStatusSuffix(String status) {
+        status = normalizeThinkingStatus(status);
         if ("done".equals(status)) {
             return "完成";
         }
@@ -2400,25 +2858,52 @@ public class MainActivity extends Activity {
         return "中";
     }
 
+    private String normalizeThinkingStatus(String status) {
+        if (status == null || status.trim().isEmpty()) {
+            return "running";
+        }
+        String value = status.trim();
+        if ("completed".equals(value) || "complete".equals(value) || "success".equals(value)) {
+            return "done";
+        }
+        if ("error".equals(value)) {
+            return "failed";
+        }
+        return value;
+    }
+
     private void appendThinkingSegmentsSnapshot() {
         if (activeThinkingSteps.isEmpty() || activeAssistantSegments == null) {
             return;
         }
+        JSONArray thinkingSegments = new JSONArray();
         for (JSONObject step : sortedThinkingSteps()) {
             try {
                 JSONObject segment = new JSONObject();
                 segment.put("type", "thinking");
                 segment.put("thought", new JSONObject(step.toString()));
-                activeAssistantSegments.put(segment);
+                thinkingSegments.put(segment);
             } catch (Exception ignored) {
             }
         }
+        if (thinkingSegments.length() == 0) {
+            return;
+        }
+        JSONArray merged = new JSONArray();
+        for (int i = 0; i < thinkingSegments.length(); i++) {
+            merged.put(thinkingSegments.optJSONObject(i));
+        }
+        for (int i = 0; i < activeAssistantSegments.length(); i++) {
+            merged.put(activeAssistantSegments.opt(i));
+        }
+        activeAssistantSegments = merged;
     }
 
     private void appendAssistant(String delta) {
         if (delta == null || delta.isEmpty()) {
             return;
         }
+        collapseThinkingWhenAnswerStarts();
         String input = activeAssistantTagPending.toString() + delta;
         activeAssistantTagPending.setLength(0);
         while (!input.isEmpty()) {
@@ -2512,7 +2997,11 @@ public class MainActivity extends Activity {
             return;
         }
         RenderedMarkdown rendered = sanitizeAgentMarkdown(activeAssistantMarkdown.toString());
-        MarkdownRenderer.setMarkdown(activeAssistant, rendered.visibleMarkdown);
+        String visibleMarkdown = rendered.itemIds.length() > 0 ? trimDanglingProductPunctuation(rendered.visibleMarkdown) : rendered.visibleMarkdown;
+        if (rendered.itemIds.length() > 0) {
+            activeAssistantMarkdown = new StringBuilder(visibleMarkdown);
+        }
+        MarkdownRenderer.setMarkdown(activeAssistant, visibleMarkdown);
         renderItemRefs(rendered.itemIds, chatList);
         scrollBottom();
     }
@@ -2663,10 +3152,7 @@ public class MainActivity extends Activity {
         activeAssistantFormCodeText = null;
         activeAssistantBlocks = new JSONArray();
         activeAssistantSegments = new JSONArray();
-        activeThinkingSteps.clear();
-        activeThinkingPanel = null;
-        activeThinkingList = null;
-        activeThinkingTitle = null;
+        resetActiveThinkingState();
         activeFollowups = new JSONArray();
         activeFollowupsView = null;
         updateInputActionButtonState();
@@ -2708,10 +3194,6 @@ public class MainActivity extends Activity {
         activeAssistantMessageBubble = null;
         activeAssistantBlocks = new JSONArray();
         activeAssistantSegments = new JSONArray();
-        activeThinkingSteps.clear();
-        activeThinkingPanel = null;
-        activeThinkingList = null;
-        activeThinkingTitle = null;
         activeFollowups = new JSONArray();
         activeFollowupsView = null;
         activeRunId = "";
@@ -2749,10 +3231,7 @@ public class MainActivity extends Activity {
         activeAssistantMessageBubble = null;
         activeAssistantBlocks = new JSONArray();
         activeAssistantSegments = new JSONArray();
-        activeThinkingSteps.clear();
-        activeThinkingPanel = null;
-        activeThinkingList = null;
-        activeThinkingTitle = null;
+        resetActiveThinkingState();
         activeStreamCall = null;
         activeStreamLocalSessionId = "";
         activeStreamServerSessionId = "";
@@ -2819,10 +3298,6 @@ public class MainActivity extends Activity {
         activeAssistantMessageBubble = null;
         activeAssistantBlocks = new JSONArray();
         activeAssistantSegments = new JSONArray();
-        activeThinkingSteps.clear();
-        activeThinkingPanel = null;
-        activeThinkingList = null;
-        activeThinkingTitle = null;
         activeFollowups = new JSONArray();
         activeFollowupsView = null;
         activeRunId = "";
@@ -3113,7 +3588,8 @@ public class MainActivity extends Activity {
             return;
         }
         String headerText = thinking.completed ? "✦  已完成思考 " : "✦  正在思考 ";
-        thinking.header.setText(headerText + (thinking.expanded ? "▴" : "▾"));
+        thinking.header.setTextColor(thinking.completed ? Color.rgb(156, 163, 175) : Color.rgb(107, 114, 128));
+        thinking.header.setText(headerText + (thinking.expanded ? "收起" : "展开"));
         thinking.detail.setVisibility(thinking.expanded ? View.VISIBLE : View.GONE);
         thinking.detail.removeAllViews();
         if (!thinking.expanded) {
@@ -3565,6 +4041,7 @@ public class MainActivity extends Activity {
         if (productIds == null || productIds.length() == 0) {
             return;
         }
+        removeDanglingPunctuationFromActiveAssistant();
         renderProductRefs(productIds, ensureActiveAssistantMessageBubble(parent));
     }
 
@@ -3676,12 +4153,18 @@ public class MainActivity extends Activity {
             renderHistoricalBlocks(context, jsonArray(fallbackBlocks));
             return;
         }
+        JSONArray pendingThoughts = new JSONArray();
         for (int i = 0; i < segments.length(); i++) {
             JSONObject segment = segments.optJSONObject(i);
             if (segment == null) {
                 continue;
             }
             String type = segment.optString("type");
+            if ("thinking".equals(type)) {
+                collectHistoricalThinkingSegment(pendingThoughts, segment);
+                continue;
+            }
+            pendingThoughts = flushHistoricalThinkingPanel(context, pendingThoughts);
             if ("text".equals(type)) {
                 String text = segment.optString("text", "");
                 if (!text.trim().isEmpty()) {
@@ -3691,17 +4174,169 @@ public class MainActivity extends Activity {
                 renderHistoricalTableSegment(context, segment.optString("markdown", ""));
             } else if ("block".equals(type)) {
                 renderHistoricalBlock(context, segment.optJSONObject("block"));
-            } else if ("thinking".equals(type)) {
-                JSONObject thought = segment.optJSONObject("thought");
-                if (thought != null) {
-                    renderHistoricalThinkingSegment(context, thought);
-                } else {
-                    renderStoredThinking(segment.optJSONObject("thinking"), context.parent);
-                }
             } else if ("product_refs".equals(type) || "product_card".equals(type)) {
                 renderHistoricalBlock(context, segment);
             }
         }
+        flushHistoricalThinkingPanel(context, pendingThoughts);
+    }
+
+    private void collectHistoricalThinkingSegment(JSONArray thoughts, JSONObject segment) {
+        if (thoughts == null || segment == null) {
+            return;
+        }
+        JSONObject thought = segment.optJSONObject("thought");
+        if (thought != null) {
+            thoughts.put(thought);
+            return;
+        }
+        JSONObject thinking = segment.optJSONObject("thinking");
+        if (thinking == null) {
+            return;
+        }
+        JSONArray stages = thinking.optJSONArray("stages");
+        if (stages == null) {
+            return;
+        }
+        for (int i = 0; i < stages.length(); i++) {
+            JSONObject item = stages.optJSONObject(i);
+            if (item == null) {
+                continue;
+            }
+            try {
+                JSONObject converted = new JSONObject();
+                String stage = item.optString("stage", "");
+                converted.put("id", stage);
+                converted.put("title", thinkingStageTitle(thinkingStageKey(stage), item.optString("title", "")));
+                converted.put("status", normalizeThinkingStatus(item.optString("status", "done")));
+                converted.put("summary", historicalThinkingSummary(item));
+                converted.put("order", historicalThinkingOrder(stage, i + 1));
+                thoughts.put(converted);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private JSONArray flushHistoricalThinkingPanel(HistoricalMessageRenderContext context, JSONArray thoughts) {
+        if (context == null || context.parent == null || thoughts == null || thoughts.length() == 0) {
+            return new JSONArray();
+        }
+        renderHistoricalThinkingPanel(context, thoughts);
+        return new JSONArray();
+    }
+
+    private void renderHistoricalThinkingPanel(HistoricalMessageRenderContext context, JSONArray thoughts) {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(4), dp(6), dp(4), dp(6));
+        panel.setBackgroundColor(Color.TRANSPARENT);
+        int bubbleWidth = (int) (getResources().getDisplayMetrics().widthPixels * 0.82f);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(bubbleWidth, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.gravity = Gravity.LEFT;
+        params.setMargins(0, dp(4), 0, dp(8));
+
+        TextView title = new TextView(this);
+        title.setTextSize(15);
+        title.setTypeface(Typeface.DEFAULT);
+        title.setTextColor(Color.rgb(156, 163, 175));
+        panel.addView(title, new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams listParams = new LinearLayout.LayoutParams(-1, -2);
+        listParams.topMargin = dp(8);
+        panel.addView(list, listParams);
+
+        List<JSONObject> steps = sortedHistoricalThinkingSteps(thoughts);
+        final boolean[] expanded = {false};
+        final Runnable[] render = new Runnable[1];
+        render[0] = () -> {
+            String action = expanded[0] ? "收起" : "展开";
+            title.setText("✦  已完成思考  " + action);
+            list.removeAllViews();
+            list.setVisibility(expanded[0] ? View.VISIBLE : View.GONE);
+            if (!expanded[0]) {
+                return;
+            }
+            for (JSONObject step : steps) {
+                list.addView(thinkingStepView(step));
+            }
+        };
+        title.setOnClickListener(v -> {
+            int beforeScrollY = chatScroll == null ? 0 : chatScroll.getScrollY();
+            expanded[0] = !expanded[0];
+            render[0].run();
+            if (chatScroll != null) {
+                chatScroll.post(() -> chatScroll.setScrollY(beforeScrollY));
+            }
+        });
+        render[0].run();
+        context.parent.addView(panel, params);
+    }
+
+    private List<JSONObject> sortedHistoricalThinkingSteps(JSONArray thoughts) {
+        List<JSONObject> steps = new ArrayList<>();
+        if (thoughts != null) {
+            for (int i = 0; i < thoughts.length(); i++) {
+                JSONObject step = thoughts.optJSONObject(i);
+                if (step != null) {
+                    steps.add(step);
+                }
+            }
+        }
+        steps.sort((a, b) -> {
+            int orderA = a.optInt("order", 99);
+            int orderB = b.optInt("order", 99);
+            if (orderA != orderB) {
+                return orderA - orderB;
+            }
+            return a.optString("id", "").compareTo(b.optString("id", ""));
+        });
+        return steps;
+    }
+
+    private String historicalThinkingSummary(JSONObject item) {
+        if (item == null) {
+            return "";
+        }
+        String text = item.optString("text", "");
+        if (!text.trim().isEmpty()) {
+            return text.trim();
+        }
+        JSONArray items = item.optJSONArray("items");
+        if (items == null || items.length() == 0) {
+            return item.optString("summary", item.optString("detail", "")).trim();
+        }
+        StringBuilder summary = new StringBuilder();
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject child = items.optJSONObject(i);
+            if (child == null) {
+                continue;
+            }
+            String title = child.optString("title", child.optString("text", ""));
+            if (title.trim().isEmpty()) {
+                continue;
+            }
+            if (summary.length() > 0) {
+                summary.append("\n");
+            }
+            summary.append(title.trim());
+        }
+        return summary.toString();
+    }
+
+    private int historicalThinkingOrder(String id, int fallback) {
+        String key = thinkingStageKey(id);
+        if ("intent".equals(id) || "user_need".equals(key)) {
+            return 1;
+        }
+        if ("retrieve".equals(id) || "buyer_experience".equals(key)) {
+            return 2;
+        }
+        if ("answer".equals(id) || "answer_summary".equals(key)) {
+            return 3;
+        }
+        return fallback;
     }
 
     private void renderHistoricalThinkingSegment(HistoricalMessageRenderContext context, JSONObject thought) {
@@ -3719,8 +4354,8 @@ public class MainActivity extends Activity {
         TextView title = new TextView(this);
         title.setText("已完成思考");
         title.setTextSize(15);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(Color.rgb(31, 41, 55));
+        title.setTypeface(Typeface.DEFAULT);
+        title.setTextColor(Color.rgb(156, 163, 175));
         panel.addView(title, new LinearLayout.LayoutParams(-1, -2));
         LinearLayout.LayoutParams stepParams = new LinearLayout.LayoutParams(-1, -2);
         stepParams.topMargin = dp(8);
@@ -3793,6 +4428,7 @@ public class MainActivity extends Activity {
             if (product == null) {
                 product = block.optJSONObject("data");
             }
+            removeDanglingPunctuationFromHistoricalBubble(context.bubble);
             renderHistoricalProductCard(context, product);
             return;
         }
@@ -3860,6 +4496,7 @@ public class MainActivity extends Activity {
             return;
         }
         LinearLayout bubble = ensureHistoricalMessageBubble(context);
+        removeDanglingPunctuationFromHistoricalBubble(bubble);
         for (int i = 0; i < productIds.length(); i++) {
             String productId = productIds.optString(i, "").trim();
             if (productId.isEmpty() || context.renderedProductIds.contains(productId)) {
@@ -4720,17 +5357,26 @@ public class MainActivity extends Activity {
 
         LinearLayout searchRow = new LinearLayout(this);
         searchRow.setGravity(Gravity.CENTER_VERTICAL);
+        searchRow.setPadding(dp(12), 0, dp(8), 0);
+        searchRow.setBackground(rounded(Color.rgb(243, 244, 246), dp(14)));
         TextView searchIcon = muted("⌕");
         searchIcon.setGravity(Gravity.CENTER);
-        searchRow.addView(searchIcon, new LinearLayout.LayoutParams(dp(30), dp(48)));
-        EditText keyword = underlineInputField("搜索商品", lastProductKeyword);
-        searchRow.addView(keyword, new LinearLayout.LayoutParams(0, dp(52), 1));
-        Button search = textOnlyButton("搜索");
-        search.setTextColor(Color.rgb(37, 99, 235));
-        LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(dp(64), dp(52));
-        searchParams.leftMargin = dp(10);
-        searchRow.addView(search, searchParams);
-        page.addView(searchRow);
+        searchRow.addView(searchIcon, new LinearLayout.LayoutParams(dp(28), dp(48)));
+        EditText keyword = new EditText(this);
+        keyword.setText(lastProductKeyword);
+        keyword.setHint("搜索商品、品牌、功效");
+        keyword.setTextSize(15);
+        keyword.setSingleLine(true);
+        keyword.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
+        keyword.setBackground(new ColorDrawable(Color.TRANSPARENT));
+        keyword.setPadding(dp(8), 0, dp(8), 0);
+        searchRow.addView(keyword, new LinearLayout.LayoutParams(0, dp(48), 1));
+        Button clear = transparentIconButton("×");
+        clear.setTextSize(22);
+        clear.setVisibility(lastProductKeyword.isEmpty() ? View.GONE : View.VISIBLE);
+        searchRow.addView(clear, new LinearLayout.LayoutParams(dp(36), dp(48)));
+        LinearLayout.LayoutParams searchRowParams = new LinearLayout.LayoutParams(-1, dp(48));
+        page.addView(searchRow, searchRowParams);
 
         LinearLayout categoryButton = textFilterRow("商品类别", lastCategoryName + "  >");
         categoryButton.setOnClickListener(v -> openCategoryDialog(() -> {
@@ -4739,7 +5385,7 @@ public class MainActivity extends Activity {
             renderProducts();
         }));
         LinearLayout.LayoutParams filterParams = new LinearLayout.LayoutParams(-1, dp(46));
-        filterParams.setMargins(0, 0, 0, dp(10));
+        filterParams.setMargins(0, dp(10), 0, dp(10));
         page.addView(categoryButton, filterParams);
 
         productsList = new LinearLayout(this);
@@ -4747,11 +5393,31 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams listParams = new LinearLayout.LayoutParams(-1, -2);
         listParams.topMargin = dp(2);
         page.addView(productsList, listParams);
-        search.setOnClickListener(v -> {
+        Runnable executeSearch = () -> {
             lastProductKeyword = keyword.getText().toString();
             productsScrollY = 0;
             resetProductState(lastProductKeyword, lastCategoryId);
             loadProducts(productsList, lastProductKeyword, lastCategoryId);
+            hideKeyboardFrom(keyword);
+            clear.setVisibility(lastProductKeyword.isEmpty() ? View.GONE : View.VISIBLE);
+        };
+        keyword.setOnEditorActionListener((v, actionId, event) -> {
+            if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+                executeSearch.run();
+                return true;
+            }
+            return false;
+        });
+        keyword.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                clear.setVisibility(s == null || s.length() == 0 ? View.GONE : View.VISIBLE);
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+        clear.setOnClickListener(v -> {
+            keyword.setText("");
+            executeSearch.run();
         });
         productsScroll.setOnScrollChangeListener((v, scrollX, scrollY, oldScrollX, oldScrollY) -> {
             productsScrollY = scrollY;
@@ -4926,9 +5592,18 @@ public class MainActivity extends Activity {
         }
         final String[] pendingId = {lastCategoryId};
         final String[] pendingName = {lastCategoryName};
+        LinearLayout sheet = makeBottomSheetBox();
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.addView(title("选择商品类别"), new LinearLayout.LayoutParams(0, -2, 1));
+        Button reset = textOnlyButton("重置");
+        reset.setTextColor(Color.rgb(37, 99, 235));
+        header.addView(reset, new LinearLayout.LayoutParams(dp(72), dp(42)));
+        sheet.addView(header, new LinearLayout.LayoutParams(-1, -2));
+
         LinearLayout rootLayout = new LinearLayout(this);
         rootLayout.setOrientation(LinearLayout.HORIZONTAL);
-        rootLayout.setPadding(dp(8), dp(8), dp(8), dp(8));
+        rootLayout.setPadding(0, dp(8), 0, dp(8));
         LinearLayout primary = new LinearLayout(this);
         primary.setOrientation(LinearLayout.VERTICAL);
         LinearLayout secondary = new LinearLayout(this);
@@ -4939,6 +5614,7 @@ public class MainActivity extends Activity {
         secondaryScroll.addView(secondary);
         rootLayout.addView(primaryScroll, new LinearLayout.LayoutParams(0, dp(420), 1));
         rootLayout.addView(secondaryScroll, new LinearLayout.LayoutParams(0, dp(420), 1));
+        sheet.addView(rootLayout, new LinearLayout.LayoutParams(-1, -2));
 
         Runnable[] renderSecondary = new Runnable[1];
         renderSecondary[0] = () -> {
@@ -4957,25 +5633,41 @@ public class MainActivity extends Activity {
         }
         fillSecondaryCategories(secondary, selectedPrimary[0], pendingId, pendingName);
 
-        new AlertDialog.Builder(this)
-                .setTitle("选择商品类别")
-                .setView(rootLayout)
-                .setNegativeButton("取消", null)
-                .setNeutralButton("重置", (dialog, which) -> {
-                    lastCategoryId = "";
-                    lastCategoryName = "全部";
-                    productsScrollY = 0;
-                    resetProductState(lastProductKeyword, lastCategoryId);
-                    onChanged.run();
-                })
-                .setPositiveButton("确定", (dialog, which) -> {
-                    lastCategoryId = pendingId[0];
-                    lastCategoryName = pendingName[0];
-                    productsScrollY = 0;
-                    resetProductState(lastProductKeyword, lastCategoryId);
-                    onChanged.run();
-                })
-                .show();
+        final AlertDialog[] dialogRef = new AlertDialog[1];
+        reset.setOnClickListener(v -> {
+            lastCategoryId = "";
+            lastCategoryName = "全部";
+            productsScrollY = 0;
+            resetProductState(lastProductKeyword, lastCategoryId);
+            if (dialogRef[0] != null) {
+                dialogRef[0].dismiss();
+            }
+            onChanged.run();
+        });
+        LinearLayout actions = new LinearLayout(this);
+        Button cancel = secondaryButton("取消");
+        Button confirm = primaryButton("确定");
+        cancel.setOnClickListener(v -> {
+            if (dialogRef[0] != null) {
+                dialogRef[0].dismiss();
+            }
+        });
+        confirm.setOnClickListener(v -> {
+            lastCategoryId = pendingId[0];
+            lastCategoryName = pendingName[0];
+            productsScrollY = 0;
+            resetProductState(lastProductKeyword, lastCategoryId);
+            if (dialogRef[0] != null) {
+                dialogRef[0].dismiss();
+            }
+            onChanged.run();
+        });
+        actions.addView(cancel, new LinearLayout.LayoutParams(0, dp(48), 1));
+        LinearLayout.LayoutParams confirmParams = new LinearLayout.LayoutParams(0, dp(48), 1);
+        confirmParams.leftMargin = dp(10);
+        actions.addView(confirm, confirmParams);
+        sheet.addView(actions, new LinearLayout.LayoutParams(-1, -2));
+        dialogRef[0] = showBottomSheetDialog(sheet);
     }
 
     private void addPrimaryCategoryButton(LinearLayout primary, LinearLayout secondary, String name, JSONObject category, String[] pendingId, String[] pendingName, boolean selected) {
@@ -5105,34 +5797,46 @@ public class MainActivity extends Activity {
     }
 
     private void loadMoreProducts(LinearLayout list, String keyword, String categoryId) {
-        if (loadingProducts) {
+        String requestKey = productCacheKey(keyword, categoryId);
+        if (loadingProductKeys.contains(requestKey)) {
             return;
         }
         if (currentProductState == null) {
             currentProductState = new ProductListState();
-            productListCache.put(productCacheKey(keyword, categoryId), currentProductState);
+            productListCache.put(requestKey, currentProductState);
         }
-        loadingProducts = true;
-        if (currentProductState.loaded) {
-            renderProductItems(list, currentProductState);
+        ProductListState requestState = currentProductState;
+        int requestPage = requestState.nextPage;
+        loadingProductKeys.add(requestKey);
+        loadingProducts = !loadingProductKeys.isEmpty();
+        if (requestState.loaded) {
+            renderProductItems(list, requestState);
         }
         new Thread(() -> {
             try {
-                ApiClient.ProductPage page = api.productsPage(keyword, categoryId, currentProductState.nextPage, PRODUCT_PAGE_SIZE);
+                ApiClient.ProductPage page = api.productsPage(keyword, categoryId, requestPage, PRODUCT_PAGE_SIZE);
                 runOnUiThread(() -> {
-                    appendProducts(currentProductState.items, page.items);
-                    currentProductState.nextPage = page.nextPage;
-                    currentProductState.hasMore = page.hasMore;
-                    currentProductState.loaded = true;
-                    loadingProducts = false;
-                    renderProductItems(list, currentProductState);
+                    loadingProductKeys.remove(requestKey);
+                    loadingProducts = !loadingProductKeys.isEmpty();
+                    if (currentProductState != requestState) {
+                        return;
+                    }
+                    appendProducts(requestState.items, page.items);
+                    requestState.nextPage = page.nextPage;
+                    requestState.hasMore = page.hasMore;
+                    requestState.loaded = true;
+                    renderProductItems(list, requestState);
                 });
             } catch (Exception error) {
                 runOnUiThread(() -> {
-                    loadingProducts = false;
-                    if (currentProductState != null && currentProductState.loaded) {
+                    loadingProductKeys.remove(requestKey);
+                    loadingProducts = !loadingProductKeys.isEmpty();
+                    if (currentProductState != requestState) {
+                        return;
+                    }
+                    if (requestState.loaded) {
                         toastLine("加载更多失败：" + error.getMessage());
-                        renderProductItems(list, currentProductState);
+                        renderProductItems(list, requestState);
                     } else {
                         renderError(list, "商品加载失败", error.getMessage(), () -> loadProducts(list, keyword, categoryId));
                     }
@@ -5319,19 +6023,116 @@ public class MainActivity extends Activity {
         panel.addView(strong("用户评价"));
         if (reviews == null || reviews.length() == 0) {
             panel.addView(muted("暂无评价"));
+            panel.addView(muted("购买并完成订单后可以发表第一条评价。"));
             return;
         }
-        int total = Math.min(reviews.length(), 3);
-        for (int i = 0; i < total; i++) {
+        int ratingSum = 0;
+        Map<String, Integer> tagCounts = new HashMap<>();
+        for (int i = 0; i < reviews.length(); i++) {
             JSONObject review = reviews.optJSONObject(i);
-            if (review != null) {
-                panel.addView(muted("★ " + review.optInt("rating", 5) + "  " + review.optString("content", "")));
-                String reply = review.optString("merchant_reply", "");
-                if (!reply.isEmpty()) {
-                    panel.addView(muted("商家回复：" + reply));
+            if (review == null) {
+                continue;
+            }
+            ratingSum += Math.max(1, Math.min(5, review.optInt("rating", 5)));
+            JSONArray tags = review.optJSONArray("tags");
+            if (tags != null) {
+                for (int j = 0; j < tags.length(); j++) {
+                    String tag = tags.optString(j, "").trim();
+                    if (!tag.isEmpty()) {
+                        tagCounts.put(tag, tagCounts.containsKey(tag) ? tagCounts.get(tag) + 1 : 1);
+                    }
                 }
             }
         }
+        double average = reviews.length() == 0 ? 0 : (double) ratingSum / reviews.length();
+        TextView summary = title(String.format(Locale.CHINA, "%.1f  %s  %d 条评价", average, ratingStars((int) Math.round(average)), reviews.length()));
+        summary.setTextSize(18);
+        panel.addView(summary);
+        if (!tagCounts.isEmpty()) {
+            LinearLayout tagsRow = new LinearLayout(this);
+            tagsRow.setOrientation(LinearLayout.HORIZONTAL);
+            int shown = 0;
+            for (String tag : tagCounts.keySet()) {
+                TextView chip = chipText(tag + " " + tagCounts.get(tag));
+                LinearLayout.LayoutParams chipParams = new LinearLayout.LayoutParams(-2, dp(32));
+                chipParams.setMargins(0, dp(8), dp(8), dp(4));
+                tagsRow.addView(chip, chipParams);
+                shown++;
+                if (shown >= 5) {
+                    break;
+                }
+            }
+            panel.addView(tagsRow);
+        }
+        int total = Math.min(reviews.length(), 5);
+        for (int i = 0; i < total; i++) {
+            JSONObject review = reviews.optJSONObject(i);
+            if (review != null) {
+                panel.addView(reviewCard(review));
+            }
+        }
+    }
+
+    private View reviewCard(JSONObject review) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(0, dp(10), 0, dp(10));
+        TextView head = muted(emptyFallback(review.optString("username", ""), "匿名用户") + "  " + ratingStars(review.optInt("rating", 5)));
+        card.addView(head);
+        TextView content = new TextView(this);
+        content.setText(review.optString("content", ""));
+        content.setTextSize(15);
+        content.setTextColor(Color.rgb(31, 41, 55));
+        content.setLineSpacing(4, 1);
+        LinearLayout.LayoutParams contentParams = new LinearLayout.LayoutParams(-1, -2);
+        contentParams.topMargin = dp(6);
+        card.addView(content, contentParams);
+        JSONArray tags = review.optJSONArray("tags");
+        if (tags != null && tags.length() > 0) {
+            LinearLayout tagRow = new LinearLayout(this);
+            tagRow.setOrientation(LinearLayout.HORIZONTAL);
+            for (int i = 0; i < tags.length(); i++) {
+                String tag = tags.optString(i, "").trim();
+                if (tag.isEmpty()) {
+                    continue;
+                }
+                TextView chip = chipText(tag);
+                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, dp(30));
+                params.setMargins(0, dp(8), dp(8), 0);
+                tagRow.addView(chip, params);
+            }
+            card.addView(tagRow);
+        }
+        String reply = review.optString("merchant_reply", "");
+        if (!reply.isEmpty()) {
+            TextView replyView = muted("商家回复：" + reply);
+            replyView.setPadding(dp(10), dp(8), dp(10), dp(8));
+            replyView.setBackground(rounded(Color.rgb(246, 247, 249), dp(10)));
+            LinearLayout.LayoutParams replyParams = new LinearLayout.LayoutParams(-1, -2);
+            replyParams.topMargin = dp(8);
+            card.addView(replyView, replyParams);
+        }
+        return card;
+    }
+
+    private String ratingStars(int rating) {
+        int safe = Math.max(1, Math.min(5, rating));
+        StringBuilder stars = new StringBuilder();
+        for (int i = 1; i <= 5; i++) {
+            stars.append(i <= safe ? "★" : "☆");
+        }
+        return stars.toString();
+    }
+
+    private TextView chipText(String text) {
+        TextView chip = new TextView(this);
+        chip.setText(text);
+        chip.setTextSize(13);
+        chip.setTextColor(Color.rgb(75, 85, 99));
+        chip.setGravity(Gravity.CENTER);
+        chip.setPadding(dp(10), 0, dp(10), 0);
+        chip.setBackground(rounded(Color.rgb(243, 244, 246), dp(15)));
+        return chip;
     }
 
     private void addProductToCart(JSONObject item) {
@@ -5393,7 +6194,14 @@ public class MainActivity extends Activity {
         backStack.clear();
         baseScreen();
         addPageHeader("购物车", "调整数量、选择商品并结算");
-        LinearLayout page = pageBody();
+        cartCheckoutBar = null;
+        activeCartSnapshot = null;
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setPadding(dp(16), dp(10), dp(16), dp(96) + currentBottomSafeInset());
+        scroll.addView(page);
+        content.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         if (sessionStore.token().isEmpty()) {
             page.addView(card("请先登录", "登录后可查看购物车并结算。"));
             return;
@@ -5416,9 +6224,11 @@ public class MainActivity extends Activity {
 
     private void renderCartContent(LinearLayout page, JSONObject cart) {
         page.removeAllViews();
+        activeCartSnapshot = cart;
         cartItemCountCache = cartItemCount(cart);
         JSONArray items = cart.optJSONArray("items");
         if (items == null || items.length() == 0) {
+            removeCartCheckoutBar();
             page.addView(card("购物车为空", "可以先去商品页添加商品。"));
             Button goProducts = primaryButton("去逛商品");
             goProducts.setOnClickListener(v -> renderProducts());
@@ -5432,14 +6242,93 @@ public class MainActivity extends Activity {
             }
         }
         JSONObject summary = cart.optJSONObject("summary");
-        LinearLayout checkoutBar = panel();
-        checkoutBar.addView(strong("已选 " + (summary == null ? 0 : summary.optInt("selectedCount")) + " 件"));
-        checkoutBar.addView(muted("商品总额：¥" + (summary == null ? "0" : summary.optString("totalAmount", "0"))));
-        loadDiscountPreview(checkoutBar);
+        renderCartCheckoutBar(page, items, summary);
+    }
+
+    private void removeCartCheckoutBar() {
+        if (cartCheckoutBar != null && cartCheckoutBar.getParent() instanceof ViewGroup) {
+            ((ViewGroup) cartCheckoutBar.getParent()).removeView(cartCheckoutBar);
+        }
+        cartCheckoutBar = null;
+    }
+
+    private void renderCartCheckoutBar(LinearLayout page, JSONArray items, JSONObject summary) {
+        removeCartCheckoutBar();
+        cartCheckoutBar = new LinearLayout(this);
+        cartCheckoutBar.setGravity(Gravity.CENTER_VERTICAL);
+        cartCheckoutBar.setPadding(dp(12), dp(8), dp(12), dp(8) + currentBottomSafeInset());
+        cartCheckoutBar.setBackgroundColor(Color.WHITE);
+        CheckBox selectAll = new CheckBox(this);
+        selectAll.setChecked(cartAllSelected(items));
+        selectAll.setOnClickListener(v -> toggleSelectAllCartItems(page, items, ((CheckBox) v).isChecked()));
+        cartCheckoutBar.addView(selectAll, new LinearLayout.LayoutParams(dp(42), dp(48)));
+
+        int selectedCount = summary == null ? 0 : summary.optInt("selectedCount", 0);
+        TextView selected = muted(selectedCount > 0 ? "已选 " + selectedCount + " 件" : "全选");
+        selected.setTextSize(15);
+        cartCheckoutBar.addView(selected, new LinearLayout.LayoutParams(0, dp(48), 1));
+
+        TextView amount = new TextView(this);
+        amount.setText("合计：¥" + cartPayAmount(summary));
+        amount.setTextSize(15);
+        amount.setTextColor(Color.rgb(17, 24, 39));
+        amount.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams amountParams = new LinearLayout.LayoutParams(0, dp(48), 1);
+        amountParams.rightMargin = dp(10);
+        cartCheckoutBar.addView(amount, amountParams);
+
         Button checkout = primaryButton("结算");
-        checkout.setOnClickListener(v -> confirmCheckout(page, summary));
-        checkoutBar.addView(checkout, new LinearLayout.LayoutParams(-1, dp(52)));
-        page.addView(checkoutBar);
+        checkout.setTextSize(17);
+        checkout.setOnClickListener(v -> openCheckoutPage(summary));
+        cartCheckoutBar.addView(checkout, new LinearLayout.LayoutParams(dp(128), dp(50)));
+        content.addView(cartCheckoutBar, new LinearLayout.LayoutParams(-1, dp(66) + currentBottomSafeInset()));
+    }
+
+    private boolean cartAllSelected(JSONArray items) {
+        if (items == null || items.length() == 0) {
+            return false;
+        }
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject item = items.optJSONObject(i);
+            if (item != null && !item.optBoolean("selected")) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private String cartPayAmount(JSONObject summary) {
+        if (summary == null) {
+            return "0";
+        }
+        String pay = summary.optString("payAmount", "");
+        if (pay.isEmpty()) {
+            pay = summary.optString("pay_amount", "");
+        }
+        if (pay.isEmpty()) {
+            pay = summary.optString("totalAmount", summary.optString("total_amount", "0"));
+        }
+        return pay;
+    }
+
+    private void toggleSelectAllCartItems(LinearLayout page, JSONArray items, boolean selected) {
+        if (items == null) {
+            return;
+        }
+        new Thread(() -> {
+            try {
+                for (int i = 0; i < items.length(); i++) {
+                    JSONObject item = items.optJSONObject(i);
+                    if (item != null && item.optBoolean("selected") != selected) {
+                        api.updateCartItem(item.optString("cartItemId"), null, selected);
+                    }
+                }
+                JSONObject cart = api.cart();
+                runOnUiThread(() -> renderCartContent(page, cart));
+            } catch (Exception error) {
+                runOnUiThread(() -> toastLine("全选失败：" + error.getMessage()));
+            }
+        }).start();
     }
 
     private void loadDiscountPreview(LinearLayout checkoutBar) {
@@ -5539,21 +6428,106 @@ public class MainActivity extends Activity {
     }
 
     private void confirmCheckout(LinearLayout page, JSONObject summary) {
+        openCheckoutPage(summary);
+    }
+
+    private void openCheckoutPage(JSONObject summary) {
         int selectedCount = summary == null ? 0 : summary.optInt("selectedCount");
         if (selectedCount == 0) {
             toastLine("请先选择要结算的商品");
             return;
         }
-        String amount = summary.optString("payAmount", "0");
-        new AlertDialog.Builder(this)
-                .setTitle("确认下单")
-                .setMessage("已选择 " + selectedCount + " 件商品\n应付金额：¥" + amount + "\n订单提交后将在订单页查看处理状态。")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("确认下单", (dialog, which) -> checkoutCart(page))
-                .show();
+        JSONObject cartSnapshot = activeCartSnapshot;
+        new Thread(() -> {
+            try {
+                JSONObject discount = api.discountPreview();
+                runOnUiThread(() -> renderCheckoutPage(cartSnapshot, discount));
+            } catch (Exception error) {
+                runOnUiThread(() -> renderCheckoutPage(cartSnapshot, null));
+            }
+        }).start();
     }
 
-    private void checkoutCart(LinearLayout page) {
+    private void renderCheckoutPage(JSONObject cart, JSONObject discount) {
+        activePage = "checkout";
+        baseScreen();
+        content.addView(createBackTopBar("确认订单", () -> renderCart()), new LinearLayout.LayoutParams(-1, dp(56)));
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setPadding(dp(16), dp(10), dp(16), dp(96) + currentBottomSafeInset());
+        scroll.addView(page);
+        content.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        JSONObject safeCart = cart == null ? new JSONObject() : cart;
+        JSONArray items = safeCart.optJSONArray("items");
+        if (items == null) {
+            items = new JSONArray();
+        }
+        LinearLayout itemPanel = panel();
+        itemPanel.addView(strong("商品清单"));
+        int selectedCount = 0;
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject item = items.optJSONObject(i);
+            if (item == null || !item.optBoolean("selected")) {
+                continue;
+            }
+            selectedCount++;
+            LinearLayout row = new LinearLayout(this);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.addView(productImage(item.optString("imageUrl", ""), 48), new LinearLayout.LayoutParams(dp(48), dp(48)));
+            TextView info = muted(item.optString("name", "商品") + " x" + item.optInt("quantity", 1) + "  ¥" + item.optString("price", "0"));
+            LinearLayout.LayoutParams infoParams = new LinearLayout.LayoutParams(0, -2, 1);
+            infoParams.leftMargin = dp(10);
+            row.addView(info, infoParams);
+            itemPanel.addView(row, new LinearLayout.LayoutParams(-1, dp(58)));
+        }
+        if (selectedCount == 0) {
+            itemPanel.addView(muted("暂无已选商品"));
+        }
+        page.addView(itemPanel);
+
+        JSONObject summary = safeCart.optJSONObject("summary");
+        LinearLayout amountPanel = panel();
+        amountPanel.addView(strong("金额明细"));
+        amountPanel.addView(muted("商品总额：¥" + (summary == null ? "0" : summary.optString("totalAmount", "0"))));
+        if (discount == null) {
+            amountPanel.addView(muted("优惠金额：¥0"));
+            amountPanel.addView(strong("应付：¥" + cartPayAmount(summary)));
+        } else {
+            amountPanel.addView(muted("优惠金额：¥" + discount.optString("discount_amount", discount.optString("discountAmount", "0"))));
+            amountPanel.addView(strong("应付：¥" + discount.optString("pay_amount", discount.optString("payAmount", cartPayAmount(summary)))));
+            JSONArray lines = discount.optJSONArray("lines");
+            if (lines != null && lines.length() > 0) {
+                View divider = new View(this);
+                divider.setBackgroundColor(Color.rgb(238, 239, 242));
+                LinearLayout.LayoutParams dividerParams = new LinearLayout.LayoutParams(-1, 1);
+                dividerParams.setMargins(0, dp(12), 0, dp(8));
+                amountPanel.addView(divider, dividerParams);
+                amountPanel.addView(strong("优惠明细"));
+                for (int i = 0; i < lines.length(); i++) {
+                    JSONObject line = lines.optJSONObject(i);
+                    if (line != null) {
+                        amountPanel.addView(muted(line.optString("name", "优惠") + " -¥" + line.optString("amount", line.optString("discount_amount", "0"))));
+                    }
+                }
+            }
+        }
+        page.addView(amountPanel);
+
+        LinearLayout bottom = new LinearLayout(this);
+        bottom.setGravity(Gravity.CENTER_VERTICAL);
+        bottom.setPadding(dp(16), dp(8), dp(16), dp(8) + currentBottomSafeInset());
+        bottom.setBackgroundColor(Color.WHITE);
+        TextView pay = strong("应付 ¥" + (discount == null ? cartPayAmount(summary) : discount.optString("pay_amount", discount.optString("payAmount", cartPayAmount(summary)))));
+        pay.setTextSize(18);
+        bottom.addView(pay, new LinearLayout.LayoutParams(0, dp(50), 1));
+        Button submit = primaryButton("提交订单");
+        submit.setOnClickListener(v -> checkoutCart());
+        bottom.addView(submit, new LinearLayout.LayoutParams(dp(142), dp(50)));
+        content.addView(bottom, new LinearLayout.LayoutParams(-1, dp(66) + currentBottomSafeInset()));
+    }
+
+    private void checkoutCart() {
         new Thread(() -> {
             try {
                 JSONArray orders = api.checkout();
@@ -5812,12 +6786,10 @@ public class MainActivity extends Activity {
         }
         LinearLayout chooser = new LinearLayout(this);
         chooser.setOrientation(LinearLayout.VERTICAL);
-        chooser.setPadding(dp(8), dp(8), dp(8), dp(4));
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("选择评价商品")
-                .setView(chooser)
-                .setNegativeButton("取消", null)
-                .create();
+        chooser.setPadding(dp(20), dp(18), dp(20), dp(16));
+        chooser.setBackground(rounded(Color.WHITE, dp(22)));
+        chooser.addView(title("选择评价商品"), new LinearLayout.LayoutParams(-1, -2));
+        final AlertDialog[] dialogRef = new AlertDialog[1];
         for (int i = 0; i < items.length(); i++) {
             JSONObject item = items.optJSONObject(i);
             if (item == null) {
@@ -5825,14 +6797,16 @@ public class MainActivity extends Activity {
             }
             Button option = secondaryButton(item.optString("name", "商品") + " x" + item.optInt("quantity", 1));
             option.setOnClickListener(v -> {
-                dialog.dismiss();
+                if (dialogRef[0] != null) {
+                    dialogRef[0].dismiss();
+                }
                 showReviewForm(order, item);
             });
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(46));
             params.bottomMargin = dp(8);
             chooser.addView(option, params);
         }
-        dialog.show();
+        dialogRef[0] = showBottomSheetDialog(chooser);
     }
 
     private void showReviewForm(JSONObject order, JSONObject item) {
@@ -5840,43 +6814,118 @@ public class MainActivity extends Activity {
             toastLine("订单项信息缺失");
             return;
         }
-        LinearLayout form = new LinearLayout(this);
-        form.setOrientation(LinearLayout.VERTICAL);
-        form.setPadding(dp(4), dp(4), dp(4), 0);
-        form.addView(muted(item.optString("name", "商品")));
-        EditText rating = inputField("评分 1-5", "5");
+        LinearLayout form = makeBottomSheetBox();
+        form.addView(title("评价商品"), new LinearLayout.LayoutParams(-1, -2));
+        TextView product = muted(item.optString("name", "商品") + " x" + item.optInt("quantity", 1));
+        product.setPadding(0, dp(6), 0, dp(10));
+        form.addView(product);
+        final int[] rating = {5};
+        LinearLayout stars = new LinearLayout(this);
+        stars.setGravity(Gravity.CENTER_VERTICAL);
+        TextView ratingLabel = muted("评分");
+        stars.addView(ratingLabel, new LinearLayout.LayoutParams(dp(52), dp(44)));
+        List<TextView> starViews = new ArrayList<>();
+        for (int i = 1; i <= 5; i++) {
+            final int value = i;
+            TextView star = new TextView(this);
+            star.setText("★");
+            star.setTextSize(28);
+            star.setTextColor(Color.rgb(245, 158, 11));
+            star.setGravity(Gravity.CENTER);
+            star.setOnClickListener(v -> {
+                rating[0] = value;
+                for (int j = 0; j < starViews.size(); j++) {
+                    starViews.get(j).setTextColor(j < rating[0] ? Color.rgb(245, 158, 11) : Color.rgb(209, 213, 219));
+                }
+            });
+            starViews.add(star);
+            stars.addView(star, new LinearLayout.LayoutParams(dp(40), dp(44)));
+        }
+        form.addView(stars);
+
+        String[] tagOptions = new String[]{"质量不错", "物流快", "包装好", "性价比高", "和描述一致", "会回购"};
+        Set<String> selectedTags = new HashSet<>();
+        LinearLayout tags = new LinearLayout(this);
+        tags.setOrientation(LinearLayout.VERTICAL);
+        for (String option : tagOptions) {
+            CheckBox tag = new CheckBox(this);
+            tag.setText(option);
+            tag.setTextSize(14);
+            tag.setTextColor(Color.rgb(55, 65, 81));
+            tag.setOnCheckedChangeListener((buttonView, checked) -> {
+                if (checked) {
+                    selectedTags.add(option);
+                } else {
+                    selectedTags.remove(option);
+                }
+            });
+            tags.addView(tag, new LinearLayout.LayoutParams(-1, dp(38)));
+        }
+        form.addView(tags);
+
         EditText content = inputField("评价内容", "");
-        form.addView(rating);
         form.addView(content);
-        new AlertDialog.Builder(this)
-                .setTitle("评价商品")
-                .setView(form)
-                .setNegativeButton("取消", null)
-                .setPositiveButton("提交", (dialog, which) -> submitReview(order.optString("order_id"), item.optString("order_item_id"), rating.getText().toString(), content.getText().toString()))
-                .show();
+        final AlertDialog[] dialogRef = new AlertDialog[1];
+        LinearLayout actions = new LinearLayout(this);
+        Button cancel = secondaryButton("取消");
+        Button submit = primaryButton("提交");
+        cancel.setOnClickListener(v -> {
+            if (dialogRef[0] != null) {
+                dialogRef[0].dismiss();
+            }
+        });
+        submit.setOnClickListener(v -> submitReview(order.optString("order_id"), item.optString("order_item_id"), rating[0], content.getText().toString(), selectedTags, dialogRef[0], submit));
+        actions.addView(cancel, new LinearLayout.LayoutParams(0, dp(48), 1));
+        LinearLayout.LayoutParams submitParams = new LinearLayout.LayoutParams(0, dp(48), 1);
+        submitParams.leftMargin = dp(10);
+        actions.addView(submit, submitParams);
+        form.addView(actions, new LinearLayout.LayoutParams(-1, -2));
+        dialogRef[0] = showBottomSheetDialog(form);
     }
 
     private void submitReview(String orderId, String orderItemId, String ratingText, String content) {
-        if (content == null || content.trim().isEmpty()) {
-            toastLine("请填写评价内容");
-            return;
-        }
         int rating = 5;
         try {
             rating = Math.max(1, Math.min(5, Integer.parseInt(ratingText.trim())));
         } catch (Exception ignored) {
         }
+        submitReview(orderId, orderItemId, rating, content, new HashSet<>(), null, null);
+    }
+
+    private void submitReview(String orderId, String orderItemId, int rating, String content, Set<String> selectedTags, AlertDialog dialog, Button submitButton) {
+        if (content == null || content.trim().isEmpty()) {
+            toastLine("请填写评价内容");
+            return;
+        }
+        if (submitButton != null) {
+            submitButton.setEnabled(false);
+            submitButton.setAlpha(0.5f);
+        }
         int finalRating = rating;
         new Thread(() -> {
             try {
                 JSONArray tags = new JSONArray();
+                if (selectedTags != null) {
+                    for (String tag : selectedTags) {
+                        tags.put(tag);
+                    }
+                }
                 api.reviewOrderItem(orderId, orderItemId, finalRating, content, tags);
                 runOnUiThread(() -> {
+                    if (dialog != null) {
+                        dialog.dismiss();
+                    }
                     toastLine("评价已提交");
                     renderOrders();
                 });
             } catch (Exception error) {
-                runOnUiThread(() -> toastLine("评价失败：" + error.getMessage()));
+                runOnUiThread(() -> {
+                    if (submitButton != null) {
+                        submitButton.setEnabled(true);
+                        submitButton.setAlpha(1f);
+                    }
+                    toastLine("评价失败：该商品暂不可评价，可能已评价或订单未完成");
+                });
             }
         }).start();
     }
@@ -6560,6 +7609,7 @@ public class MainActivity extends Activity {
 
     private void closeDrawer() {
         if (drawerLayer != null) {
+            saveDrawerHistoryState();
             root.removeView(drawerLayer);
             drawerLayer = null;
             drawerPanel = null;
@@ -6575,6 +7625,7 @@ public class MainActivity extends Activity {
             restoreKeyboardModeForActivePage();
             return;
         }
+        saveDrawerHistoryState();
         int panelWidth = drawerPanel.getWidth() == 0 ? (int) (getResources().getDisplayMetrics().widthPixels * 0.82f) : drawerPanel.getWidth();
         FrameLayout closingLayer = drawerLayer;
         LinearLayout closingPanel = drawerPanel;
@@ -6582,6 +7633,7 @@ public class MainActivity extends Activity {
         drawerPanel = null;
         drawerHistoryList = null;
         drawerSearchInput = null;
+        drawerHistoryScroll = null;
         closingLayer.animate().alpha(0f).setDuration(180).start();
         TranslateAnimation slideOut = new TranslateAnimation(0, -panelWidth, 0, 0);
         slideOut.setDuration(180);
@@ -6603,6 +7655,16 @@ public class MainActivity extends Activity {
             }
         });
         closingPanel.startAnimation(slideOut);
+    }
+
+    private void saveDrawerHistoryState() {
+        if (drawerHistoryScroll == null) {
+            return;
+        }
+        hasSavedDrawerHistoryState = true;
+        savedDrawerHistoryScrollY = Math.max(0, drawerHistoryScroll.getScrollY());
+        savedDrawerHistoryOffset = Math.max(HISTORY_PAGE_SIZE, drawerHistoryOffset);
+        savedDrawerHistoryQuery = drawerSearchInput == null ? "" : drawerSearchInput.getText().toString().trim();
     }
 
     private void clearWelcomeIfNeeded() {
@@ -6634,9 +7696,7 @@ public class MainActivity extends Activity {
     }
 
     private void scrollBottom() {
-        if (chatScroll != null) {
-            chatScroll.post(() -> chatScroll.fullScroll(View.FOCUS_DOWN));
-        }
+        scrollBottomIfAllowed();
     }
 
     private Button iconButton(String text) {
@@ -7148,8 +8208,10 @@ public class MainActivity extends Activity {
             new Thread(() -> {
                 try {
                     api.pinSession(item.serverSessionId, pinned);
+                    chatStore.markSessionSyncState(item.localSessionId, "synced");
                 } catch (Exception error) {
-                    handleApiError(error);
+                    chatStore.markSessionSyncState(item.localSessionId, "failed");
+                    runOnUiThread(() -> handleApiError(error));
                 }
             }).start();
         }
@@ -7177,8 +8239,10 @@ public class MainActivity extends Activity {
                         new Thread(() -> {
                             try {
                                 api.updateSession(item.serverSessionId, title, "");
+                                chatStore.markSessionSyncState(item.localSessionId, "synced");
                             } catch (Exception error) {
-                                handleApiError(error);
+                                chatStore.markSessionSyncState(item.localSessionId, "failed");
+                                runOnUiThread(() -> handleApiError(error));
                             }
                         }).start();
                     }
@@ -7202,9 +8266,11 @@ public class MainActivity extends Activity {
             new Thread(() -> {
                 try {
                     api.deleteSession(item.serverSessionId);
+                    chatStore.markSessionSyncState(item.localSessionId, "synced");
                     runOnUiThread(this::refreshDrawerContent);
                 } catch (Exception error) {
-                    handleApiError(error);
+                    chatStore.markSessionSyncState(item.localSessionId, "failed");
+                    runOnUiThread(() -> handleApiError(error));
                 }
             }).start();
         }
@@ -7456,6 +8522,10 @@ public class MainActivity extends Activity {
         }).start();
     }
 
+    private void checkoutCart(LinearLayout page) {
+        checkoutCart();
+    }
+
     private void saveAssistantRunsFromRemote(String targetLocalSessionId, JSONArray runs, long fallbackCreatedAt) {
         for (int i = 0; i < runs.length(); i++) {
             JSONObject run = runs.optJSONObject(i);
@@ -7685,11 +8755,8 @@ public class MainActivity extends Activity {
     }
 
     private void editContact(boolean phone) {
-        AlertDialog dialog = new AlertDialog.Builder(this).create();
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(20), dp(20), dp(20), dp(16));
-        box.setBackground(rounded(Color.WHITE, dp(18)));
+        LinearLayout box = makeBottomSheetBox();
+        final AlertDialog[] dialogRef = new AlertDialog[1];
 
         TextView titleView = title(phone ? "手机号设置" : "邮箱设置");
         titleView.setTextSize(20);
@@ -7715,7 +8782,11 @@ public class MainActivity extends Activity {
         actions.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
         Button cancel = secondaryButton("取消");
         Button save = primaryButton("保存");
-        cancel.setOnClickListener(v -> dialog.dismiss());
+        cancel.setOnClickListener(v -> {
+            if (dialogRef[0] != null) {
+                dialogRef[0].dismiss();
+            }
+        });
         save.setOnClickListener(v -> {
             String value = normalizedContactValue(phone, edit.getText().toString());
             String error = contactValidationError(phone, value);
@@ -7728,7 +8799,7 @@ public class MainActivity extends Activity {
             save.setAlpha(0.45f);
             String newPhone = phone ? value : sessionStore.phone();
             String newEmail = phone ? sessionStore.email() : value;
-            updateContact(newPhone, newEmail, dialog, save);
+            updateContact(newPhone, newEmail, dialogRef[0], save);
         });
         actions.addView(cancel, new LinearLayout.LayoutParams(dp(92), dp(44)));
         LinearLayout.LayoutParams saveParams = new LinearLayout.LayoutParams(dp(92), dp(44));
@@ -7750,19 +8821,7 @@ public class MainActivity extends Activity {
         edit.addTextChangedListener(watcher);
         watcher.onTextChanged(edit.getText(), 0, 0, 0);
 
-        dialog.setView(box);
-        dialog.setOnShowListener(d -> {
-            Window window = dialog.getWindow();
-            if (window != null) {
-                window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-                WindowManager.LayoutParams params = new WindowManager.LayoutParams();
-                params.copyFrom(window.getAttributes());
-                params.width = (int) (getResources().getDisplayMetrics().widthPixels * 0.88f);
-                params.height = WindowManager.LayoutParams.WRAP_CONTENT;
-                window.setAttributes(params);
-            }
-        });
-        dialog.show();
+        dialogRef[0] = showBottomSheetDialog(box, false);
     }
 
     private void updateContact(String phone, String email) {
@@ -7810,12 +8869,7 @@ public class MainActivity extends Activity {
     }
 
     private void confirmLogout() {
-        new AlertDialog.Builder(this)
-                .setTitle("退出登录")
-                .setMessage("是否退出当前账号？")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("退出", (dialog, which) -> logoutAccount())
-                .show();
+        showConfirmBottomSheet("退出登录", "是否退出当前账号？", "退出", false, false, this::logoutAccount);
     }
 
     private void logoutAccount() {
@@ -7835,17 +8889,7 @@ public class MainActivity extends Activity {
     }
 
     private void confirmDeleteAccount() {
-        new AlertDialog.Builder(this)
-                .setTitle("删除账号")
-                .setMessage("删除后将无法继续使用当前账号登录。是否继续？")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("继续", (dialog, which) -> new AlertDialog.Builder(this)
-                        .setTitle("确认删除")
-                        .setMessage("请再次确认删除账号。")
-                        .setNegativeButton("取消", null)
-                        .setPositiveButton("删除", (d, w) -> deleteAccount())
-                        .show())
-                .show();
+        showConfirmBottomSheet("删除账号", "删除后将无法继续使用当前账号登录。是否继续？", "删除", true, false, this::deleteAccount);
     }
 
     private void deleteAccount() {
@@ -8012,16 +9056,116 @@ public class MainActivity extends Activity {
     private void configureSystemBars() {
         Window window = getWindow();
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        manualWindowInsets = Build.VERSION.SDK_INT >= 35;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            window.setDecorFitsSystemWindows(true);
+            window.setDecorFitsSystemWindows(!manualWindowInsets);
         }
         window.setStatusBarColor(BG_COLOR);
         window.setNavigationBarColor(BG_COLOR);
-        window.getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+        int systemUi = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            systemUi |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+        }
+        window.getDecorView().setSystemUiVisibility(systemUi);
+    }
+
+    private void bindRootWindowInsets() {
+        if (root == null || !manualWindowInsets || Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return;
+        }
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
+            int safeTypes = WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout();
+            android.graphics.Insets safeInsets = insets.getInsets(safeTypes);
+            android.graphics.Insets imeInsets = insets.getInsets(WindowInsets.Type.ime());
+            int bottomInset = Math.max(safeInsets.bottom, imeInsets.bottom);
+            applyRootInsets(safeInsets.top, bottomInset);
+            return insets;
+        });
+        root.post(root::requestApplyInsets);
+    }
+
+    private void applyRootInsets(int topInset, int bottomInset) {
+        if (root == null) {
+            return;
+        }
+        boolean changed = appliedTopInset != topInset || appliedBottomInset != bottomInset;
+        appliedTopInset = topInset;
+        appliedBottomInset = bottomInset;
+        root.setPadding(0, 0, 0, 0);
+        applyStatusBarScrim(topInset);
+        applyContentInsets(topInset, bottomInset);
+        if (changed && "chat".equals(activePage) && chatScroll != null) {
+            chatScroll.post(this::scrollBottom);
+        }
+    }
+
+    private void applyStatusBarScrim(int topInset) {
+        if (statusBarScrim == null) {
+            return;
+        }
+        int safeTop = stableTopInset(topInset);
+        ViewGroup.LayoutParams params = statusBarScrim.getLayoutParams();
+        if (params.height != safeTop) {
+            params.height = safeTop;
+            statusBarScrim.setLayoutParams(params);
+        }
+        statusBarScrim.bringToFront();
+    }
+
+    private void applyContentInsets(int topInset, int bottomInset) {
+        View target = chatViewport != null ? chatViewport : content;
+        if (target == null) {
+            return;
+        }
+        int safeTop = stableTopInset(topInset);
+        int safeBottom = Math.max(0, bottomInset);
+        applyStatusBarScrim(topInset);
+        if ("chat".equals(activePage)) {
+            target.setPadding(0, safeTop, 0, 0);
+            applyComposerBottomInset(safeBottom);
+        } else {
+            target.setPadding(0, safeTop, 0, safeBottom);
+        }
+    }
+
+    private int stableTopInset(int topInset) {
+        int safeTop = Math.max(0, topInset);
+        if (!manualWindowInsets) {
+            return safeTop;
+        }
+        int statusHeight = statusBarHeight();
+        if (statusHeight <= 0) {
+            statusHeight = dp(24);
+        }
+        return Math.max(safeTop, statusHeight);
+    }
+
+    private void requestRootInsets() {
+        if (root == null || !manualWindowInsets || Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return;
+        }
+        root.requestApplyInsets();
+    }
+
+    
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            requestRootInsets();
+        }
+    }
+
+    private void applyComposerBottomInset(int bottomInset) {
+        if (composerOuter == null) {
+            return;
+        }
+        composerOuter.setPadding(dp(14), dp(6), dp(14), dp(8) + Math.max(0, bottomInset));
     }
 
     @Override
     protected void onDestroy() {
+        stopThinkingDotsAnimation();
         cancelRealtimeVoice();
         if (speechRecognizer != null) {
             speechRecognizer.destroy();

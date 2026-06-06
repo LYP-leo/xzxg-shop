@@ -65,7 +65,7 @@ class SpeechRealtimeClient {
 
             @Override
             public void onMessage(WebSocket webSocket, String text) {
-                Log.i(TAG, "speech websocket message=" + text);
+                Log.i(TAG, "speech websocket message length=" + (text == null ? 0 : text.length()));
                 handleMessage(text);
             }
 
