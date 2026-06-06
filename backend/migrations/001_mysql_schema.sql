@@ -80,10 +80,14 @@ CREATE TABLE IF NOT EXISTS knowledge_documents (
   content MEDIUMTEXT NOT NULL,
   status VARCHAR(32) NOT NULL,
   chunk_count INT NOT NULL DEFAULT 0,
+  source_url VARCHAR(1024) NOT NULL DEFAULT '',
+  content_hash VARCHAR(64) NOT NULL DEFAULT '',
+  metadata_json JSON NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_knowledge_documents_merchant_id (merchant_id),
-  INDEX idx_knowledge_documents_status (status)
+  INDEX idx_knowledge_documents_status (status),
+  INDEX idx_knowledge_documents_content_hash (content_hash)
 );
 
 CREATE TABLE IF NOT EXISTS accounts (

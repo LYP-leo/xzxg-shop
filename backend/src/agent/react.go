@@ -529,7 +529,7 @@ func (r *Runtime) newAgentOutputFilter(ctx context.Context, run domain.AgentRun,
 func (r *Runtime) reactSystemPromptForPlan(ctx context.Context, plan runPlan) string {
 	template := r.stringConfig(ctx, "agent.prompt.main_template", configcenter.DefaultMainAgentTemplatePrompt)
 	intent := plan.ReferenceIntent()
-	intentPrompt := r.stringConfig(ctx, "agent.prompt.intent."+intent, configcenter.DefaultIntentPrompt(intent))
+	intentPrompt := normalizeIntentPromptForRuntime(r.stringConfig(ctx, "agent.prompt.intent."+intent, configcenter.DefaultIntentPrompt(intent)))
 	brief, outputRules := splitIntentPrompt(intentPrompt)
 	replacements := map[string]string{
 		"intent_brief":        brief,
@@ -545,7 +545,7 @@ func (r *Runtime) reactSystemPromptForPlan(ctx context.Context, plan runPlan) st
 
 func (r *Runtime) finalSystemPromptForPlan(ctx context.Context, plan runPlan) string {
 	intent := plan.ReferenceIntent()
-	intentPrompt := r.stringConfig(ctx, "agent.prompt.intent."+intent, configcenter.DefaultIntentPrompt(intent))
+	intentPrompt := normalizeIntentPromptForRuntime(r.stringConfig(ctx, "agent.prompt.intent."+intent, configcenter.DefaultIntentPrompt(intent)))
 	brief, outputRules := splitIntentPrompt(intentPrompt)
 	parts := []string{
 		"你是小猪小狗电商平台的 AI 导购主 Agent。最终回答阶段只输出中文自然语言，不输出隐藏推理。",
@@ -575,6 +575,41 @@ func renderPromptTemplate(template string, replacements map[string]string) strin
 		out = strings.ReplaceAll(out, "{"+key+"}", strings.TrimSpace(value))
 	}
 	return strings.TrimSpace(out)
+}
+
+func normalizeIntentPromptForRuntime(raw string) string {
+	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+	lines := strings.Split(raw, "\n")
+	out := make([]string, 0, len(lines)+3)
+	addedItemRule := false
+	addedFurtherRule := false
+	addedBoldRule := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		containsBuyer := strings.Contains(lower, "<buyer") || strings.Contains(lower, "</buyer") || strings.Contains(lower, "buyer")
+		containsSpecialWord := strings.Contains(lower, "special_word") || strings.Contains(lower, "special word")
+		if containsBuyer || (strings.Contains(trimmed, "末尾") && strings.Contains(trimmed, "<item>")) {
+			if !addedItemRule {
+				out = append(out, "- `<item>` 是商品卡片插入位置指令，必须靠近对应商品说明；不要在回答末尾集中输出多个 `<item>`。")
+				addedItemRule = true
+			}
+			if strings.Contains(trimmed, "<further>") && !addedFurtherRule {
+				out = append(out, "- 最后输出一个 `<further>`。")
+				addedFurtherRule = true
+			}
+			continue
+		}
+		if containsSpecialWord {
+			if !addedBoldRule && strings.Contains(trimmed, "标注") {
+				out = append(out, "- 重点词、品牌词、系列词、属性词用 Markdown 加粗标注，例如 **耐克**、**防水**。")
+				addedBoldRule = true
+			}
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
 func splitIntentPrompt(raw string) (string, string) {

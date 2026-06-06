@@ -90,6 +90,13 @@ retrieval.keyword.top_n
 retrieval.vector.top_n
 retrieval.rerank.weight.*
 risk.blocked_terms
+http.cors.allowed_origins
+http.trusted_proxy_cidrs
+files.max_upload_bytes
+minio.endpoint
+minio.access_key
+minio.secret_key
+milvus.token
 ```
 
 Secret config values such as `ai.api_key` are masked in list responses. The Agent runtime refreshes dynamic config on demand with a default 15-second cache. The main Agent prompt is assembled from `agent.prompt.main_template`, runtime-selected tools/skills, `agent.prompt.final_output_rules`, and the active `agent.prompt.intent.*` content.
@@ -106,12 +113,49 @@ NACOS_DATA_ID=xzxg-shop-app-config.json
 ## Current APIs
 
 - `GET /api/v1/health`
+- `POST /api/v1/auth/login`
+- `POST /api/v1/auth/register`
 - `POST /api/v1/agent/sessions`
 - `POST /api/v1/agent/sessions/{session_id}/messages:stream`
 - `POST /api/v1/agent/runs/{run_id}:cancel`
 - `GET /api/v1/agent/runs/{run_id}/trace`
+- `GET /api/v1/products?page=1&page_size=10&keyword=&category_id=`
+- `GET /api/v1/merchants?page=1&page_size=10`
+- `POST /api/v1/files`
+- `GET /api/v1/files/{file_id}`
+- `GET /api/v1/merchant/documents?page=1&page_size=10`
+- `POST /api/v1/merchant/documents`
+- `POST /api/v1/merchant/unstructured-ingestions`
+- `GET /api/v1/admin/documents?page=1&page_size=10`
+- `POST /api/v1/admin/unstructured-ingestions`
 
-The API uses MySQL for sessions, runs, products, SKUs, cart items, and knowledge chunks. On startup it applies `migrations/001_mysql_schema.sql`, which creates the required tables and inserts initial demo catalog data if missing.
+The API uses MySQL for sessions, runs, products, SKUs, cart items, files, and knowledge chunks. Local development applies `migrations/001_mysql_schema.sql` on startup by default. In production, set `APP_ENV=production` and run migrations as a separate job; the API will not run migrations unless `RUN_MIGRATIONS=true`.
+
+Production startup also requires explicit non-default secrets and endpoints. `root:root`, `minioadmin`, wildcard CORS, empty model keys, and the local Milvus token are rejected when `APP_ENV=production`.
+
+Vector bootstrap is enabled by default only outside production. In production, run it as an explicit job with `BOOTSTRAP_VECTOR_INDEX=true` to avoid repeated embedding work during rolling deploys.
+
+Authentication uses bcrypt for new password hashes and random bearer tokens stored as SHA-256 digests. Legacy SHA-256 password hashes are accepted only to migrate the hash on successful login.
+
+File downloads require authentication and are restricted to the file owner or an admin account. Upload MIME type is determined by server-side content detection rather than the client-provided `Content-Type`.
+
+Unstructured ingestion accepts text, HTML, JSON text, or an HTTP/HTTPS `source_url`, normalizes it into clean text, writes a knowledge document, splits chunks through the existing RAG splitter, and deduplicates by content hash per merchant unless `force_reindex=true`.
+
+Example ingestion request:
+
+```json
+{
+  "merchant_id": "m_001",
+  "title": "运动鞋选购笔记",
+  "source_type": "html",
+  "source_url": "https://example.com/post/123",
+  "html": "<article>跑步鞋要关注缓震、足弓支撑和尺码...</article>",
+  "metadata": {
+    "platform": "external_web",
+    "category": "运动鞋"
+  }
+}
+```
 
 Agent trace events are stored in `agent_trace_events` and include planner, retrieval, answer, follow-up, and run completion events. Use `run_id` from the SSE `message_start` event to query the trace endpoint.
 

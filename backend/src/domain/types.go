@@ -202,13 +202,13 @@ type AgentPromptInput struct {
 }
 
 type AgentPromptPublishRecord struct {
-	RecordID    string    `json:"record_id"`
-	PromptKey   string    `json:"prompt_key"`
-	PromptID    string    `json:"prompt_id"`
-	Version     int       `json:"version"`
-	PublishedBy string    `json:"published_by,omitempty"`
-	NacosDataID string    `json:"nacos_data_id"`
-	CreatedAt   time.Time `json:"created_at"`
+	RecordID      string    `json:"record_id"`
+	PromptKey     string    `json:"prompt_key"`
+	PromptID      string    `json:"prompt_id"`
+	Version       int       `json:"version"`
+	PublishedBy   string    `json:"published_by,omitempty"`
+	PublishTarget string    `json:"publish_target"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type VectorIndexStatus struct {
@@ -536,20 +536,44 @@ type Citation struct {
 }
 
 type KnowledgeDocument struct {
-	DocumentID string    `json:"document_id"`
-	MerchantID string    `json:"merchant_id"`
-	Title      string    `json:"title"`
-	DocType    string    `json:"doc_type"`
-	Status     string    `json:"status"`
-	ChunkCount int       `json:"chunk_count"`
-	CreatedAt  time.Time `json:"created_at"`
+	DocumentID  string    `json:"document_id"`
+	MerchantID  string    `json:"merchant_id"`
+	Title       string    `json:"title"`
+	DocType     string    `json:"doc_type"`
+	Status      string    `json:"status"`
+	ChunkCount  int       `json:"chunk_count"`
+	SourceURL   string    `json:"source_url,omitempty"`
+	ContentHash string    `json:"content_hash,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type KnowledgeDocumentInput struct {
-	MerchantID string `json:"merchant_id"`
-	Title      string `json:"title"`
-	DocType    string `json:"doc_type"`
-	Content    string `json:"content"`
+	MerchantID   string         `json:"merchant_id"`
+	Title        string         `json:"title"`
+	DocType      string         `json:"doc_type"`
+	Content      string         `json:"content"`
+	SourceURL    string         `json:"source_url,omitempty"`
+	ContentHash  string         `json:"content_hash,omitempty"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
+	ForceReindex bool           `json:"force_reindex,omitempty"`
+}
+
+type UnstructuredIngestRequest struct {
+	MerchantID   string         `json:"merchant_id,omitempty"`
+	Title        string         `json:"title"`
+	SourceURL    string         `json:"source_url,omitempty"`
+	SourceType   string         `json:"source_type,omitempty"`
+	Content      string         `json:"content,omitempty"`
+	HTML         string         `json:"html,omitempty"`
+	JSONText     string         `json:"json_text,omitempty"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
+	ForceReindex bool           `json:"force_reindex,omitempty"`
+}
+
+type UnstructuredIngestResult struct {
+	Document  KnowledgeDocument `json:"document"`
+	Duplicate bool              `json:"duplicate"`
+	TextRunes int               `json:"text_runes"`
 }
 
 type AgentBlock struct {

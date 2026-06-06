@@ -515,6 +515,15 @@ func DefaultConfigs(envAPIKey string) []domain.AppConfig {
 		{ConfigKey: "ai.model.react_tool_intent", ConfigValue: "deepseek-v4-flash", ValueType: "string", Description: "购物车/订单固定动作模型兜底", Domain: "app"},
 		{ConfigKey: "ai.enabled", ConfigValue: "true", ValueType: "bool", Description: "是否启用真实模型调用", Domain: "app"},
 		{ConfigKey: "ai.enable_thinking", ConfigValue: "false", ValueType: "bool", Description: "是否启用模型思考模式，默认关闭以降低首 token 延迟", Domain: "app"},
+		{ConfigKey: "http.cors.allowed_origins", ConfigValue: "*", ValueType: "string", Description: "允许跨域访问的 Origin，生产环境应配置为明确域名，多个用逗号分隔", Domain: "infra"},
+		{ConfigKey: "http.trusted_proxy_cidrs", ConfigValue: "", ValueType: "string", Description: "可信反向代理 CIDR，只有这些来源的 X-Forwarded-For 会被采信", Domain: "infra"},
+		{ConfigKey: "http.trust_all_proxies", ConfigValue: "false", ValueType: "bool", Description: "是否信任所有代理头，仅本地调试可开启", Domain: "infra"},
+		{ConfigKey: "files.max_upload_bytes", ConfigValue: "10485760", ValueType: "int", Description: "文件上传最大字节数", Domain: "infra"},
+		{ConfigKey: "minio.endpoint", ConfigValue: "127.0.0.1:9000", ValueType: "string", Description: "MinIO/S3 对象存储地址", Domain: "infra"},
+		{ConfigKey: "minio.access_key", ConfigValue: "minioadmin", ValueType: "string", Description: "MinIO Access Key，生产环境必须改为独立账号", Domain: "infra", IsSecret: true},
+		{ConfigKey: "minio.secret_key", ConfigValue: "minioadmin", ValueType: "string", Description: "MinIO Secret Key，生产环境必须改为强密钥", Domain: "infra", IsSecret: true},
+		{ConfigKey: "minio.bucket", ConfigValue: "xzxg-shop-assets", ValueType: "string", Description: "对象存储 bucket", Domain: "infra"},
+		{ConfigKey: "minio.use_ssl", ConfigValue: "false", ValueType: "bool", Description: "对象存储是否启用 HTTPS", Domain: "infra"},
 		{ConfigKey: "vector.enabled", ConfigValue: "true", ValueType: "bool", Description: "是否启用 Milvus 向量召回；不可用时自动降级关键词检索", Domain: "infra"},
 		{ConfigKey: "milvus.address", ConfigValue: "http://127.0.0.1:19530", ValueType: "string", Description: "Milvus REST 地址", Domain: "infra"},
 		{ConfigKey: "milvus.token", ConfigValue: "root:Milvus", ValueType: "string", Description: "Milvus Token，本地 standalone 默认 root:Milvus", Domain: "infra", IsSecret: true},
@@ -558,26 +567,6 @@ func DefaultConfigs(envAPIKey string) []domain.AppConfig {
 		{ConfigKey: "memory.window_turns", ConfigValue: "5", ValueType: "int", Description: "短期记忆候选最近轮数", Domain: "app"},
 		{ConfigKey: "memory.max_turn_chars", ConfigValue: "1200", ValueType: "int", Description: "单轮候选记忆最大字符数", Domain: "app"},
 		{ConfigKey: "memory.summary_enabled", ConfigValue: "true", ValueType: "bool", Description: "是否在回答完成后更新会话摘要", Domain: "app"},
-		{ConfigKey: "agent.prompt.route", ConfigValue: DefaultRoutePrompt, ValueType: "text", Description: "一级路由 Prompt：guide/non_guide", Domain: "prompt"},
-		{ConfigKey: "agent.prompt.guide_intent", ConfigValue: DefaultGuideIntentPrompt, ValueType: "text", Description: "导购细分 Prompt：P1-P6", Domain: "prompt"},
-		{ConfigKey: "agent.prompt.non_guide_intent", ConfigValue: DefaultNonGuideIntentPrompt, ValueType: "text", Description: "非导购服务域细分 Prompt", Domain: "prompt"},
-		{ConfigKey: "agent.prompt.main_template", ConfigValue: DefaultMainAgentTemplatePrompt, ValueType: "text", Description: "主 Agent 模板化系统 Prompt", Domain: "prompt"},
-		{ConfigKey: "agent.prompt.tool_call_protocol", ConfigValue: DefaultToolCallProtocolPrompt, ValueType: "text", Description: "主 Agent 工具与 Skill 调用协议", Domain: "prompt"},
-		{ConfigKey: "agent.prompt.final_output_rules", ConfigValue: DefaultFinalOutputRulesPrompt, ValueType: "text", Description: "主 Agent 最终回答通用规范", Domain: "prompt"},
-		{ConfigKey: "agent.prompt.non_guide_final_output_rules", ConfigValue: DefaultNonGuideFinalOutputRulesPrompt, ValueType: "text", Description: "非导购服务块最终输出规范", Domain: "prompt"},
-		{ConfigKey: "agent.prompt.intent_tool_policy", ConfigValue: DefaultIntentToolPolicyPrompt, ValueType: "json", Description: "各子意图可用工具、skill、禁用能力和使用侧重", Domain: "prompt"},
-		{ConfigKey: "agent.prompt.followups", ConfigValue: DefaultFollowupsPrompt, ValueType: "text", Description: "追问生成 Agent 系统 Prompt", Domain: "prompt"},
-		{ConfigKey: "agent.prompt.memory_retrieval", ConfigValue: DefaultMemoryRetrievalPrompt, ValueType: "text", Description: "短期多轮记忆检索 Prompt", Domain: "prompt"},
-		{ConfigKey: "agent.prompt.session_summary", ConfigValue: DefaultSessionSummaryPrompt, ValueType: "text", Description: "会话滚动摘要 Prompt", Domain: "prompt"},
-	}
-	for _, intent := range DefaultIntentKeys() {
-		configs = append(configs, domain.AppConfig{
-			ConfigKey:   "agent.prompt.intent." + intent,
-			ConfigValue: defaultIntentPrompts[intent],
-			ValueType:   "text",
-			Description: "主导购 Agent 意图 Prompt：" + intent,
-			Domain:      "prompt",
-		})
 	}
 	return configs
 }

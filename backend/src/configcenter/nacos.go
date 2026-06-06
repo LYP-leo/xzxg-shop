@@ -49,10 +49,9 @@ func NewNacosCenter(baseURL string, namespace string, group string, dataID strin
 		group:        strings.TrimSpace(group),
 		legacyDataID: strings.TrimSpace(dataID),
 		dataIDs: map[string]string{
-			"app":    "xzxg-shop-app-config.json",
-			"rag":    "xzxg-shop-rag-config.json",
-			"infra":  "xzxg-shop-infra-config.json",
-			"prompt": "xzxg-shop-agent-prompts.json",
+			"app":   "xzxg-shop-app-config.json",
+			"rag":   "xzxg-shop-rag-config.json",
+			"infra": "xzxg-shop-infra-config.json",
 		},
 		client:   &http.Client{Timeout: 3 * time.Second},
 		fallback: NewMemoryCenter(defaults),
@@ -299,7 +298,7 @@ func (c *NacosCenter) marshalDocument(dataID string, items []domain.AppConfig) (
 
 func (c *NacosCenter) readDataIDs() []string {
 	ids := []string{c.legacyDataID}
-	for _, domainName := range []string{"app", "infra", "rag", "prompt"} {
+	for _, domainName := range []string{"app", "infra", "rag"} {
 		dataID := c.dataIDForDomain(domainName)
 		if dataID == "" || containsString(ids, dataID) {
 			continue

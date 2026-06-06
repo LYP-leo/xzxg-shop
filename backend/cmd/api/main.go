@@ -13,7 +13,6 @@ import (
 
 	"github.com/LYP-leo/xzxg-shop/backend/src/agent"
 	"github.com/LYP-leo/xzxg-shop/backend/src/configcenter"
-	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
 	"github.com/LYP-leo/xzxg-shop/backend/src/httpapi"
 	"github.com/LYP-leo/xzxg-shop/backend/src/imagevector"
 	"github.com/LYP-leo/xzxg-shop/backend/src/rag"
@@ -30,6 +29,7 @@ func main() {
 	nacosNamespace := env("NACOS_NAMESPACE", "")
 	nacosGroup := env("NACOS_GROUP", "XZXG_SHOP")
 	nacosDataID := env("NACOS_DATA_ID", "xzxg-shop-app-config.json")
+	production := isProductionEnv()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -41,9 +41,11 @@ func main() {
 		os.Exit(1)
 	}
 	defer mysqlStore.Close()
-	if err := mysqlStore.Migrate(ctx); err != nil {
-		logger.Error("mysql migration failed", "error", err)
-		os.Exit(1)
+	if envBool("RUN_MIGRATIONS", !production) {
+		if err := mysqlStore.Migrate(ctx); err != nil {
+			logger.Error("mysql migration failed", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	// Nacos 不可用时会退回内存默认配置，保证本地开发仍可启动。
@@ -52,7 +54,13 @@ func main() {
 	if err := configCenter.Seed(ctx); err != nil {
 		logger.Warn("nacos config center unavailable, using in-memory defaults", "error", err)
 	}
-	if err := mysqlStore.SeedAgentPrompts(ctx, promptDefaultsFromConfig(configCenter.List(ctx, true))); err != nil {
+	if production {
+		if err := validateProductionConfig(dsn, configCenter.GetMap(ctx)); err != nil {
+			logger.Error("unsafe production config", "error", err)
+			os.Exit(1)
+		}
+	}
+	if err := mysqlStore.SeedAgentPrompts(ctx, configcenter.PromptDefaults()); err != nil {
 		logger.Warn("seed agent prompts failed", "error", err)
 	}
 	vectorConfig := rag.ConfigFromMap(configCenter.GetMap(ctx), runtimeConfig.Models.APIKey, runtimeConfig.Models.BaseURL)
@@ -60,6 +68,8 @@ func main() {
 		mysqlStore.SetImageEmbedder(imagevector.NewEmbedderFromMap(configCenter.GetMap(ctx), runtimeConfig.Models.APIKey))
 		vectorClient := rag.NewClient(vectorConfig, rag.NewOpenAIEmbedder(vectorConfig.EmbeddingBaseURL, vectorConfig.EmbeddingAPIKey, vectorConfig.EmbeddingModel))
 		mysqlStore.SetVectorClient(vectorClient)
+	}
+	if vectorConfig.Enabled && envBool("BOOTSTRAP_VECTOR_INDEX", !production) {
 		go func() {
 			bootstrapCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
@@ -117,28 +127,43 @@ func env(key string, fallback string) string {
 	return value
 }
 
-func promptDefaultsFromConfig(items []domain.AppConfig) []domain.AgentPromptInput {
-	defaults := configcenter.PromptDefaults()
-	byKey := make(map[string]domain.AgentPromptInput, len(defaults))
-	for _, item := range defaults {
-		byKey[item.PromptKey] = item
+func envBool(key string, fallback bool) bool {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if value == "" {
+		return fallback
 	}
-	for _, item := range items {
-		if !strings.HasPrefix(item.ConfigKey, "agent.prompt.") || strings.TrimSpace(item.ConfigValue) == "" {
-			continue
-		}
-		current := byKey[item.ConfigKey]
-		current.PromptKey = item.ConfigKey
-		current.Title = emptyFallback(item.Description, item.ConfigKey)
-		current.Content = item.ConfigValue
-		current.Description = item.Description
-		byKey[item.ConfigKey] = current
+	switch value {
+	case "1", "true", "yes", "on", "enabled":
+		return true
+	case "0", "false", "no", "off", "disabled":
+		return false
+	default:
+		return fallback
 	}
-	merged := make([]domain.AgentPromptInput, 0, len(byKey))
-	for _, item := range byKey {
-		merged = append(merged, item)
+}
+
+func isProductionEnv() bool {
+	value := strings.ToLower(strings.TrimSpace(env("APP_ENV", env("GO_ENV", ""))))
+	return value == "prod" || value == "production"
+}
+
+func validateProductionConfig(dsn string, values map[string]string) error {
+	lowerDSN := strings.ToLower(dsn)
+	switch {
+	case strings.HasPrefix(lowerDSN, "root:root@"):
+		return errors.New("MYSQL_DSN must not use root:root in production")
+	case strings.Contains(values["http.cors.allowed_origins"], "*"):
+		return errors.New("http.cors.allowed_origins must be explicit in production")
+	case strings.TrimSpace(values["minio.access_key"]) == "" || values["minio.access_key"] == "minioadmin":
+		return errors.New("minio.access_key must be configured in production")
+	case strings.TrimSpace(values["minio.secret_key"]) == "" || values["minio.secret_key"] == "minioadmin":
+		return errors.New("minio.secret_key must be configured in production")
+	case strings.TrimSpace(values["milvus.token"]) == "" || values["milvus.token"] == "root:Milvus":
+		return errors.New("milvus.token must be configured in production")
+	case strings.TrimSpace(values["ai.qwen.api_key"]) == "":
+		return errors.New("ai.qwen.api_key must be configured in production")
 	}
-	return merged
+	return nil
 }
 
 func emptyFallback(value string, fallback string) string {

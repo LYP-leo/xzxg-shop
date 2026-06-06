@@ -727,6 +727,14 @@ func (r *Runtime) intConfig(ctx context.Context, key string, fallback int) int {
 }
 
 func (r *Runtime) stringConfig(ctx context.Context, key string, fallback string) string {
+	if strings.HasPrefix(key, "agent.prompt.") && r.store != nil {
+		if prompt, ok := r.store.GetActiveAgentPrompt(ctx, key); ok {
+			if value := strings.TrimSpace(prompt.Content); value != "" {
+				return value
+			}
+		}
+		return fallback
+	}
 	values := r.configs.GetMap(ctx)
 	if value := strings.TrimSpace(values[key]); value != "" {
 		return value
@@ -945,6 +953,7 @@ func extractJSONArray(content string) string {
 }
 
 func (r *Runtime) trace(ctx context.Context, run domain.AgentRun, stage string, eventType string, model string, status string, durationMS int64, errText string, metadata map[string]any) {
+	metadata = traceMetadata(stage, eventType, model, status, durationMS, metadata)
 	if err := r.store.RecordAgentTrace(ctx, domain.AgentTraceInput{
 		RunID:        run.RunID,
 		TraceID:      run.TraceID,
