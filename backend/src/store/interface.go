@@ -18,6 +18,7 @@ type Store interface {
 	ListAccounts(ctx context.Context) []domain.Account
 	ListAccountsPage(ctx context.Context, page int, pageSize int) ([]domain.Account, int)
 	CreateAccount(ctx context.Context, input domain.AccountCreateInput) (domain.Account, error)
+	UpdateAccountPasswordHash(ctx context.Context, accountID string, passwordHash string) bool
 	UpdateAccountProfile(ctx context.Context, accountID string, displayName string, avatarURL string) (domain.Account, bool)
 	UpdateAccountContact(ctx context.Context, accountID string, phone string, email string) (domain.Account, bool)
 	UpdateAccountStatus(ctx context.Context, accountID string, status string) (domain.Account, bool)
@@ -48,17 +49,20 @@ type Store interface {
 	ListAgentRunsPage(ctx context.Context, page int, pageSize int) ([]domain.AgentRun, int)
 	ListAgentPromptsPage(ctx context.Context, page int, pageSize int) ([]domain.AgentPrompt, int)
 	SeedAgentPrompts(ctx context.Context, defaults []domain.AgentPromptInput) error
+	GetActiveAgentPrompt(ctx context.Context, promptKey string) (domain.AgentPrompt, bool)
 	SaveAgentPromptDraft(ctx context.Context, input domain.AgentPromptInput) (domain.AgentPrompt, error)
-	PublishAgentPrompt(ctx context.Context, promptKey string, publishedBy string, nacosDataID string) (domain.AgentPrompt, domain.AgentPromptPublishRecord, error)
+	PublishAgentPrompt(ctx context.Context, promptKey string, publishedBy string, publishTarget string) (domain.AgentPrompt, domain.AgentPromptPublishRecord, error)
 	ListAgentPromptPublishRecords(ctx context.Context, promptKey string, limit int) []domain.AgentPromptPublishRecord
 
 	// 商品、类目、商家和 SKU。
 	SearchProducts(ctx context.Context, query string) []domain.ProductCard
 	ListCategories(ctx context.Context) []domain.Category
 	ListMerchants(ctx context.Context) []domain.Merchant
+	ListMerchantsPage(ctx context.Context, page int, pageSize int) ([]domain.Merchant, int)
 	ListAllMerchantsPage(ctx context.Context, page int, pageSize int) ([]domain.Merchant, int)
 	UpdateMerchantStatus(ctx context.Context, merchantID string, status string) (domain.Merchant, bool)
 	ListProducts(ctx context.Context, keyword string, categoryID string) []domain.ProductCard
+	ListProductsPage(ctx context.Context, keyword string, categoryID string, page int, pageSize int) ([]domain.ProductCard, int)
 	ListAllProducts(ctx context.Context) []domain.ProductCard
 	ListAllProductsPage(ctx context.Context, page int, pageSize int) ([]domain.ProductCard, int)
 	GetProduct(ctx context.Context, productID string) (domain.ProductDetail, bool)
@@ -81,23 +85,31 @@ type Store interface {
 	ConfirmReceipt(ctx context.Context, accountID string, orderID string) (domain.Order, bool)
 	ExpirePendingOrders(ctx context.Context) int
 	ListUserOrders(ctx context.Context, accountID string) []domain.Order
+	ListUserOrdersPage(ctx context.Context, accountID string, page int, pageSize int) ([]domain.Order, int)
 	ListMerchantOrders(ctx context.Context, merchantID string) []domain.Order
+	ListMerchantOrdersPage(ctx context.Context, merchantID string, page int, pageSize int) ([]domain.Order, int)
 	ListAllOrders(ctx context.Context) []domain.Order
 	ListAllOrdersPage(ctx context.Context, page int, pageSize int) ([]domain.Order, int)
 	UpdateOrderStatus(ctx context.Context, merchantID string, orderID string, status string) (domain.Order, bool)
 
 	// 促销、优惠券和评价。
 	ListPromotions(ctx context.Context, merchantID string) []domain.PromotionRule
+	ListPromotionsPage(ctx context.Context, merchantID string, page int, pageSize int) ([]domain.PromotionRule, int)
 	CreatePromotion(ctx context.Context, input domain.PromotionRuleInput) (domain.PromotionRule, error)
 	UpdatePromotionStatus(ctx context.Context, promotionID string, merchantID string, status string) (domain.PromotionRule, bool)
 	ListCoupons(ctx context.Context, accountID string) []domain.Coupon
+	ListCouponsPage(ctx context.Context, accountID string, page int, pageSize int) ([]domain.Coupon, int)
 	ListUserCoupons(ctx context.Context, accountID string) []domain.UserCoupon
+	ListUserCouponsPage(ctx context.Context, accountID string, page int, pageSize int) ([]domain.UserCoupon, int)
 	ClaimCoupon(ctx context.Context, accountID string, couponID string) (domain.UserCoupon, bool)
 	ListProductReviews(ctx context.Context, productID string) []domain.ProductReview
+	ListProductReviewsPage(ctx context.Context, productID string, page int, pageSize int) ([]domain.ProductReview, int)
 	CreateProductReview(ctx context.Context, accountID string, orderID string, orderItemID string, input domain.ProductReviewInput) (domain.ProductReview, bool)
 	ListMerchantReviews(ctx context.Context, merchantID string) []domain.ProductReview
+	ListMerchantReviewsPage(ctx context.Context, merchantID string, page int, pageSize int) ([]domain.ProductReview, int)
 	ReplyReview(ctx context.Context, merchantID string, reviewID string, reply string) (domain.ProductReview, bool)
 	ListAllReviews(ctx context.Context) []domain.ProductReview
+	ListAllReviewsPage(ctx context.Context, page int, pageSize int) ([]domain.ProductReview, int)
 	UpdateReviewStatus(ctx context.Context, reviewID string, status string) (domain.ProductReview, bool)
 
 	// RAG 知识库。
@@ -105,6 +117,7 @@ type Store interface {
 	SearchKnowledge(ctx context.Context, query string) []domain.Citation
 	SearchKnowledgeByPlan(ctx context.Context, plan rag.RetrievalPlan) []domain.Citation
 	ListMerchantDocuments(ctx context.Context, merchantID string) []domain.KnowledgeDocument
+	ListMerchantDocumentsPage(ctx context.Context, merchantID string, page int, pageSize int) ([]domain.KnowledgeDocument, int)
 	ListAllDocuments(ctx context.Context) []domain.KnowledgeDocument
 	ListAllDocumentsPage(ctx context.Context, page int, pageSize int) ([]domain.KnowledgeDocument, int)
 	CreateMerchantDocument(ctx context.Context, input domain.KnowledgeDocumentInput) (domain.KnowledgeDocument, error)

@@ -9,6 +9,8 @@ export type DocumentItem = {
   docType: string;
   status: 'uploaded' | 'parsing' | 'indexing' | 'indexed' | 'failed';
   chunkCount: number;
+  sourceUrl?: string;
+  contentHash?: string;
 };
 
 type DocumentResponse = {
@@ -17,6 +19,26 @@ type DocumentResponse = {
   doc_type: string;
   status: DocumentItem['status'];
   chunk_count: number;
+  source_url?: string;
+  content_hash?: string;
+};
+
+export type UnstructuredIngestionInput = {
+  merchant_id: string;
+  title: string;
+  source_type: 'html' | 'json' | 'text';
+  source_url?: string;
+  content?: string;
+  html?: string;
+  json_text?: string;
+  metadata?: Record<string, unknown>;
+  force_reindex?: boolean;
+};
+
+export type UnstructuredIngestionResult = {
+  document: DocumentResponse;
+  duplicate: boolean;
+  text_runes: number;
 };
 
 export type EvalRun = {
@@ -100,7 +122,7 @@ export type AgentPromptPublishRecord = {
   prompt_id: string;
   version: number;
   published_by?: string;
-  nacos_data_id: string;
+  publish_target: string;
   created_at: string;
 };
 
@@ -240,7 +262,9 @@ export async function listDocuments(token: string): Promise<DocumentItem[]> {
     title: item.title,
     docType: item.doc_type,
     status: item.status,
-    chunkCount: item.chunk_count
+    chunkCount: item.chunk_count,
+    sourceUrl: item.source_url,
+    contentHash: item.content_hash
   }));
 }
 
@@ -255,9 +279,19 @@ export async function listDocumentsPage(token: string, page = 1, pageSize = 10):
       title: item.title,
       docType: item.doc_type,
       status: item.status,
-      chunkCount: item.chunk_count
+      chunkCount: item.chunk_count,
+      sourceUrl: item.source_url,
+      contentHash: item.content_hash
     }))
   };
+}
+
+export async function createAdminUnstructuredIngestion(token: string, input: UnstructuredIngestionInput): Promise<UnstructuredIngestionResult> {
+  return requestJSON<UnstructuredIngestionResult>('/admin/unstructured-ingestions', {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify(input)
+  });
 }
 
 export async function listAppConfigs(token: string): Promise<AppConfig[]> {

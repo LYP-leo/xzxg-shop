@@ -221,11 +221,12 @@ func (r *Runtime) runReactAgent(ctx context.Context, run domain.AgentRun, plan r
 			"admin_visible_note":    "工具结果完整写入 trace，管理员页面可直接排查检索片段、弱相关候选、剔除原因和工具返回。",
 		})
 		if err := r.emitThinkingStep(ctx, run.RunID, domain.ThoughtStep{
-			ID:      "retrieve",
-			Title:   "查询商品与资料",
-			Status:  "done",
-			Summary: thinkingSummaryForToolObservation(observation),
-			Order:   2,
+			ID:       "retrieve",
+			Title:    "查询商品与资料",
+			Status:   "done",
+			Summary:  thinkingSummaryForToolObservation(observation),
+			Products: thinkingProductsForToolObservation(observation),
+			Order:    2,
 		}, emit); err != nil {
 			return result, err
 		}
@@ -528,7 +529,7 @@ func (r *Runtime) newAgentOutputFilter(ctx context.Context, run domain.AgentRun,
 func (r *Runtime) reactSystemPromptForPlan(ctx context.Context, plan runPlan) string {
 	template := r.stringConfig(ctx, "agent.prompt.main_template", configcenter.DefaultMainAgentTemplatePrompt)
 	intent := plan.ReferenceIntent()
-	intentPrompt := r.stringConfig(ctx, "agent.prompt.intent."+intent, configcenter.DefaultIntentPrompt(intent))
+	intentPrompt := normalizeIntentPromptForRuntime(r.stringConfig(ctx, "agent.prompt.intent."+intent, configcenter.DefaultIntentPrompt(intent)))
 	brief, outputRules := splitIntentPrompt(intentPrompt)
 	replacements := map[string]string{
 		"intent_brief":        brief,
@@ -544,7 +545,7 @@ func (r *Runtime) reactSystemPromptForPlan(ctx context.Context, plan runPlan) st
 
 func (r *Runtime) finalSystemPromptForPlan(ctx context.Context, plan runPlan) string {
 	intent := plan.ReferenceIntent()
-	intentPrompt := r.stringConfig(ctx, "agent.prompt.intent."+intent, configcenter.DefaultIntentPrompt(intent))
+	intentPrompt := normalizeIntentPromptForRuntime(r.stringConfig(ctx, "agent.prompt.intent."+intent, configcenter.DefaultIntentPrompt(intent)))
 	brief, outputRules := splitIntentPrompt(intentPrompt)
 	parts := []string{
 		"你是小猪小狗电商平台的 AI 导购主 Agent。最终回答阶段只输出中文自然语言，不输出隐藏推理。",
@@ -574,6 +575,41 @@ func renderPromptTemplate(template string, replacements map[string]string) strin
 		out = strings.ReplaceAll(out, "{"+key+"}", strings.TrimSpace(value))
 	}
 	return strings.TrimSpace(out)
+}
+
+func normalizeIntentPromptForRuntime(raw string) string {
+	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+	lines := strings.Split(raw, "\n")
+	out := make([]string, 0, len(lines)+3)
+	addedItemRule := false
+	addedFurtherRule := false
+	addedBoldRule := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		containsBuyer := strings.Contains(lower, "<buyer") || strings.Contains(lower, "</buyer") || strings.Contains(lower, "buyer")
+		containsSpecialWord := strings.Contains(lower, "special_word") || strings.Contains(lower, "special word")
+		if containsBuyer || (strings.Contains(trimmed, "末尾") && strings.Contains(trimmed, "<item>")) {
+			if !addedItemRule {
+				out = append(out, "- `<item>` 是商品卡片插入位置指令，必须靠近对应商品说明；不要在回答末尾集中输出多个 `<item>`。")
+				addedItemRule = true
+			}
+			if strings.Contains(trimmed, "<further>") && !addedFurtherRule {
+				out = append(out, "- 最后输出一个 `<further>`。")
+				addedFurtherRule = true
+			}
+			continue
+		}
+		if containsSpecialWord {
+			if !addedBoldRule && strings.Contains(trimmed, "标注") {
+				out = append(out, "- 重点词、品牌词、系列词、属性词用 Markdown 加粗标注，例如 **耐克**、**防水**。")
+				addedBoldRule = true
+			}
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
 func splitIntentPrompt(raw string) (string, string) {
@@ -628,10 +664,13 @@ func statusTextForTool(tool string) string {
 
 func thinkingSummaryForToolObservation(observation toolObservation) string {
 	if strings.TrimSpace(observation.Message) != "" {
+		if len(observation.ProductIDs) > 0 {
+			return "已筛出可看商品，正在快速对比重点。"
+		}
 		return observation.Message
 	}
 	if len(observation.ProductIDs) > 0 {
-		return fmt.Sprintf("已找到 %d 个可用商品候选。", len(observation.ProductIDs))
+		return "已筛出可看商品，正在快速对比重点。"
 	}
 	if len(observation.ChunkIDs) > 0 {
 		return fmt.Sprintf("已找到 %d 个可参考资料片段。", len(observation.ChunkIDs))
@@ -640,6 +679,65 @@ func thinkingSummaryForToolObservation(observation toolObservation) string {
 		return "已完成相关信息查询。"
 	}
 	return "查询未得到可用结果，正在尝试用现有信息回答。"
+}
+
+func thinkingProductsForToolObservation(observation toolObservation) []domain.ProductCard {
+	if observation.Tool != toolSearchProducts && observation.Tool != toolSearchImage {
+		return nil
+	}
+	rawItems, ok := observation.Result["items"]
+	if !ok {
+		return nil
+	}
+	products := make([]domain.ProductCard, 0, 5)
+	appendProduct := func(item map[string]any) {
+		if len(products) >= 5 {
+			return
+		}
+		productID := mapString(item, "productId", "product_id", "id")
+		if strings.TrimSpace(productID) == "" {
+			return
+		}
+		products = append(products, domain.ProductCard{
+			ProductID:       productID,
+			SkuID:           mapString(item, "skuId", "sku_id"),
+			MerchantName:    mapString(item, "merchantName", "merchant_name"),
+			Name:            mapString(item, "name"),
+			Brand:           mapString(item, "brand"),
+			ImageURL:        mapString(item, "imageUrl", "image_url"),
+			Price:           mapString(item, "price"),
+			StockStatus:     mapString(item, "stockStatus", "stock_status"),
+			RecommendReason: mapString(item, "recommendReason", "recommend_reason"),
+		})
+	}
+	switch items := rawItems.(type) {
+	case []map[string]any:
+		for _, item := range items {
+			appendProduct(item)
+		}
+	case []any:
+		for _, raw := range items {
+			if item, ok := raw.(map[string]any); ok {
+				appendProduct(item)
+			}
+		}
+	}
+	if len(products) == 0 {
+		return nil
+	}
+	return products
+}
+
+func mapString(item map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := item[key]; ok {
+			text := strings.TrimSpace(fmt.Sprint(value))
+			if text != "" && text != "<nil>" {
+				return text
+			}
+		}
+	}
+	return ""
 }
 
 func blocksFromReact(action reactAction, productIDs []string, chunkIDs []string) []domain.AgentBlock {

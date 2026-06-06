@@ -24,10 +24,12 @@ import (
 	"github.com/LYP-leo/xzxg-shop/backend/src/configcenter"
 	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
 	"github.com/LYP-leo/xzxg-shop/backend/src/imagevector"
+	"github.com/LYP-leo/xzxg-shop/backend/src/ingest"
 	"github.com/LYP-leo/xzxg-shop/backend/src/objectstore"
 	"github.com/LYP-leo/xzxg-shop/backend/src/rag"
 	"github.com/LYP-leo/xzxg-shop/backend/src/retrievalconfig"
 	"github.com/LYP-leo/xzxg-shop/backend/src/store"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type Server struct {
@@ -70,6 +72,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/search/image", s.handleSearchImage)
 	mux.HandleFunc("GET /api/v1/merchant/documents", s.handleListMerchantDocuments)
 	mux.HandleFunc("POST /api/v1/merchant/documents", s.handleCreateMerchantDocument)
+	mux.HandleFunc("POST /api/v1/merchant/unstructured-ingestions", s.handleCreateMerchantUnstructuredIngestion)
 	mux.HandleFunc("GET /api/v1/merchant/orders", s.handleListMerchantOrders)
 	mux.HandleFunc("PATCH /api/v1/merchant/orders/", s.handleUpdateMerchantOrder)
 	mux.HandleFunc("GET /api/v1/merchant/promotions", s.handleListMerchantPromotions)
@@ -93,6 +96,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/admin/agent/runs", s.handleListAdminAgentRuns)
 	mux.HandleFunc("GET /api/v1/admin/agent/runs/", s.handleAdminAgentRunTrace)
 	mux.HandleFunc("GET /api/v1/admin/documents", s.handleListAdminDocuments)
+	mux.HandleFunc("POST /api/v1/admin/unstructured-ingestions", s.handleCreateAdminUnstructuredIngestion)
 	mux.HandleFunc("GET /api/v1/admin/orders", s.handleListAdminOrders)
 	mux.HandleFunc("GET /api/v1/admin/promotions", s.handleListAdminPromotions)
 	mux.HandleFunc("POST /api/v1/admin/promotions", s.handleCreateAdminPromotion)
@@ -147,9 +151,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	account, passwordHash, ok := s.store.GetAccountByUsername(r.Context(), username)
-	if !ok || passwordHash != hashPassword(request.Password) {
+	if !ok || !verifyPassword(passwordHash, request.Password) {
 		writeError(w, http.StatusUnauthorized, "invalid_credential", "账号或密码错误")
 		return
+	}
+	if shouldUpgradePasswordHash(passwordHash) {
+		if upgraded, err := hashPassword(request.Password); err == nil {
+			s.store.UpdateAccountPasswordHash(r.Context(), account.AccountID, upgraded)
+		}
 	}
 	token, err := s.store.CreateAuthToken(r.Context(), account.AccountID)
 	if err != nil {
@@ -182,9 +191,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "username_exists", "账号已存在")
 		return
 	}
+	passwordHash, err := hashPassword(request.Password)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "hash_password_failed", "注册失败")
+		return
+	}
 	account, err := s.store.CreateAccount(r.Context(), domain.AccountCreateInput{
 		Username:     username,
-		PasswordHash: hashPassword(request.Password),
+		PasswordHash: passwordHash,
 		DisplayName:  displayName,
 		Role:         domain.AccountRoleUser,
 	})
@@ -390,7 +404,7 @@ func (s *Server) handleListCategories(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListMerchants(w http.ResponseWriter, r *http.Request) {
 	page, pageSize := readPagination(r)
-	items, total := paginateList(s.store.ListMerchants(r.Context()), page, pageSize)
+	items, total := s.store.ListMerchantsPage(r.Context(), page, pageSize)
 	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
@@ -398,7 +412,7 @@ func (s *Server) handleListProducts(w http.ResponseWriter, r *http.Request) {
 	keyword := r.URL.Query().Get("keyword")
 	categoryID := r.URL.Query().Get("category_id")
 	page, pageSize := readPagination(r)
-	items, total := paginateList(s.store.ListProducts(r.Context(), keyword, categoryID), page, pageSize)
+	items, total := s.store.ListProductsPage(r.Context(), keyword, categoryID, page, pageSize)
 	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
@@ -418,7 +432,7 @@ func (s *Server) handleProductAction(w http.ResponseWriter, r *http.Request) {
 	if action == "reviews" {
 		// 商品评价是公开信息，只返回 visible 状态的评价。
 		page, pageSize := readPagination(r)
-		items, total := paginateList(s.store.ListProductReviews(r.Context(), productID), page, pageSize)
+		items, total := s.store.ListProductReviewsPage(r.Context(), productID, page, pageSize)
 		writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 		return
 	}
@@ -436,14 +450,14 @@ func (s *Server) handleProductAction(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListPromotions(w http.ResponseWriter, r *http.Request) {
 	page, pageSize := readPagination(r)
-	items, total := paginateList(s.store.ListPromotions(r.Context(), ""), page, pageSize)
+	items, total := s.store.ListPromotionsPage(r.Context(), "", page, pageSize)
 	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
 func (s *Server) handleListCoupons(w http.ResponseWriter, r *http.Request) {
 	account, _ := accountFromContext(r.Context())
 	page, pageSize := readPagination(r)
-	items, total := paginateList(s.store.ListCoupons(r.Context(), account.AccountID), page, pageSize)
+	items, total := s.store.ListCouponsPage(r.Context(), account.AccountID, page, pageSize)
 	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
@@ -453,7 +467,7 @@ func (s *Server) handleListUserCoupons(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page, pageSize := readPagination(r)
-	items, total := paginateList(s.store.ListUserCoupons(r.Context(), account.AccountID), page, pageSize)
+	items, total := s.store.ListUserCouponsPage(r.Context(), account.AccountID, page, pageSize)
 	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
@@ -504,9 +518,6 @@ func (s *Server) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mimeType := http.DetectContentType(buffer)
-	if header.Header.Get("Content-Type") != "" {
-		mimeType = header.Header.Get("Content-Type")
-	}
 	if !strings.HasPrefix(mimeType, "image/") && !strings.HasPrefix(mimeType, "application/pdf") {
 		writeError(w, http.StatusBadRequest, "unsupported_file_type", "当前只支持图片和 PDF 文件")
 		return
@@ -555,6 +566,11 @@ func (s *Server) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetFile(w http.ResponseWriter, r *http.Request) {
+	account, ok := accountFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "请先登录")
+		return
+	}
 	fileID := strings.TrimPrefix(r.URL.Path, "/api/v1/files/")
 	fileID = strings.Trim(fileID, "/")
 	if fileID == "" || strings.Contains(fileID, "..") {
@@ -564,6 +580,10 @@ func (s *Server) handleGetFile(w http.ResponseWriter, r *http.Request) {
 	fileMeta, ok := s.store.GetStoredFile(r.Context(), fileID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "file_not_found", "文件不存在")
+		return
+	}
+	if fileMeta.AccountID != "" && fileMeta.AccountID != account.AccountID && account.Role != domain.AccountRoleAdmin {
+		writeError(w, http.StatusForbidden, "forbidden", "无权访问该文件")
 		return
 	}
 	storage, err := objectstore.NewMinIOFromConfig(s.configs.GetMap(r.Context()))
@@ -780,7 +800,7 @@ func (s *Server) handleListMerchantDocuments(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	page, pageSize := readPagination(r)
-	items, total := paginateList(s.store.ListMerchantDocuments(r.Context(), account.MerchantID), page, pageSize)
+	items, total := s.store.ListMerchantDocumentsPage(r.Context(), account.MerchantID, page, pageSize)
 	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
@@ -811,13 +831,74 @@ func (s *Server) handleCreateMerchantDocument(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, document)
 }
 
+func (s *Server) handleCreateMerchantUnstructuredIngestion(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireMerchant(w, r)
+	if !ok {
+		return
+	}
+	var request domain.UnstructuredIngestRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	request.MerchantID = account.MerchantID
+	s.createUnstructuredIngestion(w, r, request)
+}
+
+func (s *Server) handleCreateAdminUnstructuredIngestion(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	var request domain.UnstructuredIngestRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	if strings.TrimSpace(request.MerchantID) == "" {
+		writeError(w, http.StatusBadRequest, "empty_merchant_id", "管理员入库必须指定 merchant_id")
+		return
+	}
+	s.createUnstructuredIngestion(w, r, request)
+}
+
+func (s *Server) createUnstructuredIngestion(w http.ResponseWriter, r *http.Request, request domain.UnstructuredIngestRequest) {
+	parsed, err := ingest.Parse(r.Context(), request)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "parse_ingestion_failed", err.Error())
+		return
+	}
+	hash := sha256.Sum256([]byte(parsed.Content))
+	startedAt := time.Now()
+	contentHash := hex.EncodeToString(hash[:])
+	document, err := s.store.CreateMerchantDocument(r.Context(), domain.KnowledgeDocumentInput{
+		MerchantID:   strings.TrimSpace(request.MerchantID),
+		Title:        parsed.Title,
+		DocType:      parsed.DocType,
+		Content:      parsed.Content,
+		SourceURL:    parsed.SourceURL,
+		ContentHash:  contentHash,
+		Metadata:     parsed.Metadata,
+		ForceReindex: request.ForceReindex,
+	})
+	if err != nil {
+		s.logger.Error("create unstructured ingestion failed", "error", err, "merchant_id", request.MerchantID)
+		writeError(w, http.StatusInternalServerError, "create_ingestion_failed", "非结构化资料入库失败")
+		return
+	}
+	writeJSON(w, http.StatusCreated, domain.UnstructuredIngestResult{
+		Document:  document,
+		Duplicate: document.ContentHash == contentHash && document.CreatedAt.Before(startedAt),
+		TextRunes: parsed.TextRunes,
+	})
+}
+
 func (s *Server) handleListMerchantOrders(w http.ResponseWriter, r *http.Request) {
 	account, ok := s.requireMerchant(w, r)
 	if !ok {
 		return
 	}
 	page, pageSize := readPagination(r)
-	items, total := paginateList(s.store.ListMerchantOrders(r.Context(), account.MerchantID), page, pageSize)
+	items, total := s.store.ListMerchantOrdersPage(r.Context(), account.MerchantID, page, pageSize)
 	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
@@ -852,7 +933,7 @@ func (s *Server) handleListMerchantPromotions(w http.ResponseWriter, r *http.Req
 		return
 	}
 	page, pageSize := readPagination(r)
-	items, total := paginateList(s.store.ListPromotions(r.Context(), account.MerchantID), page, pageSize)
+	items, total := s.store.ListPromotionsPage(r.Context(), account.MerchantID, page, pageSize)
 	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
@@ -907,7 +988,7 @@ func (s *Server) handleListMerchantReviews(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	page, pageSize := readPagination(r)
-	items, total := paginateList(s.store.ListMerchantReviews(r.Context(), account.MerchantID), page, pageSize)
+	items, total := s.store.ListMerchantReviewsPage(r.Context(), account.MerchantID, page, pageSize)
 	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
@@ -1096,21 +1177,9 @@ func (s *Server) handlePublishAdminPrompt(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "请求方法不支持")
 		return
 	}
-	prompt, record, err := s.store.PublishAgentPrompt(r.Context(), promptKey, account.AccountID, "xzxg-shop-agent-prompts.json")
+	prompt, record, err := s.store.PublishAgentPrompt(r.Context(), promptKey, account.AccountID, "database")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "publish_prompt_failed", err.Error())
-		return
-	}
-	_, err = s.configs.Upsert(r.Context(), domain.AppConfigInput{
-		ConfigKey:   prompt.PromptKey,
-		ConfigValue: prompt.Content,
-		ValueType:   "text",
-		Description: prompt.Description,
-		Domain:      "prompt",
-	})
-	if err != nil {
-		s.logger.Error("publish prompt to nacos failed", "error", err, "prompt_key", promptKey)
-		writeError(w, http.StatusInternalServerError, "publish_nacos_failed", "Prompt 已入库，但同步 Nacos 失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"prompt": prompt, "record": record})
@@ -1582,7 +1651,7 @@ func (s *Server) handleListAdminPromotions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	page, pageSize := readPagination(r)
-	items, total := paginateList(s.store.ListPromotions(r.Context(), ""), page, pageSize)
+	items, total := s.store.ListPromotionsPage(r.Context(), "", page, pageSize)
 	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
@@ -1632,7 +1701,7 @@ func (s *Server) handleListAdminReviews(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	page, pageSize := readPagination(r)
-	items, total := paginateList(s.store.ListAllReviews(r.Context()), page, pageSize)
+	items, total := s.store.ListAllReviewsPage(r.Context(), page, pageSize)
 	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
@@ -1812,7 +1881,7 @@ func (s *Server) handleListUserOrders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page, pageSize := readPagination(r)
-	items, total := paginateList(s.store.ListUserOrders(r.Context(), account.AccountID), page, pageSize)
+	items, total := s.store.ListUserOrdersPage(r.Context(), account.AccountID, page, pageSize)
 	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
@@ -2247,7 +2316,12 @@ func writeSSESnapshot(w http.ResponseWriter, run domain.AgentRun, code string, m
 
 func (s *Server) withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		allowedOrigin := s.allowedCORSOrigin(r.Context(), origin)
+		if allowedOrigin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+			w.Header().Set("Vary", "Origin")
+		}
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 		if r.Method == http.MethodOptions {
@@ -2256,6 +2330,26 @@ func (s *Server) withCORS(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) allowedCORSOrigin(ctx context.Context, origin string) string {
+	allowed := strings.TrimSpace(s.configs.GetMap(ctx)["http.cors.allowed_origins"])
+	if allowed == "" {
+		allowed = "*"
+	}
+	if allowed == "*" {
+		return "*"
+	}
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return ""
+	}
+	for _, item := range strings.Split(allowed, ",") {
+		if strings.TrimSpace(item) == origin {
+			return origin
+		}
+	}
+	return ""
 }
 
 func (s *Server) accountFromRequest(r *http.Request) (domain.Account, bool) {
@@ -2317,9 +2411,25 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (domain.Ac
 	return account, true
 }
 
-func hashPassword(password string) string {
+func hashPassword(password string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
+}
+
+func verifyPassword(storedHash string, password string) bool {
+	storedHash = strings.TrimSpace(storedHash)
+	if strings.HasPrefix(storedHash, "$2a$") || strings.HasPrefix(storedHash, "$2b$") || strings.HasPrefix(storedHash, "$2y$") {
+		return bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(password)) == nil
+	}
 	sum := sha256.Sum256([]byte(password))
-	return hex.EncodeToString(sum[:])
+	return hex.EncodeToString(sum[:]) == storedHash
+}
+
+func shouldUpgradePasswordHash(storedHash string) bool {
+	return !strings.HasPrefix(strings.TrimSpace(storedHash), "$2")
 }
 
 func validateRegisterInput(username string, password string, displayName string) error {

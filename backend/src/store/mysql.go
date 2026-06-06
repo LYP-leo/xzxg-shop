@@ -2,7 +2,11 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -140,6 +144,9 @@ func (s *MySQLStore) ensureAccessSchema(ctx context.Context) error {
 		{"accounts", "phone", "ALTER TABLE accounts ADD COLUMN phone VARCHAR(32) NOT NULL DEFAULT '' AFTER avatar_url"},
 		{"accounts", "email", "ALTER TABLE accounts ADD COLUMN email VARCHAR(128) NOT NULL DEFAULT '' AFTER phone"},
 		{"accounts", "deleted_at", "ALTER TABLE accounts ADD COLUMN deleted_at DATETIME NULL AFTER status"},
+		{"knowledge_documents", "source_url", "ALTER TABLE knowledge_documents ADD COLUMN source_url VARCHAR(1024) NOT NULL DEFAULT '' AFTER chunk_count"},
+		{"knowledge_documents", "content_hash", "ALTER TABLE knowledge_documents ADD COLUMN content_hash VARCHAR(64) NOT NULL DEFAULT '' AFTER source_url"},
+		{"knowledge_documents", "metadata_json", "ALTER TABLE knowledge_documents ADD COLUMN metadata_json JSON NULL AFTER content_hash"},
 	}
 	for _, column := range columns {
 		exists, err := s.columnExists(ctx, column.table, column.name)
@@ -205,6 +212,7 @@ func (s *MySQLStore) ensureAccessSchema(ctx context.Context) error {
 		{"orders", "uk_orders_order_no", "CREATE UNIQUE INDEX uk_orders_order_no ON orders (order_no)"},
 		{"orders", "idx_orders_payment_deadline_at", "CREATE INDEX idx_orders_payment_deadline_at ON orders (payment_deadline_at)"},
 		{"accounts", "idx_accounts_status", "CREATE INDEX idx_accounts_status ON accounts (status)"},
+		{"knowledge_documents", "idx_knowledge_documents_content_hash", "CREATE INDEX idx_knowledge_documents_content_hash ON knowledge_documents (content_hash)"},
 	}
 	for _, index := range indexes {
 		exists, err := s.indexExists(ctx, index.table, index.name)
@@ -392,12 +400,13 @@ func (s *MySQLStore) GetAccount(ctx context.Context, accountID string) (domain.A
 func (s *MySQLStore) GetAccountByToken(ctx context.Context, token string) (domain.Account, bool) {
 	var account domain.Account
 	var role string
+	tokenHash := authTokenHash(token)
 	err := s.db.QueryRowContext(ctx, `
 		SELECT a.account_id, a.username, a.display_name, a.avatar_url, a.phone, a.email, a.role, a.merchant_id, a.status, a.created_at
 		FROM auth_tokens t
 		JOIN accounts a ON a.account_id = t.account_id
-		WHERE t.token = ? AND t.expires_at > ? AND a.status IN ('active', 'risk')
-	`, token, time.Now()).Scan(
+		WHERE t.token IN (?, ?) AND t.expires_at > ? AND a.status IN ('active', 'risk')
+	`, tokenHash, strings.TrimSpace(token), time.Now()).Scan(
 		&account.AccountID,
 		&account.Username,
 		&account.DisplayName,
@@ -495,6 +504,22 @@ func (s *MySQLStore) CreateAccount(ctx context.Context, input domain.AccountCrea
 	return account, nil
 }
 
+func (s *MySQLStore) UpdateAccountPasswordHash(ctx context.Context, accountID string, passwordHash string) bool {
+	if strings.TrimSpace(accountID) == "" || strings.TrimSpace(passwordHash) == "" {
+		return false
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE accounts
+		SET password_hash = ?, updated_at = ?
+		WHERE account_id = ? AND status IN ('active', 'risk')
+	`, passwordHash, time.Now(), accountID)
+	if err != nil {
+		return false
+	}
+	affected, err := result.RowsAffected()
+	return err == nil && affected > 0
+}
+
 func (s *MySQLStore) UpdateAccountStatus(ctx context.Context, accountID string, status string) (domain.Account, bool) {
 	result, err := s.db.ExecContext(ctx, `UPDATE accounts SET status = ?, updated_at = ? WHERE account_id = ?`, status, time.Now(), accountID)
 	if err != nil {
@@ -561,7 +586,7 @@ func (s *MySQLStore) DeleteAuthToken(ctx context.Context, token string) bool {
 	if strings.TrimSpace(token) == "" {
 		return false
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM auth_tokens WHERE token = ?`, strings.TrimSpace(token))
+	_, err := s.db.ExecContext(ctx, `DELETE FROM auth_tokens WHERE token IN (?, ?)`, authTokenHash(token), strings.TrimSpace(token))
 	return err == nil
 }
 
@@ -610,11 +635,14 @@ func (s *MySQLStore) getAccountByID(ctx context.Context, accountID string) (doma
 }
 
 func (s *MySQLStore) CreateAuthToken(ctx context.Context, accountID string) (string, error) {
-	token := nextID("tok")
-	_, err := s.db.ExecContext(ctx, `
+	token, err := newAuthToken()
+	if err != nil {
+		return "", err
+	}
+	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO auth_tokens (token, account_id, created_at, expires_at)
 		VALUES (?, ?, ?, ?)
-	`, token, accountID, time.Now(), time.Now().Add(24*time.Hour))
+	`, authTokenHash(token), accountID, time.Now(), time.Now().Add(24*time.Hour))
 	if err != nil {
 		return "", fmt.Errorf("insert auth token: %w", err)
 	}
@@ -1312,6 +1340,46 @@ func (s *MySQLStore) ListAgentPromptsPage(ctx context.Context, page int, pageSiz
 	return scanAgentPrompts(rows), total
 }
 
+func (s *MySQLStore) GetActiveAgentPrompt(ctx context.Context, promptKey string) (domain.AgentPrompt, bool) {
+	promptKey = strings.TrimSpace(promptKey)
+	if promptKey == "" {
+		return domain.AgentPrompt{}, false
+	}
+	row := s.db.QueryRowContext(ctx, `
+		SELECT prompt_id, prompt_key, title, content, status, version,
+			COALESCE(description, ''), created_by, published_at, created_at, updated_at
+		FROM agent_prompts
+		WHERE prompt_key = ? AND status = 'active'
+		ORDER BY version DESC
+		LIMIT 1
+	`, promptKey)
+	var item domain.AgentPrompt
+	var publishedAt sql.NullTime
+	err := row.Scan(
+		&item.PromptID,
+		&item.PromptKey,
+		&item.Title,
+		&item.Content,
+		&item.Status,
+		&item.Version,
+		&item.Description,
+		&item.CreatedBy,
+		&publishedAt,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.AgentPrompt{}, false
+	}
+	if err != nil {
+		return domain.AgentPrompt{}, false
+	}
+	if publishedAt.Valid {
+		item.PublishedAt = publishedAt.Time
+	}
+	return item, true
+}
+
 func (s *MySQLStore) SaveAgentPromptDraft(ctx context.Context, input domain.AgentPromptInput) (domain.AgentPrompt, error) {
 	key := strings.TrimSpace(input.PromptKey)
 	content := strings.TrimSpace(input.Content)
@@ -1351,7 +1419,7 @@ func (s *MySQLStore) SaveAgentPromptDraft(ctx context.Context, input domain.Agen
 	return item, nil
 }
 
-func (s *MySQLStore) PublishAgentPrompt(ctx context.Context, promptKey string, publishedBy string, nacosDataID string) (domain.AgentPrompt, domain.AgentPromptPublishRecord, error) {
+func (s *MySQLStore) PublishAgentPrompt(ctx context.Context, promptKey string, publishedBy string, publishTarget string) (domain.AgentPrompt, domain.AgentPromptPublishRecord, error) {
 	promptKey = strings.TrimSpace(promptKey)
 	if promptKey == "" {
 		return domain.AgentPrompt{}, domain.AgentPromptPublishRecord{}, errors.New("prompt key is empty")
@@ -1389,20 +1457,20 @@ func (s *MySQLStore) PublishAgentPrompt(ctx context.Context, promptKey string, p
 		return domain.AgentPrompt{}, domain.AgentPromptPublishRecord{}, fmt.Errorf("activate prompt: %w", err)
 	}
 	record := domain.AgentPromptPublishRecord{
-		RecordID:    nextID("prmpub"),
-		PromptKey:   promptKey,
-		PromptID:    prompt.PromptID,
-		Version:     prompt.Version,
-		PublishedBy: publishedBy,
-		NacosDataID: emptyFallback(nacosDataID, "xzxg-shop-agent-prompts.json"),
-		CreatedAt:   now,
+		RecordID:      nextID("prmpub"),
+		PromptKey:     promptKey,
+		PromptID:      prompt.PromptID,
+		Version:       prompt.Version,
+		PublishedBy:   publishedBy,
+		PublishTarget: emptyFallback(publishTarget, "database"),
+		CreatedAt:     now,
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO agent_prompt_publish_records (
 			record_id, prompt_key, prompt_id, version, published_by, nacos_data_id, created_at
 		)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, record.RecordID, record.PromptKey, record.PromptID, record.Version, record.PublishedBy, record.NacosDataID, record.CreatedAt); err != nil {
+	`, record.RecordID, record.PromptKey, record.PromptID, record.Version, record.PublishedBy, record.PublishTarget, record.CreatedAt); err != nil {
 		return domain.AgentPrompt{}, domain.AgentPromptPublishRecord{}, fmt.Errorf("insert prompt publish record: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -1437,7 +1505,7 @@ func (s *MySQLStore) ListAgentPromptPublishRecords(ctx context.Context, promptKe
 	items := make([]domain.AgentPromptPublishRecord, 0)
 	for rows.Next() {
 		var item domain.AgentPromptPublishRecord
-		if err := rows.Scan(&item.RecordID, &item.PromptKey, &item.PromptID, &item.Version, &item.PublishedBy, &item.NacosDataID, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.RecordID, &item.PromptKey, &item.PromptID, &item.Version, &item.PublishedBy, &item.PublishTarget, &item.CreatedAt); err != nil {
 			return nil
 		}
 		items = append(items, item)
@@ -1479,37 +1547,30 @@ func (s *MySQLStore) ListCategories(ctx context.Context) []domain.Category {
 }
 
 func (s *MySQLStore) ListMerchants(ctx context.Context) []domain.Merchant {
-	rows, err := s.db.QueryContext(ctx, `
+	items, _ := s.queryMerchants(ctx, `
 		SELECT merchant_id, name, logo_url, description, service_phone, status
 		FROM merchants
 		WHERE status = 'active'
 		ORDER BY merchant_id
 	`)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-
-	items := make([]domain.Merchant, 0)
-	for rows.Next() {
-		var item domain.Merchant
-		if err := rows.Scan(&item.MerchantID, &item.Name, &item.LogoURL, &item.Description, &item.ServicePhone, &item.Status); err != nil {
-			return nil
-		}
-		items = append(items, item)
-	}
 	return items
 }
 
-func (s *MySQLStore) ListAllMerchantsPage(ctx context.Context, page int, pageSize int) ([]domain.Merchant, int) {
+func (s *MySQLStore) ListMerchantsPage(ctx context.Context, page int, pageSize int) ([]domain.Merchant, int) {
 	page, pageSize = normalizePage(page, pageSize)
-	total := s.countRows(ctx, "merchants")
-	rows, err := s.db.QueryContext(ctx, `
+	total := s.countRowsWhere(ctx, "merchants", "status = 'active'")
+	items, _ := s.queryMerchants(ctx, `
 		SELECT merchant_id, name, logo_url, description, service_phone, status
 		FROM merchants
+		WHERE status = 'active'
 		ORDER BY merchant_id
 		LIMIT ? OFFSET ?
 	`, pageSize, pageOffset(page, pageSize))
+	return items, total
+}
+
+func (s *MySQLStore) queryMerchants(ctx context.Context, query string, args ...any) ([]domain.Merchant, int) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, 0
 	}
@@ -1523,6 +1584,18 @@ func (s *MySQLStore) ListAllMerchantsPage(ctx context.Context, page int, pageSiz
 		}
 		items = append(items, item)
 	}
+	return items, len(items)
+}
+
+func (s *MySQLStore) ListAllMerchantsPage(ctx context.Context, page int, pageSize int) ([]domain.Merchant, int) {
+	page, pageSize = normalizePage(page, pageSize)
+	total := s.countRows(ctx, "merchants")
+	items, _ := s.queryMerchants(ctx, `
+		SELECT merchant_id, name, logo_url, description, service_phone, status
+		FROM merchants
+		ORDER BY merchant_id
+		LIMIT ? OFFSET ?
+	`, pageSize, pageOffset(page, pageSize))
 	return items, total
 }
 
@@ -1552,6 +1625,23 @@ func (s *MySQLStore) UpdateMerchantStatus(ctx context.Context, merchantID string
 }
 
 func (s *MySQLStore) ListProducts(ctx context.Context, keyword string, categoryID string) []domain.ProductCard {
+	query, args := productListQuery(keyword, categoryID)
+	query += " ORDER BY p.sort_order, p.product_id"
+	return s.queryProductCards(ctx, query, args...)
+}
+
+func (s *MySQLStore) ListProductsPage(ctx context.Context, keyword string, categoryID string, page int, pageSize int) ([]domain.ProductCard, int) {
+	page, pageSize = normalizePage(page, pageSize)
+	query, args := productListQuery(keyword, categoryID)
+	countQuery := strings.Replace(query, productCardSelect(), "SELECT COUNT(*)", 1)
+	total := 0
+	_ = s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total)
+	query += " ORDER BY p.sort_order, p.product_id LIMIT ? OFFSET ?"
+	args = append(args, pageSize, pageOffset(page, pageSize))
+	return s.queryProductCards(ctx, query, args...), total
+}
+
+func productListQuery(keyword string, categoryID string) (string, []any) {
 	args := make([]any, 0, 3)
 	query := productCardSelect() + ` WHERE ` + activeProductCardPredicate()
 	if categoryID != "" {
@@ -1570,8 +1660,7 @@ func (s *MySQLStore) ListProducts(ctx context.Context, keyword string, categoryI
 			query += ` AND (` + strings.Join(clauses, ` OR `) + `)`
 		}
 	}
-	query += " ORDER BY p.sort_order, p.product_id"
-	return s.queryProductCards(ctx, query, args...)
+	return query, args
 }
 
 func (s *MySQLStore) ListAllProducts(ctx context.Context) []domain.ProductCard {
@@ -2061,9 +2150,25 @@ func (s *MySQLStore) ListUserOrders(ctx context.Context, accountID string) []dom
 	return s.listOrders(ctx, "WHERE o.account_id = ?", accountID)
 }
 
+func (s *MySQLStore) ListUserOrdersPage(ctx context.Context, accountID string, page int, pageSize int) ([]domain.Order, int) {
+	s.ExpirePendingOrders(ctx)
+	page, pageSize = normalizePage(page, pageSize)
+	total := s.countRowsWhere(ctx, "orders", "account_id = ?", accountID)
+	items := s.listOrdersWithLimit(ctx, "WHERE o.account_id = ?", pageSize, pageOffset(page, pageSize), accountID)
+	return items, total
+}
+
 func (s *MySQLStore) ListMerchantOrders(ctx context.Context, merchantID string) []domain.Order {
 	s.ExpirePendingOrders(ctx)
 	return s.listOrders(ctx, "WHERE o.merchant_id = ?", merchantID)
+}
+
+func (s *MySQLStore) ListMerchantOrdersPage(ctx context.Context, merchantID string, page int, pageSize int) ([]domain.Order, int) {
+	s.ExpirePendingOrders(ctx)
+	page, pageSize = normalizePage(page, pageSize)
+	total := s.countRowsWhere(ctx, "orders", "merchant_id = ?", merchantID)
+	items := s.listOrdersWithLimit(ctx, "WHERE o.merchant_id = ?", pageSize, pageOffset(page, pageSize), merchantID)
+	return items, total
 }
 
 func (s *MySQLStore) ListAllOrders(ctx context.Context) []domain.Order {
@@ -2075,8 +2180,8 @@ func (s *MySQLStore) ListAllOrdersPage(ctx context.Context, page int, pageSize i
 	s.ExpirePendingOrders(ctx)
 	page, pageSize = normalizePage(page, pageSize)
 	total := s.countRows(ctx, "orders")
-	items := s.listOrders(ctx, "")
-	return paginateSlice(items, page, pageSize), total
+	items := s.listOrdersWithLimit(ctx, "", pageSize, pageOffset(page, pageSize))
+	return items, total
 }
 
 func (s *MySQLStore) GetOrder(ctx context.Context, accountID string, orderID string) (domain.Order, bool) {
@@ -2317,6 +2422,19 @@ func (s *MySQLStore) PreviewCartDiscount(ctx context.Context, accountID string) 
 }
 
 func (s *MySQLStore) ListPromotions(ctx context.Context, merchantID string) []domain.PromotionRule {
+	return s.queryPromotions(ctx, merchantID, 0, 0)
+}
+
+func (s *MySQLStore) ListPromotionsPage(ctx context.Context, merchantID string, page int, pageSize int) ([]domain.PromotionRule, int) {
+	page, pageSize = normalizePage(page, pageSize)
+	total := s.countRows(ctx, "promotion_rules")
+	if merchantID != "" {
+		total = s.countRowsWhere(ctx, "promotion_rules", "merchant_id = ?", merchantID)
+	}
+	return s.queryPromotions(ctx, merchantID, pageSize, pageOffset(page, pageSize)), total
+}
+
+func (s *MySQLStore) queryPromotions(ctx context.Context, merchantID string, limit int, offset int) []domain.PromotionRule {
 	query := `
 		SELECT promotion_id, name, scope, merchant_id, product_id, category_id, type, threshold_amount,
 			discount_amount, discount_rate, stackable, start_at, end_at, status, created_at, updated_at
@@ -2328,6 +2446,10 @@ func (s *MySQLStore) ListPromotions(ctx context.Context, merchantID string) []do
 		args = append(args, merchantID)
 	}
 	query += ` ORDER BY created_at DESC, promotion_id DESC`
+	if limit > 0 {
+		query += ` LIMIT ? OFFSET ?`
+		args = append(args, limit, offset)
+	}
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil
@@ -2455,6 +2577,12 @@ func (s *MySQLStore) ListCoupons(ctx context.Context, accountID string) []domain
 	return items
 }
 
+func (s *MySQLStore) ListCouponsPage(ctx context.Context, accountID string, page int, pageSize int) ([]domain.Coupon, int) {
+	items := s.ListCoupons(ctx, accountID)
+	total := len(items)
+	return paginateSlice(items, page, pageSize), total
+}
+
 func (s *MySQLStore) ListUserCoupons(ctx context.Context, accountID string) []domain.UserCoupon {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT uc.user_coupon_id, uc.coupon_id, uc.account_id, uc.status, uc.order_id, uc.claimed_at, uc.used_at,
@@ -2486,6 +2614,12 @@ func (s *MySQLStore) ListUserCoupons(ctx context.Context, accountID string) []do
 		items = append(items, item)
 	}
 	return items
+}
+
+func (s *MySQLStore) ListUserCouponsPage(ctx context.Context, accountID string, page int, pageSize int) ([]domain.UserCoupon, int) {
+	items := s.ListUserCoupons(ctx, accountID)
+	total := len(items)
+	return paginateSlice(items, page, pageSize), total
 }
 
 func (s *MySQLStore) ClaimCoupon(ctx context.Context, accountID string, couponID string) (domain.UserCoupon, bool) {
@@ -2542,6 +2676,12 @@ func (s *MySQLStore) ListProductReviews(ctx context.Context, productID string) [
 	return s.listReviews(ctx, "WHERE r.product_id = ? AND r.status = 'visible'", productID)
 }
 
+func (s *MySQLStore) ListProductReviewsPage(ctx context.Context, productID string, page int, pageSize int) ([]domain.ProductReview, int) {
+	page, pageSize = normalizePage(page, pageSize)
+	total := s.countRowsWhere(ctx, "product_reviews", "product_id = ? AND status = 'visible'", productID)
+	return s.listReviewsWithLimit(ctx, "WHERE r.product_id = ? AND r.status = 'visible'", pageSize, pageOffset(page, pageSize), productID), total
+}
+
 func (s *MySQLStore) CreateProductReview(ctx context.Context, accountID string, orderID string, orderItemID string, input domain.ProductReviewInput) (domain.ProductReview, bool) {
 	if input.Rating < 1 || input.Rating > 5 || strings.TrimSpace(input.Content) == "" {
 		return domain.ProductReview{}, false
@@ -2595,6 +2735,18 @@ func (s *MySQLStore) ListMerchantReviews(ctx context.Context, merchantID string)
 	return s.listReviews(ctx, "JOIN products p ON p.product_id = r.product_id WHERE p.merchant_id = ?", merchantID)
 }
 
+func (s *MySQLStore) ListMerchantReviewsPage(ctx context.Context, merchantID string, page int, pageSize int) ([]domain.ProductReview, int) {
+	page, pageSize = normalizePage(page, pageSize)
+	total := 0
+	_ = s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM product_reviews r
+		JOIN products p ON p.product_id = r.product_id
+		WHERE p.merchant_id = ?
+	`, merchantID).Scan(&total)
+	return s.listReviewsWithLimit(ctx, "JOIN products p ON p.product_id = r.product_id WHERE p.merchant_id = ?", pageSize, pageOffset(page, pageSize), merchantID), total
+}
+
 func (s *MySQLStore) ReplyReview(ctx context.Context, merchantID string, reviewID string, reply string) (domain.ProductReview, bool) {
 	reply = strings.TrimSpace(reply)
 	if reply == "" {
@@ -2626,6 +2778,12 @@ func (s *MySQLStore) ListAllReviews(ctx context.Context) []domain.ProductReview 
 	return s.listReviews(ctx, "")
 }
 
+func (s *MySQLStore) ListAllReviewsPage(ctx context.Context, page int, pageSize int) ([]domain.ProductReview, int) {
+	page, pageSize = normalizePage(page, pageSize)
+	total := s.countRows(ctx, "product_reviews")
+	return s.listReviewsWithLimit(ctx, "", pageSize, pageOffset(page, pageSize)), total
+}
+
 func (s *MySQLStore) UpdateReviewStatus(ctx context.Context, reviewID string, status string) (domain.ProductReview, bool) {
 	now := time.Now()
 	result, err := s.db.ExecContext(ctx, `UPDATE product_reviews SET status = ?, updated_at = ? WHERE review_id = ?`, status, now, reviewID)
@@ -2644,6 +2802,14 @@ func (s *MySQLStore) UpdateReviewStatus(ctx context.Context, reviewID string, st
 }
 
 func (s *MySQLStore) listReviews(ctx context.Context, where string, args ...any) []domain.ProductReview {
+	return s.listReviewsQuery(ctx, where, "", args...)
+}
+
+func (s *MySQLStore) listReviewsWithLimit(ctx context.Context, where string, limit int, offset int, args ...any) []domain.ProductReview {
+	return s.listReviewsQuery(ctx, where, " LIMIT ? OFFSET ?", append(args, limit, offset)...)
+}
+
+func (s *MySQLStore) listReviewsQuery(ctx context.Context, where string, suffix string, args ...any) []domain.ProductReview {
 	// 评价查询统一走这个方法，保证用户昵称、标签 JSON、商家回复时间等字段解析一致。
 	query := `
 		SELECT r.review_id, r.order_id, r.order_item_id, r.product_id, r.sku_id, r.account_id,
@@ -2656,6 +2822,7 @@ func (s *MySQLStore) listReviews(ctx context.Context, where string, args ...any)
 		query += " " + where
 	}
 	query += " ORDER BY r.created_at DESC, r.review_id DESC"
+	query += suffix
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil
@@ -2811,31 +2978,39 @@ func (s *MySQLStore) filterKnowledgeCandidatesByProductFacets(ctx context.Contex
 }
 
 func (s *MySQLStore) ListMerchantDocuments(ctx context.Context, merchantID string) []domain.KnowledgeDocument {
+	items, _ := s.ListMerchantDocumentsPage(ctx, merchantID, 1, 100)
+	return items
+}
+
+func (s *MySQLStore) ListMerchantDocumentsPage(ctx context.Context, merchantID string, page int, pageSize int) ([]domain.KnowledgeDocument, int) {
+	page, pageSize = normalizePage(page, pageSize)
+	total := s.countRowsWhere(ctx, "knowledge_documents", "merchant_id = ?", merchantID)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT document_id, merchant_id, title, doc_type, status, chunk_count, created_at
+		SELECT document_id, merchant_id, title, doc_type, status, chunk_count, source_url, content_hash, created_at
 		FROM knowledge_documents
 		WHERE merchant_id = ?
 		ORDER BY created_at DESC, document_id DESC
-	`, merchantID)
+		LIMIT ? OFFSET ?
+	`, merchantID, pageSize, pageOffset(page, pageSize))
 	if err != nil {
-		return nil
+		return nil, 0
 	}
 	defer rows.Close()
 
 	items := make([]domain.KnowledgeDocument, 0)
 	for rows.Next() {
 		var item domain.KnowledgeDocument
-		if err := rows.Scan(&item.DocumentID, &item.MerchantID, &item.Title, &item.DocType, &item.Status, &item.ChunkCount, &item.CreatedAt); err != nil {
-			return nil
+		if err := rows.Scan(&item.DocumentID, &item.MerchantID, &item.Title, &item.DocType, &item.Status, &item.ChunkCount, &item.SourceURL, &item.ContentHash, &item.CreatedAt); err != nil {
+			return nil, 0
 		}
 		items = append(items, item)
 	}
-	return items
+	return items, total
 }
 
 func (s *MySQLStore) ListAllDocuments(ctx context.Context) []domain.KnowledgeDocument {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT document_id, merchant_id, title, doc_type, status, chunk_count, created_at
+		SELECT document_id, merchant_id, title, doc_type, status, chunk_count, source_url, content_hash, created_at
 		FROM knowledge_documents
 		ORDER BY created_at DESC, document_id DESC
 	`)
@@ -2847,7 +3022,7 @@ func (s *MySQLStore) ListAllDocuments(ctx context.Context) []domain.KnowledgeDoc
 	items := make([]domain.KnowledgeDocument, 0)
 	for rows.Next() {
 		var item domain.KnowledgeDocument
-		if err := rows.Scan(&item.DocumentID, &item.MerchantID, &item.Title, &item.DocType, &item.Status, &item.ChunkCount, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.DocumentID, &item.MerchantID, &item.Title, &item.DocType, &item.Status, &item.ChunkCount, &item.SourceURL, &item.ContentHash, &item.CreatedAt); err != nil {
 			return nil
 		}
 		items = append(items, item)
@@ -2859,7 +3034,7 @@ func (s *MySQLStore) ListAllDocumentsPage(ctx context.Context, page int, pageSiz
 	page, pageSize = normalizePage(page, pageSize)
 	total := s.countRows(ctx, "knowledge_documents")
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT document_id, merchant_id, title, doc_type, status, chunk_count, created_at
+		SELECT document_id, merchant_id, title, doc_type, status, chunk_count, source_url, content_hash, created_at
 		FROM knowledge_documents
 		ORDER BY created_at DESC, document_id DESC
 		LIMIT ? OFFSET ?
@@ -2872,7 +3047,7 @@ func (s *MySQLStore) ListAllDocumentsPage(ctx context.Context, page int, pageSiz
 	items := make([]domain.KnowledgeDocument, 0)
 	for rows.Next() {
 		var item domain.KnowledgeDocument
-		if err := rows.Scan(&item.DocumentID, &item.MerchantID, &item.Title, &item.DocType, &item.Status, &item.ChunkCount, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.DocumentID, &item.MerchantID, &item.Title, &item.DocType, &item.Status, &item.ChunkCount, &item.SourceURL, &item.ContentHash, &item.CreatedAt); err != nil {
 			return nil, 0
 		}
 		items = append(items, item)
@@ -2881,36 +3056,83 @@ func (s *MySQLStore) ListAllDocumentsPage(ctx context.Context, page int, pageSiz
 }
 
 func (s *MySQLStore) CreateMerchantDocument(ctx context.Context, input domain.KnowledgeDocumentInput) (domain.KnowledgeDocument, error) {
+	input.Title = strings.TrimSpace(input.Title)
+	input.Content = strings.TrimSpace(input.Content)
+	input.DocType = strings.TrimSpace(input.DocType)
+	input.SourceURL = strings.TrimSpace(input.SourceURL)
+	input.ContentHash = strings.TrimSpace(input.ContentHash)
+	if input.ContentHash == "" {
+		input.ContentHash = contentHash(input.Content)
+	}
+	if input.ContentHash != "" && !input.ForceReindex {
+		if existing, ok := s.getKnowledgeDocumentByHash(ctx, input.MerchantID, input.ContentHash); ok {
+			return existing, nil
+		}
+	}
 	chunks := rag.SplitDocument(input.Title, input.Content, input.DocType)
 	if len(chunks) == 0 {
 		chunks = []rag.ChunkDraft{{Title: input.Title, Content: input.Content, Snippet: rag.Snippet(input.Content, rag.DefaultSnippetRunes), SortOrder: 10}}
 	}
-	document := domain.KnowledgeDocument{
-		DocumentID: nextID("doc"),
-		MerchantID: input.MerchantID,
-		Title:      input.Title,
-		DocType:    input.DocType,
-		Status:     "indexed",
-		ChunkCount: len(chunks),
-		CreatedAt:  time.Now(),
+	metadataJSON := "{}"
+	if len(input.Metadata) > 0 {
+		if data, err := json.Marshal(input.Metadata); err == nil {
+			metadataJSON = string(data)
+		}
 	}
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO knowledge_documents (document_id, merchant_id, title, doc_type, content, status, chunk_count, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, document.DocumentID, document.MerchantID, document.Title, document.DocType, input.Content, document.Status, document.ChunkCount, document.CreatedAt, document.CreatedAt)
+	now := time.Now()
+	document := domain.KnowledgeDocument{
+		DocumentID:  nextID("doc"),
+		MerchantID:  input.MerchantID,
+		Title:       input.Title,
+		DocType:     input.DocType,
+		Status:      "indexed",
+		ChunkCount:  len(chunks),
+		SourceURL:   input.SourceURL,
+		ContentHash: input.ContentHash,
+		CreatedAt:   now,
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.KnowledgeDocument{}, err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO knowledge_documents (
+			document_id, merchant_id, title, doc_type, content, status, chunk_count, source_url, content_hash, metadata_json, created_at, updated_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, document.DocumentID, document.MerchantID, document.Title, document.DocType, input.Content, document.Status, document.ChunkCount, document.SourceURL, document.ContentHash, metadataJSON, now, now)
 	if err != nil {
 		return domain.KnowledgeDocument{}, fmt.Errorf("insert knowledge document: %w", err)
 	}
 	for _, chunk := range chunks {
-		_, err = s.db.ExecContext(ctx, `
-			INSERT INTO knowledge_chunks (chunk_id, title, snippet, source, sort_order)
-			VALUES (?, ?, ?, ?, ?)
-		`, nextID("ck"), chunk.Title, chunk.Snippet, document.DocumentID, chunk.SortOrder)
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO knowledge_chunks (chunk_id, title, snippet, source, sort_order, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, nextID("ck"), chunk.Title, chunk.Snippet, document.DocumentID, chunk.SortOrder, now, now)
 		if err != nil {
 			return domain.KnowledgeDocument{}, fmt.Errorf("insert knowledge chunk: %w", err)
 		}
 	}
+	if err := tx.Commit(); err != nil {
+		return domain.KnowledgeDocument{}, err
+	}
 	return document, nil
+}
+
+func (s *MySQLStore) getKnowledgeDocumentByHash(ctx context.Context, merchantID string, hash string) (domain.KnowledgeDocument, bool) {
+	var item domain.KnowledgeDocument
+	err := s.db.QueryRowContext(ctx, `
+		SELECT document_id, merchant_id, title, doc_type, status, chunk_count, source_url, content_hash, created_at
+		FROM knowledge_documents
+		WHERE merchant_id = ? AND content_hash = ? AND content_hash <> ''
+		ORDER BY created_at DESC, document_id DESC
+		LIMIT 1
+	`, merchantID, hash).Scan(&item.DocumentID, &item.MerchantID, &item.Title, &item.DocType, &item.Status, &item.ChunkCount, &item.SourceURL, &item.ContentHash, &item.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.KnowledgeDocument{}, false
+	}
+	return item, err == nil
 }
 
 func (s *MySQLStore) CreateStoredFile(ctx context.Context, input domain.StoredFileInput) (domain.StoredFile, error) {
@@ -3136,6 +3358,18 @@ func paginateSlice[T any](items []T, page int, pageSize int) []T {
 func (s *MySQLStore) countRows(ctx context.Context, table string) int {
 	total := 0
 	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table).Scan(&total); err != nil {
+		return 0
+	}
+	return total
+}
+
+func (s *MySQLStore) countRowsWhere(ctx context.Context, table string, where string, args ...any) int {
+	total := 0
+	query := "SELECT COUNT(*) FROM " + table
+	if strings.TrimSpace(where) != "" {
+		query += " WHERE " + where
+	}
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&total); err != nil {
 		return 0
 	}
 	return total
@@ -3448,6 +3682,14 @@ func (s *MySQLStore) loadCart(ctx context.Context, accountID string) domain.Cart
 }
 
 func (s *MySQLStore) listOrders(ctx context.Context, where string, args ...any) []domain.Order {
+	return s.listOrdersQuery(ctx, where, "", args...)
+}
+
+func (s *MySQLStore) listOrdersWithLimit(ctx context.Context, where string, limit int, offset int, args ...any) []domain.Order {
+	return s.listOrdersQuery(ctx, where, " LIMIT ? OFFSET ?", append(args, limit, offset)...)
+}
+
+func (s *MySQLStore) listOrdersQuery(ctx context.Context, where string, suffix string, args ...any) []domain.Order {
 	query := `
 		SELECT
 			o.order_id, o.order_no, o.account_id, o.merchant_id, m.name, o.status,
@@ -3460,6 +3702,7 @@ func (s *MySQLStore) listOrders(ctx context.Context, where string, args ...any) 
 		query += " " + where
 	}
 	query += " ORDER BY o.created_at DESC, o.order_id DESC"
+	query += suffix
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil
@@ -4173,6 +4416,24 @@ func buildCategoryTree(categories []domain.Category) []domain.Category {
 
 func nextID(prefix string) string {
 	return fmt.Sprintf("%s_%d", prefix, time.Now().UnixNano())
+}
+
+func newAuthToken() (string, error) {
+	var bytes [32]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		return "", fmt.Errorf("generate auth token: %w", err)
+	}
+	return "tok_" + base64.RawURLEncoding.EncodeToString(bytes[:]), nil
+}
+
+func authTokenHash(token string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	return hex.EncodeToString(sum[:])
+}
+
+func contentHash(content string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(content)))
+	return hex.EncodeToString(sum[:])
 }
 
 func readMigrationFile() ([]byte, error) {

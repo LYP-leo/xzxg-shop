@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -85,7 +86,7 @@ func (s *Server) withAccessLog(next http.Handler) http.Handler {
 			"path", r.URL.Path,
 			"status", recorder.status,
 			"duration_ms", time.Since(startedAt).Milliseconds(),
-			"client_ip", clientIP(r),
+			"client_ip", s.clientIP(r),
 		)
 	})
 }
@@ -97,7 +98,7 @@ func (s *Server) withRateLimit(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		key := clientIP(r)
+		key := s.clientIP(r)
 		if account, ok := accountFromContext(r.Context()); ok {
 			// 登录后按角色+账号限流，未登录流量按客户端 IP 限流。
 			key = string(account.Role) + ":" + account.AccountID
@@ -231,17 +232,80 @@ func newRequestID() string {
 	return hex.EncodeToString(bytes[:])
 }
 
-func clientIP(r *http.Request) string {
-	// 部署在反向代理后时优先使用 X-Forwarded-For 的第一个 IP。
-	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-		parts := strings.Split(forwarded, ",")
-		return strings.TrimSpace(parts[0])
+func (s *Server) clientIP(r *http.Request) string {
+	remoteIP := remoteAddrIP(r.RemoteAddr)
+	if s.trustForwardedFor(r.Context(), remoteIP) {
+		// 只有请求来自可信代理时，才读取 X-Forwarded-For 的第一个 IP。
+		forwarded := r.Header.Get("X-Forwarded-For")
+		if forwarded != "" {
+			parts := strings.Split(forwarded, ",")
+			candidate := strings.TrimSpace(parts[0])
+			if net.ParseIP(candidate) != nil {
+				return candidate
+			}
+		}
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if remoteIP != "" {
+		return remoteIP
+	}
+	return r.RemoteAddr
+}
+
+func remoteAddrIP(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
 	if err == nil {
 		return host
 	}
-	return r.RemoteAddr
+	if net.ParseIP(remoteAddr) != nil {
+		return remoteAddr
+	}
+	return ""
+}
+
+func (s *Server) trustForwardedFor(ctx context.Context, remoteIP string) bool {
+	values := s.configs.GetMap(ctx)
+	if parseBoolString(values["http.trust_all_proxies"], false) {
+		return true
+	}
+	ip := net.ParseIP(remoteIP)
+	if ip == nil {
+		return false
+	}
+	for _, cidr := range strings.Split(values["http.trusted_proxy_cidrs"], ",") {
+		cidr = strings.TrimSpace(cidr)
+		if cidr == "" {
+			continue
+		}
+		if strings.Contains(cidr, "/") {
+			_, network, err := net.ParseCIDR(cidr)
+			if err == nil && network.Contains(ip) {
+				return true
+			}
+			continue
+		}
+		if trusted := net.ParseIP(cidr); trusted != nil && trusted.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseBoolString(value string, fallback bool) bool {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		switch value {
+		case "yes", "on", "enabled":
+			return true
+		case "no", "off", "disabled":
+			return false
+		}
+		return fallback
+	}
+	return parsed
 }
 
 func logAttrsForAccount(logger *slog.Logger, account domain.Account) *slog.Logger {
