@@ -34,13 +34,14 @@ public class PigGuideController {
     private final ApiClient api;
     private final FrameLayout root;
     private LinearLayout layer;
+    private FrameLayout bubbleWrap;
     private LinearLayout optionList;
     private float downRawX;
     private float downRawY;
     private float startX;
     private float startY;
     private boolean dragging;
-    private boolean expanded;
+    private boolean suggestionsVisible = true;
     private int requestSeq;
 
     public PigGuideController(Activity activity, ApiClient api, FrameLayout root) {
@@ -55,7 +56,7 @@ public class PigGuideController {
         }
         JSONArray fallback = fallbackSuggestions(page, context);
         ensureLayer(bottomMarginDp);
-        expanded = false;
+        suggestionsVisible = true;
         renderBubbles(fallback);
         int requestId = ++requestSeq;
         new Thread(() -> {
@@ -82,7 +83,7 @@ public class PigGuideController {
         layer.setClipChildren(false);
         layer.setClipToPadding(false);
 
-        FrameLayout bubbleWrap = new FrameLayout(activity);
+        bubbleWrap = new FrameLayout(activity);
         bubbleWrap.setClipChildren(false);
         bubbleWrap.setClipToPadding(false);
 
@@ -90,7 +91,7 @@ public class PigGuideController {
         optionList.setOrientation(LinearLayout.VERTICAL);
         optionList.setPadding(ShopUi.dp(activity, 10), ShopUi.dp(activity, 10), ShopUi.dp(activity, 10), ShopUi.dp(activity, 10));
         optionList.setBackground(ShopUi.rounded(BUBBLE_COLOR, ShopUi.dp(activity, 18)));
-        optionList.setElevation(ShopUi.dp(activity, 8));
+        optionList.setElevation(ShopUi.dp(activity, 2));
         FrameLayout.LayoutParams optionParams = new FrameLayout.LayoutParams(ShopUi.dp(activity, 214), -2, Gravity.BOTTOM | Gravity.RIGHT);
         optionParams.rightMargin = ShopUi.dp(activity, 10);
         bubbleWrap.addView(optionList, optionParams);
@@ -109,8 +110,8 @@ public class PigGuideController {
         pig.setImageResource(R.drawable.ic_pig_guide);
         pig.setScaleType(ImageView.ScaleType.FIT_CENTER);
         pig.setPadding(ShopUi.dp(activity, 5), ShopUi.dp(activity, 5), ShopUi.dp(activity, 5), ShopUi.dp(activity, 5));
-        pig.setBackground(ShopUi.rounded(Color.rgb(255, 214, 224), ShopUi.dp(activity, 29)));
-        pig.setElevation(ShopUi.dp(activity, 8));
+        pig.setBackground(ShopUi.rounded(Color.WHITE, ShopUi.dp(activity, 29)));
+        pig.setElevation(ShopUi.dp(activity, 4));
         pig.setOnTouchListener((view, event) -> handleDrag(event));
         layer.addView(pig, new LinearLayout.LayoutParams(ShopUi.dp(activity, 58), ShopUi.dp(activity, 58)));
 
@@ -144,7 +145,7 @@ public class PigGuideController {
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL:
                 if (!dragging && optionList != null) {
-                    expanded = !expanded;
+                    suggestionsVisible = !suggestionsVisible;
                     applyBubbleVisibility();
                 }
                 dragging = false;
@@ -190,12 +191,10 @@ public class PigGuideController {
     }
 
     private void applyBubbleVisibility() {
-        if (optionList == null) {
+        if (bubbleWrap == null) {
             return;
         }
-        for (int i = 0; i < optionList.getChildCount(); i++) {
-            optionList.getChildAt(i).setVisibility(expanded || i == 0 ? View.VISIBLE : View.GONE);
-        }
+        bubbleWrap.setVisibility(suggestionsVisible ? View.VISIBLE : View.GONE);
     }
 
     private List<String> questions(JSONArray suggestions) {
