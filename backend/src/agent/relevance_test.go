@@ -8,8 +8,14 @@ import (
 	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
 )
 
-func TestProductSearchRelevanceBlocksWeakNoInventoryCandidates(t *testing.T) {
-	runtime := &Runtime{configs: configcenter.NewMemoryCenter(configcenter.DefaultConfigs(""))}
+func TestProductSearchRelevanceBlocksWeakNoInventoryCandidatesWhenLexicalGuardEnabled(t *testing.T) {
+	configs := configcenter.NewMemoryCenter(configcenter.DefaultConfigs(""))
+	_, _ = configs.Upsert(context.Background(), domain.AppConfigInput{
+		ConfigKey:   "retrieval.product.lexical_guard.enabled",
+		ConfigValue: "true",
+		ValueType:   "bool",
+	})
+	runtime := &Runtime{configs: configs}
 	result := runtime.classifyProductSearchRelevance(context.Background(), "智能马桶 陶瓷 节水", []domain.ProductCard{
 		{
 			ProductID:     "p_digital_001",
@@ -70,7 +76,7 @@ func TestProductSearchRelevanceDropsStructuredNegativeBrand(t *testing.T) {
 		},
 	}, productSearchStructuredArguments{
 		Negative: productSearchArguments{Brands: []string{"苹果", "Apple"}},
-	})
+	}, nil)
 	if result.Status != relevanceOK {
 		t.Fatalf("status = %s, want %s; reason=%s", result.Status, relevanceOK, result.Reason)
 	}
@@ -79,6 +85,65 @@ func TestProductSearchRelevanceDropsStructuredNegativeBrand(t *testing.T) {
 	}
 	if len(result.DroppedProductIDs) != 1 || result.DroppedProductIDs[0] != "p_apple_mac" {
 		t.Fatalf("dropped product ids = %v, want p_apple_mac", result.DroppedProductIDs)
+	}
+}
+
+func TestProductSearchRerankPrioritizesStructuredConstraints(t *testing.T) {
+	runtime := &Runtime{configs: configcenter.NewMemoryCenter(configcenter.DefaultConfigs(""))}
+	result := runtime.rerankProductsForSearch(context.Background(), "华为电脑 笔记本", []domain.ProductCard{
+		{
+			ProductID:     "p_huawei_tablet",
+			Name:          "华为 MatePad Pro 平板电脑",
+			Brand:         "华为",
+			CategoryID:    "c_dataset_digital_tablet",
+			Tags:          []string{"平板电脑", "华为"},
+			SellingPoints: []string{"多任务办公"},
+		},
+		{
+			ProductID:     "p_huawei_pc",
+			Name:          "华为 MateBook 14 笔记本电脑",
+			Brand:         "华为",
+			CategoryID:    "c_dataset_digital_laptop",
+			Tags:          []string{"笔记本电脑", "华为"},
+			SellingPoints: []string{"轻薄办公"},
+		},
+	}, productSearchStructuredArguments{
+		Constraints: productSearchArguments{
+			Brands:     []string{"华为"},
+			Categories: []string{"笔记本电脑"},
+		},
+	}, nil)
+	if len(result.Products) != 2 {
+		t.Fatalf("products len = %d, want 2", len(result.Products))
+	}
+	if result.Products[0].ProductID != "p_huawei_pc" {
+		t.Fatalf("first product = %s, want p_huawei_pc; scores=%#v", result.Products[0].ProductID, result.Scores)
+	}
+}
+
+func TestProductSearchNegativeHardFilterRunsBeforeRerank(t *testing.T) {
+	products := []domain.ProductCard{
+		{
+			ProductID:     "p_apple_mac",
+			Name:          "Apple MacBook Air 笔记本电脑",
+			Brand:         "Apple 苹果",
+			Tags:          []string{"笔记本电脑", "Apple 苹果"},
+			SellingPoints: []string{"轻薄办公"},
+		},
+		{
+			ProductID:     "p_huawei_pc",
+			Name:          "华为 MateBook 14 笔记本电脑",
+			Brand:         "华为",
+			Tags:          []string{"笔记本电脑", "华为"},
+			SellingPoints: []string{"轻薄办公"},
+		},
+	}
+	allowed, dropped := filterProductsByStructuredNegative(products, productSearchArguments{Brands: []string{"苹果", "Apple"}})
+	if len(allowed) != 1 || allowed[0].ProductID != "p_huawei_pc" {
+		t.Fatalf("allowed = %v, want only p_huawei_pc", productCardIDs(allowed))
+	}
+	if len(dropped) != 1 || dropped[0] != "p_apple_mac" {
+		t.Fatalf("dropped = %v, want p_apple_mac", dropped)
 	}
 }
 

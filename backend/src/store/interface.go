@@ -56,6 +56,7 @@ type Store interface {
 
 	// 商品、类目、商家和 SKU。
 	SearchProducts(ctx context.Context, query string) []domain.ProductCard
+	SearchProductsLimit(ctx context.Context, query string, vectorLimit int) []domain.ProductCard
 	ListCategories(ctx context.Context) []domain.Category
 	ListMerchants(ctx context.Context) []domain.Merchant
 	ListMerchantsPage(ctx context.Context, page int, pageSize int) ([]domain.Merchant, int)

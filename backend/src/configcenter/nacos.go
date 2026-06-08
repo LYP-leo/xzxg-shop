@@ -49,9 +49,10 @@ func NewNacosCenter(baseURL string, namespace string, group string, dataID strin
 		group:        strings.TrimSpace(group),
 		legacyDataID: strings.TrimSpace(dataID),
 		dataIDs: map[string]string{
-			"app":   "xzxg-shop-app-config.json",
-			"rag":   "xzxg-shop-rag-config.json",
-			"infra": "xzxg-shop-infra-config.json",
+			"app":    "xzxg-shop-app-config.json",
+			"rag":    "xzxg-shop-rag-config.json",
+			"infra":  "xzxg-shop-infra-config.json",
+			"prompt": "xzxg-shop-prompt-config.json",
 		},
 		client:   &http.Client{Timeout: 3 * time.Second},
 		fallback: NewMemoryCenter(defaults),

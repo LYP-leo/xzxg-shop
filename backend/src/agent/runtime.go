@@ -353,6 +353,7 @@ func (r *Runtime) plan(ctx context.Context, run domain.AgentRun, query string) r
 // route 和 intent 都由 planner 模型决定；代码只负责白名单归一化，不用关键词抢路由。
 func (r *Runtime) classifyIntent(ctx context.Context, run domain.AgentRun, query string, recordTrace bool) runPlan {
 	fallback := defaultPlannerFallback(r.llm.SmallModel())
+	r.refreshDynamicConfig(ctx)
 	if !r.llm.Enabled() {
 		return fallback
 	}

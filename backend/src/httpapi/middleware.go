@@ -94,7 +94,7 @@ func (s *Server) withAccessLog(next http.Handler) http.Handler {
 func (s *Server) withRateLimit(next http.Handler) http.Handler {
 	limiter := newRateLimiter(120, time.Minute)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodOptions || r.URL.Path == "/api/v1/health" {
+		if r.Method == http.MethodOptions || r.URL.Path == "/api/v1/health" || strings.HasPrefix(r.URL.Path, "/api/v1/eval/") {
 			next.ServeHTTP(w, r)
 			return
 		}
