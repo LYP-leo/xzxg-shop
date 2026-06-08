@@ -2419,7 +2419,9 @@ public class ChatActivity extends BaseShopActivity {
         renderItemRefs(rendered.itemIds, chatList);
         saveAssistantTurnForActiveStream(ownerLocalSessionId, visibleMarkdown, activeAssistantBlocks.toString(), activeFollowups.toString(), activeAssistantSegments.toString(), "completed");
         enqueueSessionSync(ownerLocalSessionId, streamController.activeServerSessionId(), streamController.activeTitle(), visibleMarkdown);
-        speakAssistantReply(visibleMarkdown);
+        if (activeAssistantMessageBubble != null) {
+            addTtsButtonToBubble(activeAssistantMessageBubble, visibleMarkdown);
+        }
         activeAssistantMarkdown = null;
         activeAssistantFullMarkdown = null;
         activeAssistantFormMode = false;
@@ -2469,19 +2471,49 @@ public class ChatActivity extends BaseShopActivity {
     }
 
     private void speakAssistantReply(String markdown) {
+        speakAssistantReply(markdown, null);
+    }
+
+    private void speakAssistantReply(String markdown, TextView trigger) {
         String text = ttsText(markdown);
         if (text.isEmpty() || sessionStore.token().isEmpty()) {
+            if (trigger != null) {
+                trigger.setEnabled(true);
+                trigger.setText("🔊");
+            }
             return;
+        }
+        if (trigger != null) {
+            trigger.setEnabled(false);
+            trigger.setText("…");
         }
         new Thread(() -> {
             try {
                 ApiClient.TtsAudio audio = api.synthesizeSpeech(text);
                 if (audio.data.length == 0) {
+                    if (trigger != null) {
+                        runOnUiThread(() -> {
+                            trigger.setEnabled(true);
+                            trigger.setText("🔊");
+                        });
+                    }
                     return;
                 }
                 File file = writeTtsFile(audio);
-                runOnUiThread(() -> playTtsFile(file));
+                runOnUiThread(() -> {
+                    if (trigger != null) {
+                        trigger.setEnabled(true);
+                        trigger.setText("🔊");
+                    }
+                    playTtsFile(file);
+                });
             } catch (Exception ignored) {
+                if (trigger != null) {
+                    runOnUiThread(() -> {
+                        trigger.setEnabled(true);
+                        trigger.setText("🔊");
+                    });
+                }
             }
         }).start();
     }
@@ -4047,6 +4079,44 @@ public class ChatActivity extends BaseShopActivity {
         if (activeAssistantMessageBubble != null) {
             enableCopy(activeAssistantMessageBubble, markdown);
         }
+    }
+
+    private void addTtsButtonToBubble(LinearLayout bubble, String markdown) {
+        if (bubble == null || ttsText(markdown).isEmpty()) {
+            return;
+        }
+        if (hasTtsButton(bubble)) {
+            return;
+        }
+        TextView button = ttsButton(markdown);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(34), dp(30));
+        params.gravity = Gravity.RIGHT;
+        params.topMargin = dp(2);
+        bubble.addView(button, params);
+        scrollBottom();
+    }
+
+    private boolean hasTtsButton(ViewGroup parent) {
+        for (int i = 0; i < parent.getChildCount(); i++) {
+            Object tag = parent.getChildAt(i).getTag();
+            if ("assistant_tts_button".equals(tag)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private TextView ttsButton(String markdown) {
+        TextView button = new TextView(this);
+        button.setTag("assistant_tts_button");
+        button.setText("🔊");
+        button.setTextSize(15);
+        button.setGravity(Gravity.CENTER);
+        button.setIncludeFontPadding(false);
+        button.setTextColor(Color.rgb(31, 41, 55));
+        button.setBackground(rounded(Color.rgb(243, 244, 246), dp(15)));
+        button.setOnClickListener(v -> speakAssistantReply(markdown, (TextView) v));
+        return button;
     }
 
     private void navigateRoute(String route) {
