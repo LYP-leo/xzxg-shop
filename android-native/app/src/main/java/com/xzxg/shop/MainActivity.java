@@ -4830,11 +4830,10 @@ public class MainActivity extends Activity {
         bubbleParams.rightMargin = dp(8);
         pigGuideLayer.addView(pigGuideBubbleList, bubbleParams);
 
-        TextView pig = new TextView(this);
-        pig.setText("\uD83D\uDC37");
-        pig.setTextSize(28);
-        pig.setGravity(Gravity.CENTER);
-        pig.setIncludeFontPadding(false);
+        ImageView pig = new ImageView(this);
+        pig.setImageResource(R.drawable.ic_pig_guide);
+        pig.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        pig.setPadding(dp(5), dp(5), dp(5), dp(5));
         pig.setBackground(rounded(Color.rgb(255, 214, 224), dp(29)));
         pig.setElevation(dp(8));
         pig.setOnTouchListener((view, event) -> handlePigGuideDrag(event));
