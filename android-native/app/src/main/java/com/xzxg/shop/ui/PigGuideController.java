@@ -7,7 +7,10 @@ import com.xzxg.shop.network.ApiClient;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Path;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -25,11 +28,13 @@ import java.util.List;
 import java.util.Set;
 
 public class PigGuideController {
+    private static final int BUBBLE_COLOR = Color.WHITE;
+
     private final Activity activity;
     private final ApiClient api;
     private final FrameLayout root;
     private LinearLayout layer;
-    private LinearLayout bubbleList;
+    private LinearLayout optionList;
     private float downRawX;
     private float downRawY;
     private float startX;
@@ -77,12 +82,28 @@ public class PigGuideController {
         layer.setClipChildren(false);
         layer.setClipToPadding(false);
 
-        bubbleList = new LinearLayout(activity);
-        bubbleList.setOrientation(LinearLayout.VERTICAL);
-        bubbleList.setGravity(Gravity.RIGHT);
-        LinearLayout.LayoutParams bubbleParams = new LinearLayout.LayoutParams(ShopUi.dp(activity, 214), -2);
-        bubbleParams.rightMargin = ShopUi.dp(activity, 8);
-        layer.addView(bubbleList, bubbleParams);
+        FrameLayout bubbleWrap = new FrameLayout(activity);
+        bubbleWrap.setClipChildren(false);
+        bubbleWrap.setClipToPadding(false);
+
+        optionList = new LinearLayout(activity);
+        optionList.setOrientation(LinearLayout.VERTICAL);
+        optionList.setPadding(ShopUi.dp(activity, 10), ShopUi.dp(activity, 10), ShopUi.dp(activity, 10), ShopUi.dp(activity, 10));
+        optionList.setBackground(ShopUi.rounded(BUBBLE_COLOR, ShopUi.dp(activity, 18)));
+        optionList.setElevation(ShopUi.dp(activity, 8));
+        FrameLayout.LayoutParams optionParams = new FrameLayout.LayoutParams(ShopUi.dp(activity, 214), -2, Gravity.BOTTOM | Gravity.RIGHT);
+        optionParams.rightMargin = ShopUi.dp(activity, 10);
+        bubbleWrap.addView(optionList, optionParams);
+
+        BubbleTailView tail = new BubbleTailView(activity);
+        FrameLayout.LayoutParams tailParams = new FrameLayout.LayoutParams(ShopUi.dp(activity, 34), ShopUi.dp(activity, 30), Gravity.RIGHT | Gravity.BOTTOM);
+        tailParams.rightMargin = -ShopUi.dp(activity, 4);
+        tailParams.bottomMargin = ShopUi.dp(activity, 22);
+        bubbleWrap.addView(tail, tailParams);
+
+        LinearLayout.LayoutParams bubbleParams = new LinearLayout.LayoutParams(ShopUi.dp(activity, 230), -2);
+        bubbleParams.rightMargin = ShopUi.dp(activity, 2);
+        layer.addView(bubbleWrap, bubbleParams);
 
         ImageView pig = new ImageView(activity);
         pig.setImageResource(R.drawable.ic_pig_guide);
@@ -93,7 +114,7 @@ public class PigGuideController {
         pig.setOnTouchListener((view, event) -> handleDrag(event));
         layer.addView(pig, new LinearLayout.LayoutParams(ShopUi.dp(activity, 58), ShopUi.dp(activity, 58)));
 
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(ShopUi.dp(activity, 280), -2, Gravity.RIGHT | Gravity.BOTTOM);
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(ShopUi.dp(activity, 300), -2, Gravity.RIGHT | Gravity.BOTTOM);
         params.rightMargin = ShopUi.dp(activity, 16);
         params.bottomMargin = ShopUi.dp(activity, bottomMarginDp);
         root.addView(layer, params);
@@ -122,7 +143,7 @@ public class PigGuideController {
                 return true;
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL:
-                if (!dragging && bubbleList != null) {
+                if (!dragging && optionList != null) {
                     expanded = !expanded;
                     applyBubbleVisibility();
                 }
@@ -144,24 +165,23 @@ public class PigGuideController {
     }
 
     private void renderBubbles(JSONArray suggestions) {
-        if (bubbleList == null) {
+        if (optionList == null) {
             return;
         }
-        bubbleList.removeAllViews();
+        optionList.removeAllViews();
         for (String question : questions(suggestions)) {
-            TextView bubble = new TextView(activity);
-            bubble.setText(question);
-            bubble.setTextSize(13);
-            bubble.setTextColor(Color.rgb(31, 41, 55));
-            bubble.setGravity(Gravity.CENTER_VERTICAL);
-            bubble.setMaxLines(2);
-            bubble.setPadding(ShopUi.dp(activity, 12), ShopUi.dp(activity, 8), ShopUi.dp(activity, 12), ShopUi.dp(activity, 8));
-            bubble.setBackground(ShopUi.rounded(Color.WHITE, ShopUi.dp(activity, 16)));
-            bubble.setElevation(ShopUi.dp(activity, 4));
-            bubble.setOnClickListener(v -> openChatWithQuestion(((TextView) v).getText().toString()));
+            TextView option = new TextView(activity);
+            option.setText(question);
+            option.setTextSize(13);
+            option.setTextColor(Color.rgb(31, 41, 55));
+            option.setGravity(Gravity.CENTER_VERTICAL);
+            option.setMaxLines(2);
+            option.setPadding(ShopUi.dp(activity, 12), ShopUi.dp(activity, 8), ShopUi.dp(activity, 12), ShopUi.dp(activity, 8));
+            option.setBackground(ShopUi.rounded(Color.rgb(248, 249, 251), ShopUi.dp(activity, 14)));
+            option.setOnClickListener(v -> openChatWithQuestion(((TextView) v).getText().toString()));
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
-            params.setMargins(0, 0, 0, ShopUi.dp(activity, 8));
-            bubbleList.addView(bubble, params);
+            params.setMargins(0, 0, 0, optionList.getChildCount() == 2 ? 0 : ShopUi.dp(activity, 7));
+            optionList.addView(option, params);
         }
         applyBubbleVisibility();
         if (layer != null) {
@@ -170,11 +190,11 @@ public class PigGuideController {
     }
 
     private void applyBubbleVisibility() {
-        if (bubbleList == null) {
+        if (optionList == null) {
             return;
         }
-        for (int i = 0; i < bubbleList.getChildCount(); i++) {
-            bubbleList.getChildAt(i).setVisibility(expanded || i == 0 ? View.VISIBLE : View.GONE);
+        for (int i = 0; i < optionList.getChildCount(); i++) {
+            optionList.getChildAt(i).setVisibility(expanded || i == 0 ? View.VISIBLE : View.GONE);
         }
     }
 
@@ -245,5 +265,32 @@ public class PigGuideController {
         Intent intent = new Intent(activity, ChatActivity.class);
         intent.putExtra(Routes.EXTRA_INITIAL_QUESTION, value);
         activity.startActivity(intent);
+    }
+
+    private static class BubbleTailView extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path path = new Path();
+
+        BubbleTailView(Activity activity) {
+            super(activity);
+            paint.setColor(Color.rgb(232, 76, 137));
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(ShopUi.dp(activity, 2));
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStrokeJoin(Paint.Join.ROUND);
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            float w = getWidth();
+            float h = getHeight();
+            path.reset();
+            path.moveTo(w * 0.08f, h * 0.25f);
+            path.cubicTo(w * 0.42f, h * 0.26f, w * 0.48f, h * 0.72f, w * 0.9f, h * 0.62f);
+            canvas.drawPath(path, paint);
+            canvas.drawLine(w * 0.9f, h * 0.62f, w * 0.72f, h * 0.5f, paint);
+            canvas.drawLine(w * 0.9f, h * 0.62f, w * 0.76f, h * 0.78f, paint);
+        }
     }
 }
