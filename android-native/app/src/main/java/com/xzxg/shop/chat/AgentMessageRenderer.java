@@ -724,10 +724,14 @@ public class AgentMessageRenderer {
 
     private String thinkingStageTitle(String stage, String fallback) {
         if (fallback != null && !fallback.trim().isEmpty()) {
-            return fallback.trim();
+            String value = fallback.trim();
+            if (value.contains("买手") || value.contains("经验")) {
+                return "查询商品与资料";
+            }
+            return value;
         }
         if ("buyer_experience".equals(stage)) {
-            return "查询买手团经验";
+            return "查询商品与资料";
         }
         if ("answer_summary".equals(stage)) {
             return "总结答案";

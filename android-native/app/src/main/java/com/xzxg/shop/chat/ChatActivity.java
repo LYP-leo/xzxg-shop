@@ -2988,9 +2988,9 @@ public class ChatActivity extends BaseShopActivity {
             userNeed.text.append("已理解用户本轮导购需求。");
         }
 
-        ThinkingStageState buyerExperience = ensureThinkingStage(thinking, "buyer_experience");
-        buyerExperience.status = "completed";
-        buyerExperience.text.append(fallbackBuyerExperienceText());
+        ThinkingStageState retrieval = ensureThinkingStage(thinking, "buyer_experience");
+        retrieval.status = "completed";
+        retrieval.text.append(fallbackRetrievalText());
 
         ThinkingStageState answerSummary = ensureThinkingStage(thinking, "answer_summary");
         answerSummary.status = "running";
@@ -3000,9 +3000,9 @@ public class ChatActivity extends BaseShopActivity {
         renderThinkingView(thinking);
     }
 
-    private String fallbackBuyerExperienceText() {
+    private String fallbackRetrievalText() {
         if (pendingThinkingStatuses.isEmpty()) {
-            return "已结合商品库、知识库和可用经验信息进行筛选，优先按需求匹配度、价格带和库存状态整理推荐。";
+            return "已结合商品库和知识库进行检索，优先按需求匹配度、价格带和库存状态整理推荐。";
         }
         StringBuilder builder = new StringBuilder("处理过程：");
         for (int i = 0; i < pendingThinkingStatuses.size(); i++) {
@@ -3309,7 +3309,7 @@ public class ChatActivity extends BaseShopActivity {
                 if (item == null) {
                     continue;
                 }
-                LinearLayout card = thinkingExperienceCard(item);
+                LinearLayout card = thinkingRetrievalCard(item);
                 LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(190), -2);
                 params.setMargins(0, dp(6), dp(10), 0);
                 cards.addView(card, params);
@@ -3319,12 +3319,12 @@ public class ChatActivity extends BaseShopActivity {
         }
     }
 
-    private LinearLayout thinkingExperienceCard(JSONObject item) {
+    private LinearLayout thinkingRetrievalCard(JSONObject item) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(12), dp(10), dp(12), dp(10));
         card.setBackground(rounded(Color.rgb(248, 249, 251), dp(10)));
-        TextView title = strong(item.optString("title", item.optString("name", "买手经验")));
+        TextView title = strong(item.optString("title", item.optString("name", "检索结果")));
         title.setTextSize(14);
         card.addView(title, new LinearLayout.LayoutParams(-1, -2));
         String summaryText = item.optString("summary",
@@ -3506,8 +3506,15 @@ public class ChatActivity extends BaseShopActivity {
     }
 
     private String thinkingStageTitle(String stage, String fallback) {
+        if (fallback != null && !fallback.trim().isEmpty()) {
+            String value = fallback.trim();
+            if (value.contains("买手") || value.contains("经验")) {
+                return "查询商品与资料";
+            }
+            return value;
+        }
         if ("buyer_experience".equals(stage)) {
-            return "查询买手团经验";
+            return "查询商品与资料";
         }
         if ("answer_summary".equals(stage)) {
             return "总结答案";
