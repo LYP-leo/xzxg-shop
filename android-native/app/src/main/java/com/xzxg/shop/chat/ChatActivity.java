@@ -19,6 +19,7 @@ import com.xzxg.shop.storage.LocalChatStore;
 import com.xzxg.shop.storage.SessionStore;
 import com.xzxg.shop.ui.BottomSheetHelper;
 import com.xzxg.shop.ui.ImageLoader;
+import com.xzxg.shop.ui.MainNavigationDrawer;
 import com.xzxg.shop.ui.MarkdownRenderer;
 import com.xzxg.shop.ui.ShopUi;
 import com.xzxg.shop.ui.TopBarHelper;
@@ -293,6 +294,30 @@ public class ChatActivity extends BaseShopActivity {
 
     private boolean handleInitialRoute(Intent intent) {
         String initialRoute = intent == null ? "" : intent.getStringExtra(Routes.EXTRA_ROUTE);
+        if (Routes.CHAT.equals(initialRoute)) {
+            if (intent.getBooleanExtra(Routes.EXTRA_NEW_CHAT, false)) {
+                persistAndCancelActiveStreamForNavigation();
+                createFreshLocalSession();
+                renderChatHome();
+                loadHomeCopy();
+                validateStoredToken();
+                return true;
+            }
+            String targetLocalSessionId = intent.getStringExtra(Routes.EXTRA_LOCAL_SESSION_ID);
+            String targetServerSessionId = intent.getStringExtra(Routes.EXTRA_SERVER_SESSION_ID);
+            if (targetLocalSessionId != null && !targetLocalSessionId.trim().isEmpty()) {
+                persistAndCancelActiveStreamForNavigation();
+                localSessionId = targetLocalSessionId.trim();
+                serverSessionId = targetServerSessionId == null ? "" : targetServerSessionId.trim();
+                renderChatHome();
+                loadHomeCopy();
+                validateStoredToken();
+                if (!serverSessionId.isEmpty() && !chatStore.hasMessages(localSessionId)) {
+                    loadRemoteSessionDetail(serverSessionId, localSessionId);
+                }
+                return true;
+            }
+        }
         if (Routes.CART.equals(initialRoute)) {
             persistAndCancelActiveStreamForNavigation();
             renderChatHome();
@@ -362,6 +387,9 @@ public class ChatActivity extends BaseShopActivity {
 
     @Override
     public void onBackPressed() {
+        if (MainNavigationDrawer.closeIfOpen(root)) {
+            return;
+        }
         if (drawerLayer != null) {
             closeDrawerAnimated();
             return;
@@ -1467,6 +1495,14 @@ public class ChatActivity extends BaseShopActivity {
         hideKeyboard();
         if (sessionStore.token().isEmpty()) {
             openLoginPage();
+            return;
+        }
+        if (root != null) {
+            MainNavigationDrawer.show(this, root, Routes.CHAT, route -> {
+                if (!Routes.CHAT.equals(route)) {
+                    persistAndCancelActiveStreamForNavigation();
+                }
+            });
             return;
         }
         if (drawerLayer != null) {

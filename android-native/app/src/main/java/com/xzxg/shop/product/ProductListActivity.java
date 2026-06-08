@@ -77,6 +77,14 @@ public class ProductListActivity extends BaseShopActivity {
         renderProductsTab(activeProductTab, false);
     }
 
+    @Override
+    public void onBackPressed() {
+        if (MainNavigationDrawer.closeIfOpen(root)) {
+            return;
+        }
+        super.onBackPressed();
+    }
+
     private void renderProductsTab(String tab, boolean restoreScroll) {
         activeProductTab = tab == null || tab.isEmpty() ? "list" : tab;
         root = new FrameLayout(this);

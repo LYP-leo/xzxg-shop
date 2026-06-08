@@ -43,6 +43,14 @@ public class OrderListActivity extends BaseShopActivity {
         renderOrders();
     }
 
+    @Override
+    public void onBackPressed() {
+        if (MainNavigationDrawer.closeIfOpen(root)) {
+            return;
+        }
+        super.onBackPressed();
+    }
+
     private void renderOrders() {
         root = new FrameLayout(this);
         root.setBackgroundColor(BG_COLOR);

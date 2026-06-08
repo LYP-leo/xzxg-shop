@@ -7,6 +7,9 @@ public final class Routes {
     public static final String EXTRA_PRODUCT_TAB = "product_tab";
     public static final String EXTRA_CHECKOUT_DRAFT_ID = "checkout_draft_id";
     public static final String EXTRA_INITIAL_QUESTION = "initial_question";
+    public static final String EXTRA_LOCAL_SESSION_ID = "local_session_id";
+    public static final String EXTRA_SERVER_SESSION_ID = "server_session_id";
+    public static final String EXTRA_NEW_CHAT = "new_chat";
 
     public static final String CHAT = "chat";
     public static final String LOGIN = "login";
