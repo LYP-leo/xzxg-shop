@@ -34,6 +34,17 @@ public final class NavigationHelper {
         return true;
     }
 
+    public static boolean navigateMainRoute(Activity activity, String route) {
+        Intent intent = intentForRoute(activity, route);
+        if (intent == null) {
+            Toast.makeText(activity, "暂不支持该跳转", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+        intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        activity.startActivity(intent);
+        return true;
+    }
+
     private static String activityClassName(Context context, String route) {
         String packageName = context.getPackageName();
         if (Routes.CHAT.equals(route)) {

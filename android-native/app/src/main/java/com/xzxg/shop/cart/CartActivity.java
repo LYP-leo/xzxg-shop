@@ -1,8 +1,9 @@
 package com.xzxg.shop.cart;
 
 import com.xzxg.shop.base.BaseShopActivity;
+import com.xzxg.shop.navigation.NavigationHelper;
 import com.xzxg.shop.navigation.Routes;
-import com.xzxg.shop.product.ProductListActivity;
+import com.xzxg.shop.ui.MainNavigationDrawer;
 import com.xzxg.shop.ui.PigGuideController;
 import com.xzxg.shop.ui.ShopUi;
 import com.xzxg.shop.ui.TopBarHelper;
@@ -94,7 +95,7 @@ public class CartActivity extends BaseShopActivity {
             removeCartCheckoutBar();
             page.addView(ShopUi.card(this, "购物车为空", "可以先去商品页添加商品。"));
             Button goProducts = ShopUi.primaryButton(this, "去逛商品");
-            goProducts.setOnClickListener(v -> startActivity(new Intent(this, ProductListActivity.class)));
+            goProducts.setOnClickListener(v -> NavigationHelper.navigateMainRoute(this, Routes.PRODUCTS));
             page.addView(goProducts, new LinearLayout.LayoutParams(-1, ShopUi.dp(this, 52)));
             return;
         }
@@ -332,6 +333,6 @@ public class CartActivity extends BaseShopActivity {
     }
 
     private View createBackTopBar(String titleText) {
-        return TopBarHelper.backBar(this, BG_COLOR, titleText, null);
+        return TopBarHelper.menuBar(this, BG_COLOR, titleText, () -> MainNavigationDrawer.show(this, root, Routes.CART));
     }
 }

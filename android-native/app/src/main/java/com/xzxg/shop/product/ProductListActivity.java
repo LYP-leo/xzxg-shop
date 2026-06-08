@@ -2,10 +2,10 @@ package com.xzxg.shop.product;
 
 import com.xzxg.shop.account.LoginActivity;
 import com.xzxg.shop.base.BaseShopActivity;
-import com.xzxg.shop.cart.CartActivity;
 import com.xzxg.shop.navigation.Routes;
 import com.xzxg.shop.network.ApiClient;
 import com.xzxg.shop.ui.BottomSheetHelper;
+import com.xzxg.shop.ui.MainNavigationDrawer;
 import com.xzxg.shop.ui.PigGuideController;
 import com.xzxg.shop.ui.ShopUi;
 import com.xzxg.shop.ui.TopBarHelper;
@@ -716,7 +716,7 @@ public class ProductListActivity extends BaseShopActivity {
     }
 
     private View createTopBar(String titleText) {
-        return TopBarHelper.backBar(this, BG_COLOR, titleText, null);
+        return TopBarHelper.menuBar(this, BG_COLOR, titleText, () -> MainNavigationDrawer.show(this, root, Routes.PRODUCTS));
     }
 
     private void openProductDetailActivity(String productId) {
@@ -731,7 +731,7 @@ public class ProductListActivity extends BaseShopActivity {
     }
 
     private void openLegacyCartPage() {
-        startActivity(new Intent(this, CartActivity.class));
+        com.xzxg.shop.navigation.NavigationHelper.navigateMainRoute(this, Routes.CART);
     }
 
     private JSONObject productGuideContext() {

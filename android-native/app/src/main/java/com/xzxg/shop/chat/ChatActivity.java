@@ -9,13 +9,11 @@ import com.xzxg.shop.account.AccountUi;
 import com.xzxg.shop.account.EditProfileActivity;
 import com.xzxg.shop.account.LoginActivity;
 import com.xzxg.shop.base.BaseShopActivity;
-import com.xzxg.shop.cart.CartActivity;
 import com.xzxg.shop.coupon.CouponActivity;
+import com.xzxg.shop.navigation.NavigationHelper;
 import com.xzxg.shop.navigation.Routes;
 import com.xzxg.shop.network.ApiClient;
-import com.xzxg.shop.order.OrderListActivity;
 import com.xzxg.shop.product.ProductDetailActivity;
-import com.xzxg.shop.product.ProductListActivity;
 import com.xzxg.shop.settings.SettingsActivity;
 import com.xzxg.shop.storage.LocalChatStore;
 import com.xzxg.shop.storage.SessionStore;
@@ -300,7 +298,7 @@ public class ChatActivity extends BaseShopActivity {
             renderChatHome();
             loadHomeCopy();
             validateStoredToken();
-            startActivity(new Intent(this, CartActivity.class));
+            NavigationHelper.navigateMainRoute(this, Routes.CART);
             return true;
         }
         if (Routes.ORDERS.equals(initialRoute)) {
@@ -308,7 +306,7 @@ public class ChatActivity extends BaseShopActivity {
             renderChatHome();
             loadHomeCopy();
             validateStoredToken();
-            startActivity(new Intent(this, OrderListActivity.class));
+            NavigationHelper.navigateMainRoute(this, Routes.ORDERS);
             return true;
         }
         if (Routes.SETTINGS.equals(initialRoute)) {
@@ -1517,15 +1515,15 @@ public class ChatActivity extends BaseShopActivity {
         navGroup.addView(drawerNavButton("💬", "AI导购", "chat", v -> renderChatHome()));
         navGroup.addView(drawerNavButton("🏷", "商品", "products", v -> {
             persistAndCancelActiveStreamForNavigation();
-            startActivity(new Intent(this, ProductListActivity.class));
+            NavigationHelper.navigateMainRoute(this, Routes.PRODUCTS);
         }));
         navGroup.addView(drawerNavButton("🛒", "购物车", "cart", v -> {
             persistAndCancelActiveStreamForNavigation();
-            startActivity(new Intent(this, CartActivity.class));
+            NavigationHelper.navigateMainRoute(this, Routes.CART);
         }));
         navGroup.addView(drawerNavButton("📦", "订单", "orders", v -> {
             persistAndCancelActiveStreamForNavigation();
-            startActivity(new Intent(this, OrderListActivity.class));
+            NavigationHelper.navigateMainRoute(this, Routes.ORDERS);
         }));
         drawer.addView(navGroup);
 
@@ -4125,11 +4123,11 @@ public class ChatActivity extends BaseShopActivity {
         }
         persistAndCancelActiveStreamForNavigation();
         if ("orders".equals(route)) {
-            startActivity(new Intent(this, OrderListActivity.class));
+            NavigationHelper.navigateMainRoute(this, Routes.ORDERS);
         } else if ("cart".equals(route)) {
-            startActivity(new Intent(this, CartActivity.class));
+            NavigationHelper.navigateMainRoute(this, Routes.CART);
         } else if ("products".equals(route)) {
-            startActivity(new Intent(this, ProductListActivity.class));
+            NavigationHelper.navigateMainRoute(this, Routes.PRODUCTS);
         } else if ("coupons".equals(route) || "coupon".equals(route)) {
             startActivity(new Intent(this, CouponActivity.class));
         } else if ("settings".equals(route)) {
@@ -4139,9 +4137,7 @@ public class ChatActivity extends BaseShopActivity {
         } else if ("edit_profile".equals(route) || "profile".equals(route)) {
             startActivity(new Intent(this, EditProfileActivity.class));
         } else if ("promotions".equals(route) || "promotion".equals(route) || "activity".equals(route)) {
-            Intent intent = new Intent(this, ProductListActivity.class);
-            intent.putExtra(Routes.EXTRA_PRODUCT_TAB, "activity");
-            startActivity(intent);
+            NavigationHelper.navigateMainRoute(this, "activity");
         } else {
             toastLine("暂不支持该跳转");
         }

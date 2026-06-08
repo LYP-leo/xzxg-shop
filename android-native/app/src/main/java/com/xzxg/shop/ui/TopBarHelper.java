@@ -52,6 +52,40 @@ public final class TopBarHelper {
         return toolbar;
     }
 
+    public static View menuBar(Activity activity, int backgroundColor, String titleText, Runnable onMenu) {
+        LinearLayout toolbar = new LinearLayout(activity);
+        toolbar.setGravity(Gravity.CENTER_VERTICAL);
+        toolbar.setPadding(ShopUi.dp(activity, 14), 0, ShopUi.dp(activity, 14), 0);
+        toolbar.setBackgroundColor(backgroundColor);
+        toolbar.setElevation(ShopUi.dp(activity, 1));
+
+        FrameLayout menu = new FrameLayout(activity);
+        menu.setClickable(true);
+        menu.setBackground(new ColorDrawable(Color.TRANSPARENT));
+        menu.setContentDescription("打开菜单");
+        menu.setOnClickListener(v -> {
+            if (onMenu != null) {
+                onMenu.run();
+            }
+        });
+        menu.addView(new MenuIconView(activity), new FrameLayout.LayoutParams(ShopUi.dp(activity, 24), ShopUi.dp(activity, 24), Gravity.CENTER));
+        toolbar.addView(menu, new LinearLayout.LayoutParams(ShopUi.dp(activity, 44), ShopUi.dp(activity, 44)));
+
+        TextView title = new TextView(activity);
+        title.setText(titleText == null ? "" : titleText);
+        title.setTextSize(18);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTextColor(Color.rgb(20, 24, 30));
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        title.setIncludeFontPadding(false);
+        LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(0, -1, 1);
+        titleParams.leftMargin = ShopUi.dp(activity, 8);
+        toolbar.addView(title, titleParams);
+
+        toolbar.addView(new FrameLayout(activity), new LinearLayout.LayoutParams(ShopUi.dp(activity, 44), ShopUi.dp(activity, 44)));
+        return toolbar;
+    }
+
     private static final class BackChevronView extends View {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
@@ -75,6 +109,28 @@ public final class TopBarHelper {
             float left = w * 0.34f;
             canvas.drawLine(cx, top, left, mid, paint);
             canvas.drawLine(left, mid, cx, bottom, paint);
+        }
+    }
+
+    private static final class MenuIconView extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        MenuIconView(Activity activity) {
+            super(activity);
+            paint.setColor(Color.rgb(17, 24, 39));
+            paint.setStrokeWidth(ShopUi.dp(activity, 2));
+            paint.setStrokeCap(Paint.Cap.ROUND);
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            float w = getWidth();
+            float left = w * 0.18f;
+            float right = w * 0.82f;
+            canvas.drawLine(left, getHeight() * 0.30f, right, getHeight() * 0.30f, paint);
+            canvas.drawLine(left, getHeight() * 0.50f, right, getHeight() * 0.50f, paint);
+            canvas.drawLine(left, getHeight() * 0.70f, right, getHeight() * 0.70f, paint);
         }
     }
 }
