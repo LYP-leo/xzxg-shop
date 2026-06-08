@@ -1,4 +1,6 @@
-package com.xzxg.shop;
+package com.xzxg.shop.network;
+
+import com.xzxg.shop.storage.SessionStore;
 
 import org.json.JSONArray;
 import org.json.JSONObject;

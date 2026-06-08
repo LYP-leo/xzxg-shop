@@ -1,4 +1,4 @@
-package com.xzxg.shop;
+package com.xzxg.shop.ui;
 
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;

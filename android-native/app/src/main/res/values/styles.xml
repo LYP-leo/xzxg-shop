@@ -4,4 +4,15 @@
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:colorAccent">#111111</item>
     </style>
+    <style name="XzxgBottomSheetAnimation">
+        <item name="android:windowEnterAnimation">@anim/bottom_sheet_slide_in</item>
+        <item name="android:windowExitAnimation">@anim/bottom_sheet_slide_out</item>
+    </style>
+    <style name="XzxgBottomSheetDialog" parent="@android:style/Theme.Material.Light.Dialog.Alert">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowAnimationStyle">@style/XzxgBottomSheetAnimation</item>
+        <item name="android:colorAccent">#111111</item>
+    </style>
 </resources>

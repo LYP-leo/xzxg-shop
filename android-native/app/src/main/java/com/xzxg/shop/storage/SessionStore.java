@@ -1,4 +1,6 @@
-package com.xzxg.shop;
+package com.xzxg.shop.storage;
+
+import com.xzxg.shop.BuildConfig;
 
 import android.content.Context;
 import android.content.SharedPreferences;

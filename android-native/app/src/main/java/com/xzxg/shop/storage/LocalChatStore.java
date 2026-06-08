@@ -1,4 +1,4 @@
-package com.xzxg.shop;
+package com.xzxg.shop.storage;
 
 import android.content.ContentValues;
 import android.content.Context;
@@ -116,6 +116,37 @@ public class LocalChatStore extends SQLiteOpenHelper {
 
     public void saveAssistantTurn(String localSessionId, String content, String blocksJson, String followupsJson, String segmentsJson, String status) {
         saveMessage(localSessionId, "assistant", content, blocksJson, followupsJson, segmentsJson, status);
+    }
+
+    public void upsertAssistantDraft(String localMessageId, String localSessionId, String content, String blocksJson, String followupsJson, String segmentsJson, String status) {
+        if (localMessageId == null || localMessageId.trim().isEmpty() || localSessionId == null || localSessionId.trim().isEmpty()) {
+            return;
+        }
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            long now = System.currentTimeMillis();
+            long createdAt = existingMessageCreatedAt(db, localMessageId.trim());
+            ContentValues values = new ContentValues();
+            values.put("local_message_id", localMessageId.trim());
+            values.put("local_session_id", localSessionId);
+            values.put("role", "assistant");
+            values.put("content", content == null ? "" : content);
+            values.put("attachments_json", "[]");
+            values.put("blocks_json", blocksJson == null || blocksJson.isEmpty() ? "[]" : blocksJson);
+            values.put("followups_json", followupsJson == null || followupsJson.isEmpty() ? "[]" : followupsJson);
+            values.put("segments_json", segmentsJson == null || segmentsJson.isEmpty() ? "[]" : segmentsJson);
+            values.put("status", status == null || status.isEmpty() ? "partial" : status);
+            values.put("created_at", createdAt > 0 ? createdAt : now);
+            db.insertWithOnConflict("messages", null, values, SQLiteDatabase.CONFLICT_REPLACE);
+
+            ContentValues sessionValues = new ContentValues();
+            sessionValues.put("updated_at", now);
+            db.update("sessions", sessionValues, "local_session_id = ?", new String[]{localSessionId});
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
     }
 
     public void saveMessage(String localSessionId, String role, String content, String blocksJson, String followupsJson, String status) {
@@ -378,6 +409,15 @@ public class LocalChatStore extends SQLiteOpenHelper {
         );
         try {
             return cursor.moveToFirst();
+        } finally {
+            cursor.close();
+        }
+    }
+
+    private long existingMessageCreatedAt(SQLiteDatabase db, String localMessageId) {
+        Cursor cursor = db.query("messages", new String[]{"created_at"}, "local_message_id = ?", new String[]{localMessageId}, null, null, null, "1");
+        try {
+            return cursor.moveToFirst() ? cursor.getLong(0) : 0;
         } finally {
             cursor.close();
         }
