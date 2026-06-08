@@ -1,4 +1,4 @@
-package com.xzxg.shop;
+package com.xzxg.shop.ui;
 
 import android.content.Context;
 import android.graphics.Color;

@@ -9,6 +9,7 @@ dist/
 build/
 backend/uploads/
 android-native/.gradle/
+android-native/local.properties
 android-native/build/
 android-native/app/build/
 android-native/exports/

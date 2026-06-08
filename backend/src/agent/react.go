@@ -275,7 +275,7 @@ func (r *Runtime) streamReactStep(ctx context.Context, run domain.AgentRun, plan
 
 	filter := r.newAgentOutputFilter(ctx, run, allowedProductIDs, emit, &filterErr)
 
-	err := r.llm.Stream(ctx, plan.AnswerModel, messages, 0.1, func(delta string) error {
+	err := r.llm.Stream(ctx, plan.AnswerModel, messages, 0.3, func(delta string) error {
 		if r.store.IsRunCanceled(ctx, run.RunID) {
 			return emit(domain.SSEEvent{Type: "error", RunID: run.RunID, Code: "canceled", Message: "已停止生成"})
 		}

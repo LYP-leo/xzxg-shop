@@ -1514,9 +1514,16 @@ func (s *MySQLStore) ListAgentPromptPublishRecords(ctx context.Context, promptKe
 }
 
 func (s *MySQLStore) SearchProducts(ctx context.Context, query string) []domain.ProductCard {
+	return s.SearchProductsLimit(ctx, query, 40)
+}
+
+func (s *MySQLStore) SearchProductsLimit(ctx context.Context, query string, vectorLimit int) []domain.ProductCard {
 	items := s.ListProducts(ctx, query, "")
+	if vectorLimit <= 0 {
+		vectorLimit = 40
+	}
 	if s.vector != nil && s.vector.Enabled() {
-		if hits, err := s.vector.SearchProducts(ctx, query, 40); err == nil {
+		if hits, err := s.vector.SearchProducts(ctx, query, vectorLimit); err == nil {
 			items = mergeProductCards(items, s.productCardsByIDs(ctx, hitIDs(hits)))
 		}
 	}

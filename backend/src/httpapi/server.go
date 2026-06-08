@@ -109,6 +109,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/admin/merchants/", s.handleUpdateAdminMerchant)
 	mux.HandleFunc("POST /api/v1/eval/intent", s.handleEvalIntent)
 	mux.HandleFunc("POST /api/v1/eval/rag", s.handleEvalRAGRecall)
+	mux.HandleFunc("POST /api/v1/eval/products", s.handleEvalProductSearch)
 	mux.HandleFunc("POST /api/v1/eval/image-search", s.handleEvalImageSearch)
 	mux.HandleFunc("GET /api/v1/cart", s.handleGetCart)
 	mux.HandleFunc("GET /api/v1/cart/discount-preview", s.handleCartDiscountPreview)
@@ -1277,6 +1278,29 @@ func (s *Server) handleEvalRAGRecall(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleEvalProductSearch(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	var request agent.ProductSearchEvalRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	request.Query = strings.TrimSpace(request.Query)
+	if request.Query == "" {
+		writeError(w, http.StatusBadRequest, "empty_query", "query 不能为空")
+		return
+	}
+	if request.Limit <= 0 || request.Limit > 20 {
+		request.Limit = 10
+	}
+	run := domain.AgentRun{AccountID: account.AccountID}
+	result := s.runtime.EvaluateProductSearch(r.Context(), run, request)
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) retrievalPlan(ctx context.Context, query string) rag.RetrievalPlan {
 	plan := rag.DefaultRetrievalPlan(query)
 	retrievalconfig.Apply(&plan, s.configs.GetMap(ctx))
@@ -1430,6 +1454,7 @@ func readEvalReport(path string, runID string) (adminEvalReport, bool) {
 		Type              string  `json:"type"`
 		Dataset           string  `json:"dataset"`
 		GeneratedAt       string  `json:"generated_at"`
+		TotalCases        int     `json:"total_cases"`
 		Total             int     `json:"total"`
 		Evaluated         int     `json:"evaluated"`
 		Hits              int     `json:"hits"`
@@ -1437,6 +1462,13 @@ func readEvalReport(path string, runID string) (adminEvalReport, bool) {
 		HitRateAtK        float64 `json:"hit_rate_at_k"`
 		Accuracy          float64 `json:"accuracy"`
 		PassRate          float64 `json:"pass_rate"`
+		Variants          []struct {
+			Variant    string  `json:"variant"`
+			Total      int     `json:"total"`
+			Hits       int     `json:"hits"`
+			HitRateAtK float64 `json:"hit_rate_at_k"`
+			MRR        float64 `json:"mrr"`
+		} `json:"variants"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return adminEvalReport{}, false
@@ -1452,25 +1484,45 @@ func readEvalReport(path string, runID string) (adminEvalReport, bool) {
 	if passRate == 0 {
 		passRate = payload.HitRateAtK
 	}
+	total := payload.Total
+	if total == 0 {
+		total = payload.TotalCases
+	}
+	evaluated := payload.Evaluated
+	hits := payload.Hits
+	if len(payload.Variants) > 0 {
+		best := payload.Variants[0]
+		for _, variant := range payload.Variants[1:] {
+			if variant.HitRateAtK > best.HitRateAtK || (variant.HitRateAtK == best.HitRateAtK && variant.MRR > best.MRR) {
+				best = variant
+			}
+		}
+		if total == 0 {
+			total = best.Total
+		}
+		evaluated = best.Total
+		hits = best.Hits
+		passRate = best.HitRateAtK
+	}
 	return adminEvalReport{
 		ID:          runID + "/" + strings.TrimSuffix(filepath.Base(path), ".json"),
 		Type:        payload.Type,
 		Dataset:     payload.Dataset,
 		Path:        filepath.ToSlash(path),
 		GeneratedAt: generatedAt,
-		Total:       payload.Total,
-		Evaluated:   payload.Evaluated,
-		Hits:        payload.Hits,
+		Total:       total,
+		Evaluated:   evaluated,
+		Hits:        hits,
 		PassRate:    passRate,
 	}, true
 }
 
 func evalReportSummary(payload map[string]any) map[string]any {
-	return map[string]any{
+	summary := map[string]any{
 		"type":                                payload["type"],
 		"dataset":                             payload["dataset"],
 		"generated_at":                        payload["generated_at"],
-		"total":                               payload["total"],
+		"total":                               firstAny(payload["total"], payload["total_cases"]),
 		"evaluated":                           payload["evaluated"],
 		"hits":                                payload["hits"],
 		"correct":                             payload["correct"],
@@ -1488,14 +1540,71 @@ func evalReportSummary(payload map[string]any) map[string]any {
 		"image_rerank_duration_ms_p95":        payload["image_rerank_duration_ms_p95"],
 		"pass_rate":                           firstNumber(payload["pass_rate"], payload["accuracy"], payload["hit_rate_at_k"], payload["recall_case_hit_rate"]),
 	}
+	variants := evalReportVariants(payload)
+	if len(variants) > 0 {
+		summary["variants"] = variants
+		if best := bestEvalVariant(variants); best != nil {
+			summary["evaluated"] = best["total"]
+			summary["hits"] = best["hits"]
+			summary["hit_rate_at_k"] = best["hit_rate_at_k"]
+			summary["mrr"] = best["mrr"]
+			summary["pass_rate"] = firstNumber(best["hit_rate_at_k"])
+			summary["by_query_type"] = best["by_query_type"]
+		}
+	}
+	return summary
+}
+
+func firstAny(values ...any) any {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func evalReportVariants(payload map[string]any) []map[string]any {
+	rawVariants, ok := payload["variants"].([]any)
+	if !ok {
+		return nil
+	}
+	variants := make([]map[string]any, 0, len(rawVariants))
+	for _, raw := range rawVariants {
+		variant, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		variants = append(variants, variant)
+	}
+	return variants
+}
+
+func bestEvalVariant(variants []map[string]any) map[string]any {
+	if len(variants) == 0 {
+		return nil
+	}
+	best := variants[0]
+	for _, variant := range variants[1:] {
+		if firstNumber(variant["hit_rate_at_k"]) > firstNumber(best["hit_rate_at_k"]) ||
+			(firstNumber(variant["hit_rate_at_k"]) == firstNumber(best["hit_rate_at_k"]) && firstNumber(variant["mrr"]) > firstNumber(best["mrr"])) {
+			best = variant
+		}
+	}
+	return best
 }
 
 func reportResults(payload map[string]any) []any {
 	results, ok := payload["results"].([]any)
-	if !ok {
-		return nil
+	if ok {
+		return results
 	}
-	return results
+	if best := bestEvalVariant(evalReportVariants(payload)); best != nil {
+		if results, ok := best["results"].([]any); ok {
+			return results
+		}
+	}
+	return nil
 }
 
 func firstNumber(values ...any) float64 {
@@ -1510,6 +1619,7 @@ func firstNumber(values ...any) float64 {
 func evalToolSuites(datasets []adminEvalDataset, reports []adminEvalReport) []adminEvalToolSuite {
 	suites := []adminEvalToolSuite{
 		{ID: "rag_retriever_eval", Name: "RAG 检索召回", Scope: "tool", DatasetID: "rag_recall_cases", Command: "node quality/evals/run_rag_recall_eval.mjs quality/data/eval/rag_recall_cases.jsonl"},
+		{ID: "product_search_eval", Name: "商品召回重排", Scope: "tool", DatasetID: "rag_recall_cases", Command: "node quality/evals/run_product_search_eval.mjs quality/data/eval/rag_recall_cases.jsonl"},
 		{ID: "image_search_eval", Name: "图片搜索", Scope: "tool", DatasetID: "image_search_cases", Command: "node quality/evals/run_image_search_eval.mjs quality/data/eval/image_search_cases.jsonl"},
 		{ID: "intent", Name: "意图识别", Scope: "tool", DatasetID: "intent_cases", Command: "node quality/evals/run_intent_eval.mjs quality/data/eval/intent_cases.jsonl"},
 		{ID: "non_guide_intent", Name: "非导购服务域识别", Scope: "tool", DatasetID: "non_guide_intent_cases", Command: "node quality/evals/run_intent_eval.mjs quality/data/eval/non_guide_intent_cases.jsonl"},

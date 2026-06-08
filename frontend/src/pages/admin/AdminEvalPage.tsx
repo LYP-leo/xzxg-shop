@@ -261,9 +261,18 @@ function EvalDashboardView({
 function EvalReportDetailView({ detail }: { detail: EvalReportDetail }) {
   const [statusFilter, setStatusFilter] = useState<'all' | 'passed' | 'failed'>('all');
   const [queryTypeFilter, setQueryTypeFilter] = useState('all');
+  const variants = reportVariants(detail.summary);
+  const [variantFilter, setVariantFilter] = useState(variants[0]?.variant ?? '');
   const [pageSize, setPageSize] = useState(10);
   const [page, setPage] = useState(1);
-  const results = detail.results ?? [];
+  useEffect(() => {
+    setVariantFilter(variants[0]?.variant ?? '');
+    setStatusFilter('all');
+    setQueryTypeFilter('all');
+    setPage(1);
+  }, [detail.id]);
+  const activeVariant = variants.find((item) => item.variant === variantFilter) ?? variants[0];
+  const results = activeVariant?.results ?? detail.results ?? [];
   const failed = results.filter((item) => !evalCasePassed(item));
   const queryTypes = useMemo(() => Array.from(new Set(results.map((item) => String(item.query_type ?? '')).filter(Boolean))).sort(), [results]);
   const filteredResults = results.filter((item) => {
@@ -285,8 +294,9 @@ function EvalReportDetailView({ detail }: { detail: EvalReportDetail }) {
         <Metric label="MRR" value={formatDecimal(detail.summary.mrr)} />
         <Metric label="失败样本" value={String(failed.length)} />
       </div>
-      {detail.summary.by_query_type && typeof detail.summary.by_query_type === 'object' ? (
-        <SummaryGrid summary={detail.summary.by_query_type as Record<string, Record<string, unknown>>} mode="rag" />
+      {variants.length ? <VariantGrid variants={variants} /> : null}
+      {(activeVariant?.by_query_type ?? detail.summary.by_query_type) && typeof (activeVariant?.by_query_type ?? detail.summary.by_query_type) === 'object' ? (
+        <SummaryGrid summary={(activeVariant?.by_query_type ?? detail.summary.by_query_type) as Record<string, Record<string, unknown>>} mode="rag" />
       ) : null}
       {detail.summary.by_group && typeof detail.summary.by_group === 'object' ? (
         <SummaryGrid summary={detail.summary.by_group as Record<string, Record<string, unknown>>} mode="intent" />
@@ -296,6 +306,24 @@ function EvalReportDetailView({ detail }: { detail: EvalReportDetail }) {
         <code>{detail.path}</code>
       </div>
       <div className="eval-filter-bar">
+        <label>
+          版本
+          <select
+            className="table-input table-input--compact"
+            disabled={!variants.length}
+            value={variantFilter}
+            onChange={(event) => {
+              setVariantFilter(event.target.value);
+              setPage(1);
+            }}
+          >
+            {variants.length ? variants.map((variant) => (
+              <option value={variant.variant} key={variant.variant}>
+                {variant.variant}
+              </option>
+            )) : <option value="">默认</option>}
+          </select>
+        </label>
         <label>
           结果
           <select
@@ -381,6 +409,56 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
+type EvalVariantSummary = {
+  variant: string;
+  total?: number;
+  hits?: number;
+  hit_rate_at_k?: number;
+  mrr?: number;
+  avg_duration_ms?: number;
+  p95_duration_ms?: number;
+  by_query_type?: Record<string, Record<string, unknown>>;
+  results?: Record<string, unknown>[];
+};
+
+function reportVariants(summary: Record<string, unknown>): EvalVariantSummary[] {
+  const raw = summary.variants;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => (item && typeof item === 'object' ? (item as Record<string, unknown>) : undefined))
+    .filter((item): item is Record<string, unknown> => Boolean(item))
+    .map((item) => ({
+      variant: String(item.variant ?? 'unknown'),
+      total: Number(item.total ?? 0),
+      hits: Number(item.hits ?? 0),
+      hit_rate_at_k: Number(item.hit_rate_at_k ?? 0),
+      mrr: Number(item.mrr ?? 0),
+      avg_duration_ms: Number(item.avg_duration_ms ?? 0),
+      p95_duration_ms: Number(item.p95_duration_ms ?? 0),
+      by_query_type: item.by_query_type && typeof item.by_query_type === 'object' ? (item.by_query_type as Record<string, Record<string, unknown>>) : undefined,
+      results: Array.isArray(item.results) ? (item.results as Record<string, unknown>[]) : []
+    }));
+}
+
+function VariantGrid({ variants }: { variants: EvalVariantSummary[] }) {
+  return (
+    <div className="eval-query-type-grid">
+      {variants.map((variant) => (
+        <article key={variant.variant}>
+          <strong>{variant.variant}</strong>
+          <span>Hit@K {formatPercent(Number(variant.hit_rate_at_k ?? 0))}</span>
+          <span>MRR {formatDecimal(variant.mrr)}</span>
+          <small>
+            {String(variant.hits ?? 0)} / {String(variant.total ?? 0)}
+            {variant.avg_duration_ms ? ` · Avg ${formatDecimal(variant.avg_duration_ms)}ms` : ''}
+            {variant.p95_duration_ms ? ` · P95 ${formatDecimal(variant.p95_duration_ms)}ms` : ''}
+          </small>
+        </article>
+      ))}
+    </div>
+  );
+}
+
 function SummaryGrid({ summary, mode }: { summary: Record<string, Record<string, unknown>>; mode: 'rag' | 'intent' }) {
   return (
     <div className="eval-query-type-grid">
@@ -438,6 +516,19 @@ function EvalCaseBody({ item }: { item: Record<string, unknown> }) {
         <EvalField label="回答" value={item.answer} />
         <EvalField label="结构化块" value={item.blocks} />
         <EvalField label="Trace" value={[item.run_id, item.trace_id].filter(Boolean)} />
+      </div>
+    );
+  }
+  if ('product_ids' in item || 'candidate_product_ids' in item) {
+    return (
+      <div className="eval-case-body">
+        <EvalField label="Query" value={item.query ?? item.keyword} />
+        <EvalField label="Query 类型" value={item.query_type} />
+        <EvalField label="期望商品" value={item.expected_product_ids} />
+        <EvalField label="实际商品" value={item.product_ids} />
+        <EvalField label="候选商品" value={item.candidate_product_ids} />
+        <EvalField label="相关性" value={{ status: item.relevance_status, reason: item.relevance_reason }} />
+        <EvalField label="重排" value={item.rerank} />
       </div>
     );
   }

@@ -102,6 +102,55 @@ type productSearchStructuredArguments struct {
 	Negative    productSearchArguments `json:"negative,omitempty"`
 }
 
+type ProductSearchEvalRequest struct {
+	Query              string                 `json:"query"`
+	Limit              int                    `json:"limit"`
+	Constraints        productSearchArguments `json:"constraints,omitempty"`
+	Negative           productSearchArguments `json:"negative,omitempty"`
+	RerankModelEnabled *bool                  `json:"rerank_model_enabled,omitempty"`
+	LLMFilterEnabled   *bool                  `json:"llm_filter_enabled,omitempty"`
+}
+
+type ProductSearchEvalResult struct {
+	Query               string   `json:"query"`
+	ProductIDs          []string `json:"product_ids"`
+	CandidateProductIDs []string `json:"candidate_product_ids"`
+	DroppedProductIDs   []string `json:"dropped_product_ids"`
+	RelevanceStatus     string   `json:"relevance_status"`
+	RelevanceReason     string   `json:"relevance_reason"`
+	DurationMS          int64    `json:"duration_ms"`
+	Items               []any    `json:"items"`
+	Rerank              any      `json:"rerank,omitempty"`
+}
+
+func (r *Runtime) EvaluateProductSearch(ctx context.Context, run domain.AgentRun, request ProductSearchEvalRequest) ProductSearchEvalResult {
+	payload, _ := json.Marshal(request)
+	startedAt := time.Now()
+	observation := r.toolSearchProducts(ctx, run, payload)
+	items := []any{}
+	if rawItems, ok := observation.Result["items"].([]map[string]any); ok {
+		for _, item := range rawItems {
+			items = append(items, item)
+		}
+	}
+	rerank := observation.Result["rerank"]
+	duration := observation.DurationMS
+	if duration <= 0 {
+		duration = time.Since(startedAt).Milliseconds()
+	}
+	return ProductSearchEvalResult{
+		Query:               strings.TrimSpace(request.Query),
+		ProductIDs:          observation.ProductIDs,
+		CandidateProductIDs: observation.CandidateProductIDs,
+		DroppedProductIDs:   observation.DroppedProductIDs,
+		RelevanceStatus:     observation.RelevanceStatus,
+		RelevanceReason:     observation.RelevanceReason,
+		DurationMS:          duration,
+		Items:               items,
+		Rerank:              rerank,
+	}
+}
+
 func productIDSetFromText(text string) map[string]bool {
 	ids := make(map[string]bool)
 	for _, id := range productIDPattern.FindAllString(text, -1) {
@@ -340,10 +389,12 @@ func firstImageAttachment(attachments []domain.Attachment) *imageToolSource {
 
 func (r *Runtime) toolSearchProducts(ctx context.Context, run domain.AgentRun, raw json.RawMessage) toolObservation {
 	var args struct {
-		Query       string                 `json:"query"`
-		Limit       int                    `json:"limit"`
-		Constraints productSearchArguments `json:"constraints"`
-		Negative    productSearchArguments `json:"negative"`
+		Query              string                 `json:"query"`
+		Limit              int                    `json:"limit"`
+		Constraints        productSearchArguments `json:"constraints"`
+		Negative           productSearchArguments `json:"negative"`
+		RerankModelEnabled *bool                  `json:"rerank_model_enabled,omitempty"`
+		LLMFilterEnabled   *bool                  `json:"llm_filter_enabled,omitempty"`
 	}
 	_ = json.Unmarshal(raw, &args)
 	args.Query = strings.TrimSpace(args.Query)
@@ -351,10 +402,57 @@ func (r *Runtime) toolSearchProducts(ctx context.Context, run domain.AgentRun, r
 		return toolObservation{Tool: toolSearchProducts, Message: "query 不能为空"}
 	}
 	limit := clampLimit(args.Limit, 5, 10)
-	products := r.store.SearchProducts(ctx, args.Query)
+	configValues := map[string]string{}
+	if r.configs != nil {
+		configValues = r.configs.GetMap(ctx)
+	}
+	initialVectorLimit := intFromMap(configValues, "retrieval.product.initial_vector_limit", 80)
+	products := r.store.SearchProductsLimit(ctx, args.Query, initialVectorLimit)
+	candidateProductIDs := productCardIDs(products)
 	structured := normalizeProductSearchArguments(args.Constraints, args.Negative)
-	products = rerankProductsWithStructuredConstraints(args.Query, products, structured)
-	relevance := r.classifyProductSearchRelevanceWithRun(ctx, run, args.Query, products, structured)
+	products, negativeDropped := filterProductsByStructuredNegative(products, structured.Negative)
+	if len(products) == 0 && len(candidateProductIDs) > 0 {
+		return toolObservation{
+			Tool:                toolSearchProducts,
+			OK:                  true,
+			Message:             productSearchMessage(relevanceWeak, 0),
+			Result:              map[string]any{"items": []map[string]any{}, "constraints": structured.Constraints, "negative": structured.Negative},
+			CandidateProductIDs: candidateProductIDs,
+			DroppedProductIDs:   negativeDropped,
+			RelevanceStatus:     relevanceWeak,
+			RelevanceReason:     "候选商品全部命中用户否定约束",
+		}
+	}
+	rerank := r.rerankProductsForSearch(ctx, args.Query, products, structured, args.RerankModelEnabled)
+	products = rerank.Products
+	rerankPayload := map[string]any{
+		"enabled":  rerank.Enabled,
+		"provider": rerank.Provider,
+		"model":    rerank.Model,
+		"fallback": rerank.Fallback,
+		"error":    rerank.Error,
+		"scores":   traceRerankScores(rerank.Scores, 20),
+	}
+	if strings.TrimSpace(run.RunID) != "" && rerank.Enabled {
+		r.trace(ctx, run, "tools.search_products.rerank", "rerank", "", "ok", 0, "", map[string]any{
+			"query":                 args.Query,
+			"provider":              rerank.Provider,
+			"model":                 rerank.Model,
+			"fallback":              rerank.Fallback,
+			"error":                 rerank.Error,
+			"candidate_product_ids": candidateProductIDs,
+			"product_ids":           productCardIDs(products),
+			"dropped_product_ids":   negativeDropped,
+			"rerank_scores":         traceRerankScores(rerank.Scores, 20),
+			"constraints":           structured.Constraints,
+			"negative":              structured.Negative,
+		})
+	}
+	relevanceStructured := structured
+	relevanceStructured.Negative = productSearchArguments{}
+	relevance := r.classifyProductSearchRelevanceWithRun(ctx, run, args.Query, products, relevanceStructured, args.LLMFilterEnabled)
+	relevance.CandidateProductIDs = candidateProductIDs
+	relevance.DroppedProductIDs = appendUnique(relevance.DroppedProductIDs, negativeDropped...)
 	products = relevance.AllowedProducts
 	if len(products) > limit {
 		products = products[:limit]
@@ -386,7 +484,7 @@ func (r *Runtime) toolSearchProducts(ctx context.Context, run domain.AgentRun, r
 		Tool:                toolSearchProducts,
 		OK:                  true,
 		Message:             productSearchMessage(relevance.Status, len(items)),
-		Result:              map[string]any{"items": items, "constraints": structured.Constraints, "negative": structured.Negative},
+		Result:              map[string]any{"items": items, "constraints": structured.Constraints, "negative": structured.Negative, "rerank": rerankPayload},
 		ProductIDs:          productIDs,
 		CandidateProductIDs: relevance.CandidateProductIDs,
 		DroppedProductIDs:   relevance.DroppedProductIDs,
@@ -1090,10 +1188,10 @@ type productRelevanceResult struct {
 }
 
 func (r *Runtime) classifyProductSearchRelevance(ctx context.Context, query string, products []domain.ProductCard) productRelevanceResult {
-	return r.classifyProductSearchRelevanceWithRun(ctx, domain.AgentRun{}, query, products, productSearchStructuredArguments{})
+	return r.classifyProductSearchRelevanceWithRun(ctx, domain.AgentRun{}, query, products, productSearchStructuredArguments{}, nil)
 }
 
-func (r *Runtime) classifyProductSearchRelevanceWithRun(ctx context.Context, run domain.AgentRun, query string, products []domain.ProductCard, structured productSearchStructuredArguments) productRelevanceResult {
+func (r *Runtime) classifyProductSearchRelevanceWithRun(ctx context.Context, run domain.AgentRun, query string, products []domain.ProductCard, structured productSearchStructuredArguments, llmEnabledOverride *bool) productRelevanceResult {
 	result := productRelevanceResult{
 		Status:              relevanceNoMatch,
 		Reason:              "没有召回到商品",
@@ -1113,14 +1211,18 @@ func (r *Runtime) classifyProductSearchRelevanceWithRun(ctx context.Context, run
 	}
 
 	values := r.configs.GetMap(ctx)
-	if r.llm != nil && r.llm.Enabled() && boolFromMap(values, "retrieval.product.llm_filter.enabled", true) {
+	llmFilterEnabled := boolFromMap(values, "retrieval.product.llm_filter.enabled", true)
+	if llmEnabledOverride != nil {
+		llmFilterEnabled = *llmEnabledOverride
+	}
+	if r.llm != nil && r.llm.Enabled() && llmFilterEnabled {
 		if llmResult, ok := r.classifyProductSearchRelevanceByLLM(ctx, run, query, products, structured); ok {
 			llmResult.CandidateProductIDs = result.CandidateProductIDs
 			llmResult.DroppedProductIDs = appendUnique(llmResult.DroppedProductIDs, negativeDropped...)
 			return llmResult
 		}
 	}
-	guardEnabled := boolFromMap(values, "retrieval.product.lexical_guard.enabled", true)
+	guardEnabled := boolFromMap(values, "retrieval.product.lexical_guard.enabled", false)
 	minEvidence := intFromMap(values, "retrieval.product.lexical_guard.min_evidence_count", 1)
 	minRatio := floatFromMap(values, "retrieval.product.lexical_guard.min_match_ratio", 0.35)
 	terms := productRelevanceTerms(query, values["retrieval.rerank.generic_terms"])
@@ -1349,45 +1451,275 @@ func emptyProductSearchArguments(input productSearchArguments) bool {
 	return len(input.Brands) == 0 && len(input.Terms) == 0 && len(input.Categories) == 0
 }
 
-func rerankProductsWithStructuredConstraints(query string, products []domain.ProductCard, structured productSearchStructuredArguments) []domain.ProductCard {
-	if len(products) == 0 || (emptyProductSearchArguments(structured.Constraints) && emptyProductSearchArguments(structured.Negative)) {
-		return products
+type productRerankResult struct {
+	Products []domain.ProductCard
+	Scores   []productRerankScore
+	Enabled  bool
+	Provider string
+	Model    string
+	Fallback bool
+	Error    string
+}
+
+type productRerankScore struct {
+	ProductID string
+	Score     float64
+	Reasons   []string
+	Index     int
+}
+
+func (r *Runtime) rerankProductsForSearch(ctx context.Context, query string, products []domain.ProductCard, structured productSearchStructuredArguments, modelEnabledOverride *bool) productRerankResult {
+	result := productRerankResult{Products: products}
+	if len(products) == 0 {
+		return result
 	}
+	if r.configs == nil {
+		return result
+	}
+	values := r.configs.GetMap(ctx)
+	if !boolFromMap(values, "retrieval.product.rerank.enabled", true) {
+		return result
+	}
+	rerankErr := ""
+	modelEnabled := boolFromMap(values, "retrieval.product.rerank.model_enabled", true)
+	if modelEnabledOverride != nil {
+		modelEnabled = *modelEnabledOverride
+	}
+	if modelEnabled && r.llm != nil {
+		modelResult, err := r.rerankProductsByModel(ctx, query, products, structured, values)
+		if err == nil {
+			return modelResult
+		}
+		rerankErr = err.Error()
+		result.Error = rerankErr
+		if r.logger != nil {
+			r.logger.Warn("product rerank model fallback", "error", err)
+		}
+		if !boolFromMap(values, "retrieval.product.rerank.fallback_rule_enabled", true) {
+			return result
+		}
+	}
+	result = r.rerankProductsByRule(query, products, structured, values)
+	if rerankErr != "" {
+		result.Error = rerankErr
+		result.Fallback = true
+	}
+	return result
+}
+
+func (r *Runtime) rerankProductsByModel(ctx context.Context, query string, products []domain.ProductCard, structured productSearchStructuredArguments, values map[string]string) (productRerankResult, error) {
+	maxCandidates := intFromMap(values, "retrieval.product.rerank.max_candidates", len(products))
+	if maxCandidates <= 0 || maxCandidates > len(products) {
+		maxCandidates = len(products)
+	}
+	candidates := products
+	if len(candidates) > maxCandidates {
+		candidates = candidates[:maxCandidates]
+	}
+	documents := make([]RerankDocument, 0, len(candidates))
+	for _, product := range candidates {
+		documents = append(documents, RerankDocument{ID: product.ProductID, Text: productRerankDocument(product)})
+	}
+	config := RerankConfig{
+		BaseURL: strings.TrimSpace(values["retrieval.product.rerank.base_url"]),
+		APIKey:  firstNonEmpty(values["retrieval.product.rerank.api_key"], values["ai.qwen.api_key"], values["ai.api_key"]),
+		Model:   firstNonEmpty(values["retrieval.product.rerank.model"], "qwen3-vl-rerank"),
+		TopN:    maxCandidates,
+	}
+	results, err := r.llm.Rerank(ctx, config, rerankQuery(query, structured), documents)
+	if err != nil {
+		return productRerankResult{}, err
+	}
+	byID := make(map[string]domain.ProductCard, len(candidates))
+	for _, product := range candidates {
+		byID[product.ProductID] = product
+	}
+	seen := map[string]bool{}
+	out := make([]domain.ProductCard, 0, len(results))
+	scores := make([]productRerankScore, 0, len(results))
+	for index, item := range results {
+		product, ok := byID[item.ID]
+		if !ok || seen[item.ID] {
+			continue
+		}
+		seen[item.ID] = true
+		out = append(out, product)
+		scores = append(scores, productRerankScore{
+			ProductID: item.ID,
+			Score:     item.Score,
+			Reasons:   []string{"qwen3_vl_rerank"},
+			Index:     index,
+		})
+	}
+	for _, product := range candidates {
+		if seen[product.ProductID] {
+			continue
+		}
+		out = append(out, product)
+		scores = append(scores, productRerankScore{
+			ProductID: product.ProductID,
+			Score:     0,
+			Reasons:   []string{"rerank_not_returned"},
+			Index:     len(scores),
+		})
+	}
+	return productRerankResult{
+		Products: out,
+		Scores:   scores,
+		Enabled:  true,
+		Provider: "dashscope",
+		Model:    config.Model,
+	}, nil
+}
+
+func (r *Runtime) rerankProductsByRule(query string, products []domain.ProductCard, structured productSearchStructuredArguments, values map[string]string) productRerankResult {
+	result := productRerankResult{Products: products, Enabled: true, Provider: "rule"}
 	type scoredProduct struct {
 		product domain.ProductCard
-		score   int
+		score   productRerankScore
 		index   int
+	}
+	genericTerms := values["retrieval.rerank.generic_terms"]
+	terms := productRelevanceTerms(query, genericTerms)
+	weights := productRerankWeights{
+		QueryTerm:   floatFromMap(values, "retrieval.product.rerank.weight.query_term", 6),
+		Constraint:  floatFromMap(values, "retrieval.product.rerank.weight.constraint", 12),
+		Brand:       floatFromMap(values, "retrieval.product.rerank.weight.brand", 18),
+		Category:    floatFromMap(values, "retrieval.product.rerank.weight.category", 10),
+		QueryPhrase: floatFromMap(values, "retrieval.product.rerank.weight.query_phrase", 2),
 	}
 	scored := make([]scoredProduct, 0, len(products))
 	for index, product := range products {
-		score := 0
-		text := strings.ToLower(productSearchText(product))
-		for _, term := range append(append([]string{}, structured.Constraints.Brands...), append(structured.Constraints.Terms, structured.Constraints.Categories...)...) {
-			if term != "" && strings.Contains(text, strings.ToLower(term)) {
-				score += 12
-			}
-		}
-		for _, term := range append(append([]string{}, structured.Negative.Brands...), append(structured.Negative.Terms, structured.Negative.Categories...)...) {
-			if term != "" && strings.Contains(text, strings.ToLower(term)) {
-				score -= 100
-			}
-		}
-		if score == 0 && query != "" && strings.Contains(text, strings.ToLower(query)) {
-			score++
-		}
+		score := scoreProductForRerank(query, terms, product, structured.Constraints, weights, index)
 		scored = append(scored, scoredProduct{product: product, score: score, index: index})
 	}
 	sort.SliceStable(scored, func(i, j int) bool {
-		if scored[i].score == scored[j].score {
+		if scored[i].score.Score == scored[j].score.Score {
 			return scored[i].index < scored[j].index
 		}
-		return scored[i].score > scored[j].score
+		return scored[i].score.Score > scored[j].score.Score
 	})
+	maxCandidates := intFromMap(values, "retrieval.product.rerank.max_candidates", len(scored))
+	if maxCandidates <= 0 || maxCandidates > len(scored) {
+		maxCandidates = len(scored)
+	}
 	out := make([]domain.ProductCard, 0, len(scored))
-	for _, item := range scored {
+	scores := make([]productRerankScore, 0, len(scored))
+	for i, item := range scored {
+		item.score.Index = i
+		scores = append(scores, item.score)
+		if i >= maxCandidates {
+			continue
+		}
 		out = append(out, item.product)
 	}
-	return out
+	result.Products = out
+	result.Scores = scores
+	result.Enabled = true
+	return result
+}
+
+type productRerankWeights struct {
+	QueryTerm   float64
+	Constraint  float64
+	Brand       float64
+	Category    float64
+	QueryPhrase float64
+}
+
+func scoreProductForRerank(query string, queryTerms []string, product domain.ProductCard, constraints productSearchArguments, weights productRerankWeights, index int) productRerankScore {
+	text := strings.ToLower(productSearchText(product))
+	name := strings.ToLower(product.Name)
+	brand := strings.ToLower(product.Brand)
+	category := strings.ToLower(product.CategoryID)
+	score := 0.0
+	reasons := make([]string, 0, 6)
+	for _, term := range queryTerms {
+		term = strings.TrimSpace(strings.ToLower(term))
+		if term == "" || !strings.Contains(text, term) {
+			continue
+		}
+		score += weights.QueryTerm
+		reasons = append(reasons, "query_term:"+term)
+		if strings.Contains(name, term) {
+			score += weights.QueryTerm * 0.5
+			reasons = append(reasons, "title:"+term)
+		}
+	}
+	for _, term := range constraints.Brands {
+		term = strings.TrimSpace(strings.ToLower(term))
+		if term == "" || !strings.Contains(text, term) {
+			continue
+		}
+		score += weights.Constraint
+		reasons = append(reasons, "constraint:"+term)
+		if strings.Contains(brand, term) {
+			score += weights.Brand
+			reasons = append(reasons, "brand:"+term)
+		}
+	}
+	for _, term := range constraints.Categories {
+		term = strings.TrimSpace(strings.ToLower(term))
+		if term == "" || !strings.Contains(text, term) {
+			continue
+		}
+		score += weights.Constraint + weights.Category
+		reasons = append(reasons, "category:"+term)
+		if strings.Contains(category, term) {
+			score += weights.Category
+		}
+	}
+	for _, term := range constraints.Terms {
+		term = strings.TrimSpace(strings.ToLower(term))
+		if term == "" || !strings.Contains(text, term) {
+			continue
+		}
+		score += weights.Constraint
+		reasons = append(reasons, "constraint:"+term)
+	}
+	query = strings.TrimSpace(strings.ToLower(query))
+	if query != "" && strings.Contains(text, query) {
+		score += weights.QueryPhrase
+		reasons = append(reasons, "query_phrase")
+	}
+	if len(reasons) == 0 {
+		reasons = append(reasons, "original_order")
+	}
+	return productRerankScore{ProductID: product.ProductID, Score: score, Reasons: reasons, Index: index}
+}
+
+func productRerankDocument(product domain.ProductCard) string {
+	parts := []string{
+		"product_id: " + product.ProductID,
+		"name: " + product.Name,
+		"brand: " + product.Brand,
+		"category_id: " + product.CategoryID,
+		"merchant: " + product.MerchantName,
+		"stock_status: " + product.StockStatus,
+	}
+	if len(product.Tags) > 0 {
+		parts = append(parts, "tags: "+strings.Join(product.Tags, "、"))
+	}
+	if len(product.SellingPoints) > 0 {
+		parts = append(parts, "selling_points: "+strings.Join(product.SellingPoints, "、"))
+	}
+	if strings.TrimSpace(product.RecommendReason) != "" {
+		parts = append(parts, "recommend_reason: "+truncateRunes(product.RecommendReason, 240))
+	}
+	return strings.Join(parts, "\n")
+}
+
+func rerankQuery(query string, structured productSearchStructuredArguments) string {
+	parts := []string{"用户需求：" + strings.TrimSpace(query)}
+	if !emptyProductSearchArguments(structured.Constraints) {
+		raw, _ := json.Marshal(structured.Constraints)
+		parts = append(parts, "正向约束："+string(raw))
+	}
+	if !emptyProductSearchArguments(structured.Negative) {
+		raw, _ := json.Marshal(structured.Negative)
+		parts = append(parts, "负向约束："+string(raw))
+	}
+	return strings.Join(parts, "\n")
 }
 
 func filterProductsByStructuredNegative(products []domain.ProductCard, negative productSearchArguments) ([]domain.ProductCard, []string) {
@@ -1542,6 +1874,15 @@ func productSearchText(product domain.ProductCard) string {
 	return strings.ToLower(strings.Join(parts, "\n"))
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
 func productCardIDs(products []domain.ProductCard) []string {
 	ids := make([]string, 0, len(products))
 	for _, product := range products {
@@ -1550,6 +1891,22 @@ func productCardIDs(products []domain.ProductCard) []string {
 		}
 	}
 	return ids
+}
+
+func traceRerankScores(scores []productRerankScore, limit int) []map[string]any {
+	if limit <= 0 || limit > len(scores) {
+		limit = len(scores)
+	}
+	out := make([]map[string]any, 0, limit)
+	for _, score := range scores[:limit] {
+		out = append(out, map[string]any{
+			"product_id": score.ProductID,
+			"score":      score.Score,
+			"reasons":    score.Reasons,
+			"rank":       score.Index + 1,
+		})
+	}
+	return out
 }
 
 func limitProductCards(products []domain.ProductCard, limit int) []domain.ProductCard {

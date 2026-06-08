@@ -223,6 +223,114 @@ func (c *LLMClient) Stream(ctx context.Context, model string, messages []ChatMes
 	return nil
 }
 
+type RerankDocument struct {
+	ID   string
+	Text string
+}
+
+type RerankResult struct {
+	ID    string
+	Index int
+	Score float64
+}
+
+type RerankConfig struct {
+	BaseURL string
+	APIKey  string
+	Model   string
+	TopN    int
+}
+
+func (c *LLMClient) Rerank(ctx context.Context, config RerankConfig, query string, documents []RerankDocument) ([]RerankResult, error) {
+	if strings.TrimSpace(config.APIKey) == "" {
+		config.APIKey = c.Config().APIKey
+	}
+	if strings.TrimSpace(config.APIKey) == "" {
+		return nil, errors.New("rerank disabled: missing api key")
+	}
+	if strings.TrimSpace(config.BaseURL) == "" {
+		config.BaseURL = "https://dashscope.aliyuncs.com"
+	}
+	if strings.TrimSpace(config.Model) == "" {
+		config.Model = "qwen3-vl-rerank"
+	}
+	if len(documents) == 0 {
+		return nil, nil
+	}
+	texts := make([]string, 0, len(documents))
+	for _, document := range documents {
+		texts = append(texts, document.Text)
+	}
+	topN := config.TopN
+	if topN <= 0 || topN > len(documents) {
+		topN = len(documents)
+	}
+	requestBody := map[string]any{
+		"model": strings.TrimSpace(config.Model),
+		"input": map[string]any{
+			"query":     strings.TrimSpace(query),
+			"documents": texts,
+		},
+		"parameters": map[string]any{
+			"top_n":            topN,
+			"return_documents": false,
+			"instruct":         "根据用户电商导购需求，对候选商品按直接相关性、品牌/品类/属性约束匹配度排序；明显违背用户需求的商品排到后面。",
+		},
+	}
+	payload, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal rerank request: %w", err)
+	}
+	url := strings.TrimRight(config.BaseURL, "/") + "/api/v1/services/rerank/text-rerank/text-rerank"
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("create rerank request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+strings.TrimSpace(config.APIKey))
+	request.Header.Set("Content-Type", "application/json")
+	response, err := c.http.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("call rerank: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 2<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read rerank response: %w", err)
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("rerank status %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var decoded struct {
+		Output struct {
+			Results []struct {
+				Index          int     `json:"index"`
+				RelevanceScore float64 `json:"relevance_score"`
+			} `json:"results"`
+		} `json:"output"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return nil, fmt.Errorf("decode rerank response: %w", err)
+	}
+	if decoded.Error != nil && decoded.Error.Message != "" {
+		return nil, errors.New(decoded.Error.Message)
+	}
+	results := make([]RerankResult, 0, len(decoded.Output.Results))
+	for _, item := range decoded.Output.Results {
+		if item.Index < 0 || item.Index >= len(documents) {
+			continue
+		}
+		results = append(results, RerankResult{
+			ID:    documents[item.Index].ID,
+			Index: item.Index,
+			Score: item.RelevanceScore,
+		})
+	}
+	return results, nil
+}
+
 func decodeStreamDelta(data string) (string, error) {
 	var decoded struct {
 		Choices []struct {
