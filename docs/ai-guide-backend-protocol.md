@@ -1,27 +1,27 @@
-# AI Guide Backend Protocol
+# AI 小猪向导后端接口协议
 
-This document defines the backend contracts needed by the Android pig guide and TTS features.
+本文档定义安卓端“小猪向导”和科大讯飞 TTS 功能需要后端提供的接口、生成逻辑和前后端边界。
 
-## Scope
+## 职责边界
 
-The Android frontend owns:
+安卓前端负责：
 
-- Rendering the draggable pig guide floating widget.
-- Calling the guide suggestion API when entering commerce pages.
-- Showing returned questions in guide bubbles.
-- Sending a selected question to the existing AI chat page.
-- Calling the TTS API after an assistant reply is complete and playing the returned audio.
+- 渲染可拖动的小猪向导悬浮窗。
+- 进入商城、购物车、订单等页面时调用向导建议问题接口。
+- 将后端返回的问题展示成小猪气泡。
+- 用户点击问题后，跳转到现有 AI 聊天页并发送该问题。
+- AI 回复完成后调用 TTS 接口，并播放返回的音频。
 
-The backend owns:
+后端负责：
 
-- Generating page-aware guide questions.
-- Keeping model prompts, ranking, fallback logic, and cache behavior server-side.
-- Calling Xunfei TTS with server-side credentials.
-- Returning synthesized audio to the Android client.
+- 根据页面和上下文生成小猪向导建议问题。
+- 在服务端维护提示词、排序、兜底规则和缓存逻辑。
+- 使用服务端保存的科大讯飞密钥调用 TTS。
+- 将合成后的音频返回给安卓端。
 
-## Guide Suggestions API
+## 向导建议问题接口
 
-### Endpoint
+### 接口
 
 ```http
 POST /api/v1/agent/guide-suggestions
@@ -29,7 +29,7 @@ Authorization: Bearer <token>
 Content-Type: application/json
 ```
 
-### Request
+### 请求体
 
 ```json
 {
@@ -45,27 +45,27 @@ Content-Type: application/json
 }
 ```
 
-`page` values:
+`page` 可选值：
 
-- `products`
-- `cart`
-- `orders`
-- `product_detail`
+- `products`：商品列表页。
+- `cart`：购物车页。
+- `orders`：订单页。
+- `product_detail`：商品详情页，当前安卓端可以先不接，后端可预留。
 
-`limit` should default to `3` when omitted. The backend may cap it to `3` for mobile display.
+`limit` 不传时默认 `3`。考虑移动端气泡空间，后端建议最多返回 3 条。
 
-`context` is page-specific. Unknown fields should be ignored so the Android client can add fields later.
+`context` 为页面上下文。后端应忽略未知字段，方便安卓端后续逐步补充更多上下文。
 
-Recommended context fields:
+推荐上下文字段：
 
-| Page | Fields |
+| 页面 | 字段 |
 | --- | --- |
-| `products` | `keyword`, `category_id`, `category_name`, `cart_item_count`, `visible_product_ids` |
-| `cart` | `cart_item_count`, `selected_item_count`, `total_amount`, `selected_amount`, `product_ids` |
-| `orders` | `order_count`, `pending_payment_count`, `pending_receipt_count`, `pending_review_count`, `latest_order_ids` |
-| `product_detail` | `product_id`, `product_name`, `category_id`, `category_name`, `price`, `stock_status` |
+| `products` | `keyword`、`category_id`、`category_name`、`cart_item_count`、`visible_product_ids` |
+| `cart` | `cart_item_count`、`selected_item_count`、`total_amount`、`selected_amount`、`product_ids` |
+| `orders` | `order_count`、`pending_payment_count`、`pending_receipt_count`、`pending_review_count`、`latest_order_ids` |
+| `product_detail` | `product_id`、`product_name`、`category_id`、`category_name`、`price`、`stock_status` |
 
-### Response
+### 响应体
 
 ```json
 {
@@ -84,11 +84,11 @@ Recommended context fields:
 }
 ```
 
-The Android client only requires `question`. `id` and `reason` are for analytics, logging, and debugging.
+安卓端只依赖 `question` 字段。`id` 和 `reason` 主要用于埋点、日志、问题排查和后端调试。
 
-### Failure Behavior
+### 失败和兜底
 
-The backend should prefer fallback suggestions over hard failures. If model generation fails, return rule-based results:
+后端应优先返回兜底问题，而不是直接失败。大模型调用失败、解析失败或结果不合规时，返回规则生成的问题：
 
 ```json
 {
@@ -102,70 +102,72 @@ The backend should prefer fallback suggestions over hard failures. If model gene
 }
 ```
 
-Return an error only when the request is invalid or the user is unauthorized.
+只有请求参数错误、未登录或权限问题才建议返回错误。
 
-Suggested errors:
+示例错误：
 
 ```json
 {
   "code": "invalid_page",
-  "message": "Unsupported guide page"
+  "message": "不支持的向导页面"
 }
 ```
 
-## Guide Suggestion Generation Logic
+## 建议问题生成逻辑
 
-Use a hybrid strategy:
+建议使用“规则候选 + 上下文增强 + 大模型改写排序 + 结果校验 + 规则兜底”的混合方案。
 
-1. Build rule-based candidate questions.
-2. Enrich candidates with page context.
-3. Optionally ask the LLM to rewrite and rank candidates.
-4. Validate length, safety, and page fit.
-5. Return fallback questions if the LLM fails or produces invalid output.
+推荐流程：
 
-### Rule-Based Candidates
+1. 根据页面类型生成规则候选问题。
+2. 使用页面上下文增强候选问题。
+3. 可选调用大模型，对候选问题做改写和排序。
+4. 校验长度、安全性、重复度和页面相关性。
+5. 如果模型失败或输出不合规，返回规则兜底问题。
 
-`products`:
+### 规则候选
+
+`products` 商品列表页：
 
 - `帮我按预算推荐几款{category_name}`
 - `帮我比较当前这些商品`
 - `有什么高性价比商品推荐？`
 
-If `keyword` exists:
+如果有 `keyword`：
 
 - `帮我找和“{keyword}”相关的好物`
 
-`cart`:
+`cart` 购物车页：
 
 - `帮我分析购物车哪些值得买`
 - `购物车里哪些可以删减？`
 - `现在适合直接下单吗？`
 
-If `cart_item_count > 0`:
+如果 `cart_item_count > 0`：
 
 - `帮我分析这 {cart_item_count} 件商品`
 
-`orders`:
+`orders` 订单页：
 
 - `帮我总结订单状态`
 - `哪些订单需要尽快处理？`
 - `待评价订单怎么写评价？`
 
-If `pending_payment_count > 0`:
+如果 `pending_payment_count > 0`：
 
 - `哪些订单还没支付？`
 
-`product_detail`:
+`product_detail` 商品详情页：
 
 - `帮我分析这个商品适合我吗`
 - `这个商品有什么优缺点？`
 - `同类商品里它值得买吗？`
 
-If `product_name` exists:
+如果有 `product_name`：
 
 - `{product_name} 值得买吗？`
 
-### Optional LLM Prompt
+### 可选大模型提示词
 
 ```text
 你是电商 App 的小猪 AI 向导。请根据用户当前页面和上下文，生成 1-3 个用户可能想问 AI 导购的问题。
@@ -190,40 +192,40 @@ If `product_name` exists:
 }
 ```
 
-### Validation
+### 结果校验
 
-Before returning model output:
+模型输出返回给前端前，后端需要做校验：
 
-- Keep 1 to 3 items.
-- Drop questions longer than 28 Chinese characters when possible.
-- Drop empty questions.
-- Drop duplicated or near-duplicated questions.
-- Drop questions that reference missing data, such as coupons when no coupon context exists.
-- Ensure each question can be sent directly to the existing AI chat endpoint.
+- 保留 1 到 3 条。
+- 尽量剔除超过 28 个中文字符的问题。
+- 剔除空问题。
+- 剔除重复或高度相似的问题。
+- 剔除引用缺失数据的问题，例如没有优惠券上下文时不要问“有哪些优惠券可用”。
+- 确保每个问题都可以直接发送给现有 AI 聊天接口。
 
-### Cache
+### 缓存建议
 
-Cache suggestions for 30 to 120 seconds.
+建议缓存 30 到 120 秒，避免用户在页面内频繁触发模型调用。
 
-Recommended cache key:
+推荐缓存键：
 
 ```text
 user_id + page + keyword + category_id + cart_updated_at + order_updated_at + product_id
 ```
 
-If exact update timestamps are unavailable, use lightweight fingerprints:
+如果暂时没有更新时间戳，可以使用轻量指纹：
 
 ```text
-cart item ids + quantities + selected states
-latest order ids + statuses
-visible product ids
+购物车商品 id + 数量 + 选中状态
+最近订单 id + 订单状态
+当前可见商品 id
 ```
 
-## Xunfei TTS API
+## 科大讯飞 TTS 接口
 
-Xunfei credentials must stay on the server. Do not put `API Secret` in the Android APK.
+科大讯飞密钥必须保存在服务端。不要把 `API Secret` 放到安卓 APK 里，否则反编译后会泄露。
 
-### Backend Configuration
+### 后端配置
 
 ```env
 XUNFEI_TTS_ENABLED=true
@@ -236,7 +238,7 @@ XUNFEI_TTS_VOLUME=50
 XUNFEI_TTS_PITCH=50
 ```
 
-### Endpoint
+### 接口
 
 ```http
 POST /api/v1/speech/tts
@@ -245,7 +247,7 @@ Content-Type: application/json
 Accept: audio/mpeg
 ```
 
-### Request
+### 请求体
 
 ```json
 {
@@ -254,11 +256,11 @@ Accept: audio/mpeg
 }
 ```
 
-`voice` is optional. The backend should use `XUNFEI_TTS_VOICE` when it is omitted.
+`voice` 可选。不传时后端使用 `XUNFEI_TTS_VOICE` 默认配置。
 
-### Success Response
+### 成功响应
 
-Return audio bytes directly:
+建议直接返回音频字节：
 
 ```http
 HTTP/1.1 200 OK
@@ -266,15 +268,15 @@ Content-Type: audio/mpeg
 Cache-Control: no-store
 ```
 
-If the Xunfei response format is PCM or WAV in the first implementation, return the matching content type:
+如果第一版接的是 PCM 或 WAV，也可以返回对应类型：
 
 ```http
 Content-Type: audio/wav
 ```
 
-The Android frontend will choose playback logic by response content type.
+安卓端会根据 `Content-Type` 选择播放方式。
 
-### Error Response
+### 错误响应
 
 ```json
 {
@@ -283,39 +285,39 @@ The Android frontend will choose playback logic by response content type.
 }
 ```
 
-Recommended status codes:
+推荐状态码：
 
-- `400`: empty text or text too long.
-- `401`: missing or invalid token.
-- `429`: rate limit exceeded.
-- `503`: TTS disabled, unconfigured, or upstream unavailable.
+- `400`：文本为空或文本过长。
+- `401`：缺少登录态或 token 无效。
+- `429`：触发限流。
+- `503`：TTS 未启用、未配置或上游讯飞服务不可用。
 
-### TTS Server Logic
+### TTS 服务端流程
 
-1. Authenticate the user.
-2. Trim text and reject empty input.
-3. Limit text length, for example 500 to 1000 Chinese characters.
-4. Build the Xunfei WebSocket authenticated URL using server-side credentials.
-5. Send the synthesis request.
-6. Collect base64 audio frames from Xunfei.
-7. Decode and concatenate audio bytes.
-8. Return audio bytes to Android.
+1. 校验用户登录态。
+2. 清理文本，空文本直接拒绝。
+3. 限制文本长度，例如 500 到 1000 个中文字符。
+4. 使用服务端密钥生成科大讯飞 WebSocket 鉴权 URL。
+5. 发送合成请求。
+6. 收集讯飞返回的 base64 音频帧。
+7. 解码并拼接音频字节。
+8. 将音频字节返回给安卓端。
 
-### Rate Limits
+### 限流建议
 
-Recommended limits:
+建议加这些限制：
 
-- Per user: 10 to 20 requests per minute.
-- Per request: 500 to 1000 characters.
-- Optional daily quota for cost control.
+- 单用户每分钟 10 到 20 次。
+- 单次请求 500 到 1000 字。
+- 可选每日额度，用于成本控制。
 
-## Android Integration Contract
+## 安卓接入约定
 
-The Android client will:
+安卓端后续按以下方式接入：
 
-1. Call `/agent/guide-suggestions` after rendering `products`, `cart`, or `orders`.
-2. Render returned `question` values in pig guide bubbles.
-3. On bubble click, navigate to the AI chat page and send the question.
-4. After an assistant response completes, call `/speech/tts` with the visible assistant text.
-5. If TTS returns `404`, `503`, or another failure, skip playback without blocking chat.
+1. 渲染 `products`、`cart` 或 `orders` 页面后调用 `/agent/guide-suggestions`。
+2. 将返回的 `question` 展示在小猪向导气泡里。
+3. 用户点击气泡后，跳转到 AI 聊天页并发送该问题。
+4. AI 回复完成后，使用可见回复文本调用 `/speech/tts`。
+5. 如果 TTS 返回 `404`、`503` 或其他错误，安卓端跳过播放，不阻塞聊天流程。
 
