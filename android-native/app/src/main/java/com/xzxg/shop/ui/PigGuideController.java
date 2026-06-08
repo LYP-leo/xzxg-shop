@@ -35,6 +35,7 @@ public class PigGuideController {
     private float startX;
     private float startY;
     private boolean dragging;
+    private boolean expanded;
     private int requestSeq;
 
     public PigGuideController(Activity activity, ApiClient api, FrameLayout root) {
@@ -49,6 +50,7 @@ public class PigGuideController {
         }
         JSONArray fallback = fallbackSuggestions(page, context);
         ensureLayer(bottomMarginDp);
+        expanded = false;
         renderBubbles(fallback);
         int requestId = ++requestSeq;
         new Thread(() -> {
@@ -121,7 +123,8 @@ public class PigGuideController {
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL:
                 if (!dragging && bubbleList != null) {
-                    bubbleList.setVisibility(bubbleList.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
+                    expanded = !expanded;
+                    applyBubbleVisibility();
                 }
                 dragging = false;
                 return true;
@@ -160,8 +163,18 @@ public class PigGuideController {
             params.setMargins(0, 0, 0, ShopUi.dp(activity, 8));
             bubbleList.addView(bubble, params);
         }
+        applyBubbleVisibility();
         if (layer != null) {
             layer.bringToFront();
+        }
+    }
+
+    private void applyBubbleVisibility() {
+        if (bubbleList == null) {
+            return;
+        }
+        for (int i = 0; i < bubbleList.getChildCount(); i++) {
+            bubbleList.getChildAt(i).setVisibility(expanded || i == 0 ? View.VISIBLE : View.GONE);
         }
     }
 
@@ -194,7 +207,7 @@ public class PigGuideController {
         if (Routes.PRODUCTS.equals(page)) {
             String keyword = context == null ? "" : context.optString("keyword", "");
             String category = context == null ? "" : context.optString("category_name", "");
-            putQuestion(items, keyword.isEmpty() ? "帮我推荐几款高性价比商品" : "帮我找和“" + keyword + "”相关的好物");
+            putQuestion(items, keyword.isEmpty() ? "帮我推荐几款高性价比商品" : "帮我找和「" + keyword + "」相关的好物");
             putQuestion(items, category.isEmpty() ? "帮我比较当前这些商品" : "帮我按预算推荐几款" + category);
             putQuestion(items, "当前这些商品怎么选？");
         } else if (Routes.CART.equals(page)) {
