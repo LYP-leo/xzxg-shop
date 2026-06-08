@@ -164,6 +164,16 @@ public class ApiClient {
         return response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
     }
 
+    public JSONArray guideSuggestions(String page, JSONObject context, int limit) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("page", page == null ? "" : page);
+        body.put("context", context == null ? new JSONObject() : context);
+        body.put("limit", Math.max(1, limit));
+        JSONObject response = post("/agent/guide-suggestions", body);
+        JSONArray items = response.optJSONArray("items");
+        return items == null ? new JSONArray() : items;
+    }
+
     public String absoluteUrl(String url) {
         if (url == null || url.trim().isEmpty()) {
             return "";
@@ -249,6 +259,15 @@ public class ApiClient {
         body.put("content", content);
         body.put("tags", tags == null ? new JSONArray() : tags);
         return post("/orders/" + urlEncode(orderId) + "/items/" + urlEncode(orderItemId) + ":review", body);
+    }
+
+    public TtsAudio synthesizeSpeech(String text) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("text", text == null ? "" : text);
+        HttpURLConnection conn = open("/speech/tts", "POST");
+        conn.setRequestProperty("Accept", "audio/mpeg, audio/wav, application/octet-stream");
+        writeBody(conn, body);
+        return readBinary(conn);
     }
 
     public JSONArray promotions() throws Exception {
@@ -619,6 +638,22 @@ public class ApiClient {
         return text.isEmpty() ? new JSONObject() : new JSONObject(text);
     }
 
+    private TtsAudio readBinary(HttpURLConnection conn) throws Exception {
+        int code = conn.getResponseCode();
+        if (code < 200 || code >= 300) {
+            throw apiException(code, readText(conn.getErrorStream()));
+        }
+        try (InputStream stream = conn.getInputStream();
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = stream.read(buffer)) != -1) {
+                out.write(buffer, 0, read);
+            }
+            return new TtsAudio(out.toByteArray(), conn.getContentType());
+        }
+    }
+
     private ApiException apiException(int statusCode, String text) {
         String message = text == null || text.isEmpty() ? ("HTTP " + statusCode) : text;
         String code = "";
@@ -701,6 +736,16 @@ public class ApiClient {
 
         public boolean isCanceled() {
             return canceled;
+        }
+    }
+
+    public static class TtsAudio {
+        public final byte[] data;
+        public final String contentType;
+
+        TtsAudio(byte[] data, String contentType) {
+            this.data = data == null ? new byte[0] : data;
+            this.contentType = contentType == null ? "" : contentType;
         }
     }
 

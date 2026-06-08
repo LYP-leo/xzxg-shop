@@ -17,6 +17,7 @@ import android.graphics.Path;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
+import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -61,6 +62,8 @@ import org.json.JSONObject;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.net.URL;
 import java.util.ArrayDeque;
@@ -223,6 +226,16 @@ public class MainActivity extends Activity {
     private int appliedBottomInset;
     private boolean chatAutoScrollEnabled = true;
     private boolean userDetachedFromBottom;
+    private LinearLayout pigGuideLayer;
+    private LinearLayout pigGuideBubbleList;
+    private float pigGuideDownRawX;
+    private float pigGuideDownRawY;
+    private float pigGuideStartX;
+    private float pigGuideStartY;
+    private boolean pigGuideDragging;
+    private int pigGuideRequestSeq;
+    private MediaPlayer ttsPlayer;
+    private File activeTtsFile;
 
     private static class PendingAttachment {
         Uri uri;
@@ -397,6 +410,8 @@ public class MainActivity extends Activity {
         statusBarScrim = null;
         productCartFab = null;
         productCartBadge = null;
+        pigGuideLayer = null;
+        pigGuideBubbleList = null;
         root.setBackgroundColor(BG_COLOR);
         root.setClipChildren(false);
         root.setClipToPadding(false);
@@ -2872,6 +2887,7 @@ public class MainActivity extends Activity {
             chatStore.saveAssistantTurn(ownerLocalSessionId, visibleMarkdown, activeAssistantBlocks.toString(), activeFollowups.toString(), activeAssistantSegments.toString(), "completed");
         }
         enqueueSessionSync(ownerLocalSessionId, activeStreamServerSessionId, activeStreamTitle, visibleMarkdown);
+        speakAssistantReply(visibleMarkdown);
         activeAssistantMarkdown = null;
         activeAssistantFullMarkdown = null;
         activeAssistantFormMode = false;
@@ -2929,6 +2945,85 @@ public class MainActivity extends Activity {
         activeStreamTitle = "";
         stopRequested = false;
         updateInputActionButtonState();
+    }
+
+    private void speakAssistantReply(String markdown) {
+        String text = ttsText(markdown);
+        if (text.isEmpty() || sessionStore.token().isEmpty()) {
+            return;
+        }
+        new Thread(() -> {
+            try {
+                ApiClient.TtsAudio audio = api.synthesizeSpeech(text);
+                if (audio.data.length == 0) {
+                    return;
+                }
+                File file = writeTtsFile(audio);
+                runOnUiThread(() -> playTtsFile(file));
+            } catch (Exception ignored) {
+            }
+        }).start();
+    }
+
+    private String ttsText(String markdown) {
+        String text = markdown == null ? "" : markdown;
+        text = text.replaceAll("```[\\s\\S]*?```", " ");
+        text = text.replaceAll("!\\[[^\\]]*]\\([^)]*\\)", " ");
+        text = text.replaceAll("\\[[^\\]]*]\\([^)]*\\)", " ");
+        text = text.replaceAll("[#>*_`|\\-]+", " ");
+        text = text.replaceAll("\\s+", " ").trim();
+        if (text.length() > 500) {
+            text = text.substring(0, 500);
+        }
+        return text;
+    }
+
+    private File writeTtsFile(ApiClient.TtsAudio audio) throws Exception {
+        String extension = audio.contentType.toLowerCase(Locale.ROOT).contains("wav") ? ".wav" : ".mp3";
+        File file = File.createTempFile("xzxg_tts_", extension, getCacheDir());
+        try (FileOutputStream out = new FileOutputStream(file)) {
+            out.write(audio.data);
+        }
+        return file;
+    }
+
+    private void playTtsFile(File file) {
+        if (file == null || !file.exists()) {
+            return;
+        }
+        stopTtsPlayback();
+        try {
+            activeTtsFile = file;
+            ttsPlayer = new MediaPlayer();
+            ttsPlayer.setDataSource(file.getAbsolutePath());
+            ttsPlayer.setOnCompletionListener(player -> stopTtsPlayback());
+            ttsPlayer.setOnErrorListener((player, what, extra) -> {
+                stopTtsPlayback();
+                return true;
+            });
+            ttsPlayer.prepare();
+            ttsPlayer.start();
+        } catch (Exception error) {
+            stopTtsPlayback();
+        }
+    }
+
+    private void stopTtsPlayback() {
+        if (ttsPlayer != null) {
+            try {
+                ttsPlayer.stop();
+            } catch (Exception ignored) {
+            }
+            ttsPlayer.release();
+            ttsPlayer = null;
+        }
+        if (activeTtsFile != null) {
+            try {
+                activeTtsFile.delete();
+            } catch (Exception ignored) {
+            }
+            activeTtsFile = null;
+        }
     }
 
     private void stopActiveStream() {
@@ -4696,6 +4791,317 @@ public class MainActivity extends Activity {
         input.requestFocus();
     }
 
+    private void showPigGuide(String page, JSONObject context) {
+        if (root == null || sessionStore.token().isEmpty() || page == null || page.trim().isEmpty()) {
+            return;
+        }
+        JSONArray fallback = fallbackGuideSuggestions(page, context);
+        ensurePigGuideLayer(page);
+        renderPigGuideBubbles(fallback);
+        int requestId = ++pigGuideRequestSeq;
+        new Thread(() -> {
+            try {
+                JSONArray remote = api.guideSuggestions(page, context, 3);
+                runOnUiThread(() -> {
+                    if (requestId == pigGuideRequestSeq && page.equals(activePage)) {
+                        renderPigGuideBubbles(remote.length() == 0 ? fallback : remote);
+                    }
+                });
+            } catch (Exception ignored) {
+            }
+        }).start();
+    }
+
+    private void ensurePigGuideLayer(String page) {
+        if (pigGuideLayer != null && pigGuideLayer.getParent() == root) {
+            pigGuideLayer.bringToFront();
+            return;
+        }
+        pigGuideLayer = new LinearLayout(this);
+        pigGuideLayer.setOrientation(LinearLayout.HORIZONTAL);
+        pigGuideLayer.setGravity(Gravity.BOTTOM | Gravity.RIGHT);
+        pigGuideLayer.setClipChildren(false);
+        pigGuideLayer.setClipToPadding(false);
+
+        pigGuideBubbleList = new LinearLayout(this);
+        pigGuideBubbleList.setOrientation(LinearLayout.VERTICAL);
+        pigGuideBubbleList.setGravity(Gravity.RIGHT);
+        LinearLayout.LayoutParams bubbleParams = new LinearLayout.LayoutParams(dp(214), -2);
+        bubbleParams.rightMargin = dp(8);
+        pigGuideLayer.addView(pigGuideBubbleList, bubbleParams);
+
+        TextView pig = new TextView(this);
+        pig.setText("\uD83D\uDC37");
+        pig.setTextSize(28);
+        pig.setGravity(Gravity.CENTER);
+        pig.setIncludeFontPadding(false);
+        pig.setBackground(rounded(Color.rgb(255, 214, 224), dp(29)));
+        pig.setElevation(dp(8));
+        pig.setOnTouchListener((view, event) -> handlePigGuideDrag(event));
+        pigGuideLayer.addView(pig, new LinearLayout.LayoutParams(dp(58), dp(58)));
+
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(dp(280), -2, Gravity.RIGHT | Gravity.BOTTOM);
+        params.rightMargin = dp(16);
+        params.bottomMargin = pigGuideBottomMargin(page);
+        root.addView(pigGuideLayer, params);
+        pigGuideLayer.post(() -> clampPigGuidePosition(pigGuideLayer.getX(), pigGuideLayer.getY()));
+    }
+
+    private boolean handlePigGuideDrag(MotionEvent event) {
+        if (pigGuideLayer == null || root == null) {
+            return false;
+        }
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                pigGuideDownRawX = event.getRawX();
+                pigGuideDownRawY = event.getRawY();
+                pigGuideStartX = pigGuideLayer.getX();
+                pigGuideStartY = pigGuideLayer.getY();
+                pigGuideDragging = false;
+                return true;
+            case MotionEvent.ACTION_MOVE:
+                float dx = event.getRawX() - pigGuideDownRawX;
+                float dy = event.getRawY() - pigGuideDownRawY;
+                if (!pigGuideDragging && Math.hypot(dx, dy) > dp(6)) {
+                    pigGuideDragging = true;
+                }
+                clampPigGuidePosition(pigGuideStartX + dx, pigGuideStartY + dy);
+                return true;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                if (!pigGuideDragging && pigGuideBubbleList != null) {
+                    pigGuideBubbleList.setVisibility(pigGuideBubbleList.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
+                }
+                pigGuideDragging = false;
+                return true;
+            default:
+                return true;
+        }
+    }
+
+    private void clampPigGuidePosition(float x, float y) {
+        if (pigGuideLayer == null || root == null || root.getWidth() == 0 || root.getHeight() == 0) {
+            return;
+        }
+        int maxX = Math.max(0, root.getWidth() - pigGuideLayer.getWidth() - dp(8));
+        int maxY = Math.max(0, root.getHeight() - pigGuideLayer.getHeight() - currentBottomSafeInset() - dp(8));
+        pigGuideLayer.setX(Math.max(dp(8), Math.min(x, maxX)));
+        pigGuideLayer.setY(Math.max(stableTopInset(appliedTopInset < 0 ? 0 : appliedTopInset) + dp(8), Math.min(y, maxY)));
+    }
+
+    private int pigGuideBottomMargin(String page) {
+        int safeBottom = currentBottomSafeInset();
+        if ("products".equals(page)) {
+            return dp(144) + safeBottom;
+        }
+        if ("cart".equals(page)) {
+            return dp(88) + safeBottom;
+        }
+        return dp(24) + safeBottom;
+    }
+
+    private void renderPigGuideBubbles(JSONArray suggestions) {
+        if (pigGuideBubbleList == null) {
+            return;
+        }
+        pigGuideBubbleList.removeAllViews();
+        List<String> questions = guideQuestions(suggestions);
+        for (String question : questions) {
+            TextView bubble = new TextView(this);
+            bubble.setText(question);
+            bubble.setTextSize(13);
+            bubble.setTextColor(Color.rgb(31, 41, 55));
+            bubble.setGravity(Gravity.CENTER_VERTICAL);
+            bubble.setMaxLines(2);
+            bubble.setPadding(dp(12), dp(8), dp(12), dp(8));
+            bubble.setBackground(rounded(Color.WHITE, dp(16)));
+            bubble.setElevation(dp(4));
+            bubble.setOnClickListener(v -> askFromPigGuide(((TextView) v).getText().toString()));
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+            params.setMargins(0, 0, 0, dp(8));
+            pigGuideBubbleList.addView(bubble, params);
+        }
+        if (pigGuideLayer != null) {
+            pigGuideLayer.bringToFront();
+        }
+    }
+
+    private List<String> guideQuestions(JSONArray suggestions) {
+        List<String> questions = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        if (suggestions != null) {
+            for (int i = 0; i < suggestions.length(); i++) {
+                Object raw = suggestions.opt(i);
+                String question = "";
+                if (raw instanceof JSONObject) {
+                    question = ((JSONObject) raw).optString("question", "");
+                } else if (raw != null) {
+                    question = String.valueOf(raw);
+                }
+                question = question == null ? "" : question.trim();
+                if (!question.isEmpty() && seen.add(question)) {
+                    questions.add(question);
+                }
+                if (questions.size() >= 3) {
+                    break;
+                }
+            }
+        }
+        return questions;
+    }
+
+    private JSONArray fallbackGuideSuggestions(String page, JSONObject context) {
+        JSONArray items = new JSONArray();
+        if ("products".equals(page)) {
+            String category = context == null ? "" : context.optString("category_name", "");
+            String keyword = context == null ? "" : context.optString("keyword", "");
+            putGuideQuestion(items, keyword.isEmpty() ? "帮我推荐几款高性价比商品" : "帮我找和“" + keyword + "”相关的好物");
+            putGuideQuestion(items, category.isEmpty() ? "帮我比较当前这些商品" : "帮我按预算推荐几款" + category);
+            putGuideQuestion(items, "当前这些商品怎么选？");
+        } else if ("cart".equals(page)) {
+            int count = context == null ? 0 : context.optInt("cart_item_count", 0);
+            putGuideQuestion(items, count > 0 ? "帮我分析这 " + count + " 件商品" : "帮我看看购物车怎么搭配");
+            putGuideQuestion(items, "购物车里哪些值得买？");
+            putGuideQuestion(items, "现在适合直接下单吗？");
+        } else if ("orders".equals(page)) {
+            putGuideQuestion(items, "帮我总结订单状态");
+            putGuideQuestion(items, "哪些订单需要尽快处理？");
+            putGuideQuestion(items, "待评价订单怎么写评价？");
+        }
+        return items;
+    }
+
+    private void putGuideQuestion(JSONArray items, String question) {
+        if (question == null || question.trim().isEmpty()) {
+            return;
+        }
+        JSONObject item = new JSONObject();
+        try {
+            item.put("id", "local_" + items.length());
+            item.put("question", question.trim());
+            item.put("reason", "local_fallback");
+            items.put(item);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void askFromPigGuide(String question) {
+        String value = question == null ? "" : question.trim();
+        if (value.isEmpty()) {
+            return;
+        }
+        renderChatHome();
+        if (input != null) {
+            input.setText(value);
+            input.setSelection(input.getText().length());
+            sendCurrentInput();
+        } else {
+            sendMessage(value);
+        }
+    }
+
+    private JSONObject productGuideContext() {
+        JSONObject context = new JSONObject();
+        try {
+            context.put("keyword", lastProductKeyword == null ? "" : lastProductKeyword.trim());
+            context.put("category_id", lastCategoryId == null ? "" : lastCategoryId.trim());
+            context.put("category_name", lastCategoryName == null ? "" : lastCategoryName.trim());
+            context.put("cart_item_count", cartItemCountCache);
+            context.put("visible_product_ids", visibleProductIds());
+        } catch (Exception ignored) {
+        }
+        return context;
+    }
+
+    private JSONArray visibleProductIds() {
+        JSONArray ids = new JSONArray();
+        JSONArray items = currentProductState == null ? null : currentProductState.items;
+        if (items == null) {
+            return ids;
+        }
+        for (int i = 0; i < Math.min(items.length(), 12); i++) {
+            JSONObject item = items.optJSONObject(i);
+            if (item == null) {
+                continue;
+            }
+            String id = productField(item, "productId", "product_id");
+            if (!id.isEmpty()) {
+                ids.put(id);
+            }
+        }
+        return ids;
+    }
+
+    private JSONObject cartGuideContext(JSONObject cart) {
+        JSONObject context = new JSONObject();
+        JSONArray productIds = new JSONArray();
+        JSONArray items = cart == null ? null : cart.optJSONArray("items");
+        int count = 0;
+        int selectedCount = 0;
+        if (items != null) {
+            for (int i = 0; i < items.length(); i++) {
+                JSONObject item = items.optJSONObject(i);
+                if (item == null) {
+                    continue;
+                }
+                count += Math.max(1, item.optInt("quantity", 1));
+                if (item.optBoolean("selected")) {
+                    selectedCount++;
+                }
+                String productId = productField(item, "productId", "product_id");
+                if (!productId.isEmpty()) {
+                    productIds.put(productId);
+                }
+            }
+        }
+        JSONObject summary = cart == null ? null : cart.optJSONObject("summary");
+        try {
+            context.put("cart_item_count", count);
+            context.put("selected_item_count", selectedCount);
+            context.put("total_amount", summary == null ? "" : summary.optString("totalAmount", summary.optString("total_amount", "")));
+            context.put("selected_amount", cartPayAmount(summary));
+            context.put("product_ids", productIds);
+        } catch (Exception ignored) {
+        }
+        return context;
+    }
+
+    private JSONObject ordersGuideContext(JSONArray orders) {
+        JSONObject context = new JSONObject();
+        JSONArray latestOrderIds = new JSONArray();
+        int pendingPayment = 0;
+        int pendingReceipt = 0;
+        int pendingReview = 0;
+        if (orders != null) {
+            for (int i = 0; i < orders.length(); i++) {
+                JSONObject order = orders.optJSONObject(i);
+                if (order == null) {
+                    continue;
+                }
+                if (i < 8) {
+                    latestOrderIds.put(order.optString("order_id", ""));
+                }
+                String status = order.optString("status", "");
+                if ("pending_payment".equals(status)) {
+                    pendingPayment++;
+                } else if ("shipped".equals(status)) {
+                    pendingReceipt++;
+                } else if ("completed".equals(status)) {
+                    pendingReview++;
+                }
+            }
+        }
+        try {
+            context.put("order_count", orders == null ? 0 : orders.length());
+            context.put("pending_payment_count", pendingPayment);
+            context.put("pending_receipt_count", pendingReceipt);
+            context.put("pending_review_count", pendingReview);
+            context.put("latest_order_ids", latestOrderIds);
+        } catch (Exception ignored) {
+        }
+        return context;
+    }
+
     private void hideKeyboard() {
         View view = getCurrentFocus();
         if (view == null) {
@@ -5060,6 +5466,7 @@ public class MainActivity extends Activity {
         }
         content.addView(productBottomBar(), new LinearLayout.LayoutParams(-1, dp(58)));
         addProductCartFab();
+        showPigGuide("products", productGuideContext());
     }
 
     private void renderProductListTab(boolean restoreScroll) {
@@ -5591,6 +5998,9 @@ public class MainActivity extends Activity {
                 restoreProductsScroll = false;
             });
         }
+        if ("products".equals(activePage)) {
+            showPigGuide("products", productGuideContext());
+        }
     }
 
     private void appendProducts(JSONArray target, JSONArray source) {
@@ -5922,6 +6332,7 @@ public class MainActivity extends Activity {
             page.addView(card("请先登录", "登录后可查看购物车并结算。"));
             return;
         }
+        showPigGuide("cart", cartGuideContext(null));
         loadCart(page);
     }
 
@@ -5942,6 +6353,7 @@ public class MainActivity extends Activity {
         page.removeAllViews();
         activeCartSnapshot = cart;
         cartItemCountCache = cartItemCount(cart);
+        showPigGuide("cart", cartGuideContext(cart));
         JSONArray items = cart.optJSONArray("items");
         if (items == null || items.length() == 0) {
             removeCartCheckoutBar();
@@ -6381,6 +6793,7 @@ public class MainActivity extends Activity {
             return;
         }
         page.addView(muted("正在加载订单..."));
+        showPigGuide("orders", ordersGuideContext(null));
         new Thread(() -> {
             try {
                 JSONArray items = api.orders();
@@ -6393,6 +6806,7 @@ public class MainActivity extends Activity {
 
     private void renderOrderItems(LinearLayout page, JSONArray items) {
         page.removeAllViews();
+        showPigGuide("orders", ordersGuideContext(items));
         if (items.length() == 0) {
             page.addView(card("暂无订单", "购物车结算后会在这里展示订单。"));
             return;
@@ -8882,6 +9296,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         cancelRealtimeVoice();
+        stopTtsPlayback();
         if (speechRecognizer != null) {
             speechRecognizer.destroy();
             speechRecognizer = null;
