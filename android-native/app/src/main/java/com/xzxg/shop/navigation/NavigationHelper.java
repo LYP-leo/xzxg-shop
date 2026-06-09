@@ -1,5 +1,7 @@
 package com.xzxg.shop.navigation;
 
+import com.xzxg.shop.R;
+
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
@@ -43,6 +45,18 @@ public final class NavigationHelper {
         intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_NO_ANIMATION);
         activity.startActivity(intent);
         activity.overridePendingTransition(0, 0);
+        return true;
+    }
+
+    public static boolean navigateMainRouteFromDrawer(Activity activity, String route) {
+        Intent intent = intentForRoute(activity, route);
+        if (intent == null) {
+            Toast.makeText(activity, "暂不支持该跳转", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+        intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        activity.startActivity(intent);
+        activity.overridePendingTransition(0, R.anim.drawer_activity_exit_left);
         return true;
     }
 

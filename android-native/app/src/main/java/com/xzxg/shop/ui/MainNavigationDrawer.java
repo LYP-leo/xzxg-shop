@@ -2,6 +2,7 @@ package com.xzxg.shop.ui;
 
 import com.xzxg.shop.account.AccountUi;
 import com.xzxg.shop.app.ShopApplication;
+import com.xzxg.shop.R;
 import com.xzxg.shop.chat.ChatActivity;
 import com.xzxg.shop.chat.ChatHistoryDrawer;
 import com.xzxg.shop.navigation.NavigationHelper;
@@ -92,8 +93,7 @@ public final class MainNavigationDrawer {
             if (callbacks != null) {
                 callbacks.beforeNavigate(Routes.CHAT);
             }
-            close(root, layer, panel);
-            openChat(activity, "", "");
+            openChatFromDrawer(activity, root, layer, "", "");
         });
         LinearLayout.LayoutParams createParams = new LinearLayout.LayoutParams(dp(activity, 44), dp(activity, 44));
         createParams.leftMargin = dp(activity, 8);
@@ -213,14 +213,16 @@ public final class MainNavigationDrawer {
         row.addView(text, new LinearLayout.LayoutParams(0, -1, 1));
 
         row.setOnClickListener(v -> {
-            close(root, layer, panel);
             if (active) {
+                close(root, layer, panel);
                 return;
             }
             if (callbacks != null) {
                 callbacks.beforeNavigate(route);
             }
-            NavigationHelper.navigateMainRoute(activity, route);
+            if (NavigationHelper.navigateMainRouteFromDrawer(activity, route)) {
+                removeDrawerAfterTransition(root, layer);
+            }
         });
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(activity, 56));
         params.bottomMargin = dp(activity, 4);
@@ -285,10 +287,7 @@ public final class MainNavigationDrawer {
             if (callbacks != null) {
                 callbacks.beforeNavigate(Routes.CHAT);
             }
-            if (root != null && layer != null && panel != null) {
-                close(root, layer, panel);
-            }
-            openChat(activity, item.localSessionId, item.serverSessionId);
+            openChatFromDrawer(activity, root, layer, item.localSessionId, item.serverSessionId);
         });
         return row;
     }
@@ -338,7 +337,7 @@ public final class MainNavigationDrawer {
         return bar;
     }
 
-    private static void openChat(Activity activity, String localSessionId, String serverSessionId) {
+    private static void openChatFromDrawer(Activity activity, FrameLayout root, FrameLayout layer, String localSessionId, String serverSessionId) {
         Intent intent = new Intent(activity, ChatActivity.class);
         intent.putExtra(Routes.EXTRA_ROUTE, Routes.CHAT);
         if (localSessionId != null && !localSessionId.isEmpty()) {
@@ -351,7 +350,8 @@ public final class MainNavigationDrawer {
         }
         intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_NO_ANIMATION);
         activity.startActivity(intent);
-        activity.overridePendingTransition(0, 0);
+        activity.overridePendingTransition(0, R.anim.drawer_activity_exit_left);
+        removeDrawerAfterTransition(root, layer);
     }
 
     private static void close(FrameLayout root, FrameLayout layer, LinearLayout panel) {
@@ -361,6 +361,17 @@ public final class MainNavigationDrawer {
         int panelWidth = panel.getWidth();
         panel.animate().translationX(-panelWidth).setDuration(150).start();
         layer.animate().alpha(0f).setDuration(150).withEndAction(() -> root.removeView(layer)).start();
+    }
+
+    private static void removeDrawerAfterTransition(FrameLayout root, FrameLayout layer) {
+        if (root == null || layer == null) {
+            return;
+        }
+        root.postDelayed(() -> {
+            if (layer.getParent() == root) {
+                root.removeView(layer);
+            }
+        }, 280);
     }
 
     private static FrameLayout findOpenLayer(FrameLayout root) {
