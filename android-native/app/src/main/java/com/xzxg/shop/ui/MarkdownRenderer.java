@@ -10,6 +10,9 @@ import android.text.style.RelativeSizeSpan;
 import android.text.style.StyleSpan;
 import android.widget.TextView;
 
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 import io.noties.markwon.Markwon;
 import io.noties.markwon.ext.tables.TablePlugin;
 import io.noties.markwon.ext.tasklist.TaskListPlugin;
@@ -38,19 +41,55 @@ public final class MarkdownRenderer {
         StringBuilder builder = new StringBuilder();
         for (int i = 0; i < lines.length; i++) {
             String line = lines[i];
-            if (line.startsWith("### ")) {
-                line = line.substring(4).trim();
-            } else if (line.startsWith("## ")) {
-                line = line.substring(3).trim();
-            } else if (line.startsWith("# ")) {
-                line = line.substring(2).trim();
+            String trimmed = line.trim();
+            boolean headingLine = false;
+            if (trimmed.startsWith("### ")) {
+                line = trimmed.substring(4).trim();
+                headingLine = true;
+            } else if (trimmed.startsWith("## ")) {
+                line = trimmed.substring(3).trim();
+                headingLine = true;
+            } else if (trimmed.startsWith("# ")) {
+                line = trimmed.substring(2).trim();
+                headingLine = true;
+            } else {
+                String leadTitle = parseBoldListHeadingText(trimmed);
+                if (!leadTitle.isEmpty()) {
+                    line = leadTitle;
+                    headingLine = true;
+                }
             }
-            if (i > 0) {
-                builder.append('\n');
+            if (headingLine) {
+                appendHeadingLine(builder, line);
+            } else {
+                appendRegularLine(builder, line);
             }
-            builder.append(line);
         }
         return builder.toString();
+    }
+
+    private static void appendRegularLine(StringBuilder builder, String line) {
+        if (line == null || line.isEmpty()) {
+            builder.append("<br>\n");
+            return;
+        }
+        if (builder.length() > 0 && builder.charAt(builder.length() - 1) != '\n') {
+            builder.append('\n');
+        }
+        builder.append(line);
+    }
+
+    private static void appendHeadingLine(StringBuilder builder, String line) {
+        if (builder.length() > 0) {
+            if (builder.charAt(builder.length() - 1) != '\n') {
+                builder.append('\n');
+            }
+            if (builder.length() > 1 && builder.charAt(builder.length() - 2) != '\n') {
+                builder.append('\n');
+            }
+        }
+        builder.append(line);
+        builder.append('\n');
     }
 
     private static void applyHeadingColors(TextView target, String markdown) {
@@ -89,16 +128,36 @@ public final class MarkdownRenderer {
         if (line == null) {
             return null;
         }
-        if (line.startsWith("### ")) {
-            return new Heading(line.substring(4).trim(), Color.rgb(46, 125, 107), 1.0f);
+        String trimmed = line.trim();
+        if (trimmed.startsWith("### ")) {
+            return new Heading(cleanHeadingText(trimmed.substring(4)), Color.rgb(46, 125, 107), 1.0f);
         }
-        if (line.startsWith("## ")) {
-            return new Heading(line.substring(3).trim(), Color.rgb(31, 106, 165), 1.08f);
+        if (trimmed.startsWith("## ")) {
+            return new Heading(cleanHeadingText(trimmed.substring(3)), Color.rgb(31, 106, 165), 1.08f);
         }
-        if (line.startsWith("# ")) {
-            return new Heading(line.substring(2).trim(), Color.rgb(15, 76, 129), 1.2f);
+        if (trimmed.startsWith("# ")) {
+            return new Heading(cleanHeadingText(trimmed.substring(2)), Color.rgb(15, 76, 129), 1.2f);
+        }
+        String leadTitle = parseBoldListHeadingText(trimmed);
+        if (!leadTitle.isEmpty()) {
+            return new Heading(leadTitle, Color.rgb(46, 125, 107), 1.06f);
         }
         return null;
+    }
+
+    private static String parseBoldListHeadingText(String line) {
+        Matcher matcher = Pattern.compile("^[-*+]\\s+\\*\\*(.+?)\\*\\*\\s*[：:]?\\s*$").matcher(line == null ? "" : line);
+        if (!matcher.find()) {
+            return "";
+        }
+        return cleanHeadingText(matcher.group(1));
+    }
+
+    private static String cleanHeadingText(String text) {
+        String value = text == null ? "" : text.trim();
+        value = value.replaceAll("^[*_`\\s]+", "").replaceAll("[*_`\\s]+$", "").trim();
+        value = value.replaceAll("[：:]$", "").trim();
+        return value;
     }
 
     private static class Heading {

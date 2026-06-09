@@ -169,6 +169,7 @@ public class ChatActivity extends BaseShopActivity {
     private JSONArray activeAssistantBlocks = new JSONArray();
     private JSONArray activeAssistantSegments = new JSONArray();
     private ThinkingViewState activeThinking;
+    private View activeCartStateCard;
     private boolean activeAssistantAnswerStarted;
     private boolean hasReceivedThinkingDelta;
     private boolean loggedMissingThinkingDelta;
@@ -1260,13 +1261,19 @@ public class ChatActivity extends BaseShopActivity {
     private String greetingPrefix() {
         Calendar calendar = Calendar.getInstance();
         int hour = calendar.get(Calendar.HOUR_OF_DAY);
-        if (hour >= 5 && hour < 11) {
+        if (hour >= 6 && hour < 8) {
             return "早上好";
+        }
+        if (hour >= 8 && hour < 11) {
+            return "上午好";
         }
         if (hour >= 11 && hour < 14) {
             return "中午好";
         }
-        if (hour >= 14 && hour < 24) {
+        if (hour >= 14 && hour < 18) {
+            return "下午好";
+        }
+        if (hour >= 18 && hour < 24) {
             return "晚上好";
         }
         return "夜深了";
@@ -2012,6 +2019,7 @@ public class ChatActivity extends BaseShopActivity {
         activeAssistantBlocks = new JSONArray();
         activeAssistantSegments = new JSONArray();
         activeThinking = null;
+        activeCartStateCard = null;
         activeAssistantAnswerStarted = false;
         hasReceivedThinkingDelta = false;
         loggedMissingThinkingDelta = false;
@@ -2082,7 +2090,7 @@ public class ChatActivity extends BaseShopActivity {
             } else {
                 flushActiveTextSegment(false);
             }
-            activeAssistantBlocks.put(part);
+            appendActiveBlock(part);
             appendBlockSegment(part);
             renderAgentBlock(part, chatList);
             return;
@@ -2101,7 +2109,7 @@ public class ChatActivity extends BaseShopActivity {
             } else {
                 flushActiveTextSegment(false);
             }
-            activeAssistantBlocks.put(value);
+            appendActiveBlock(value);
             appendBlockSegment(value);
             renderAgentBlock(value, chatList);
             return;
@@ -3446,6 +3454,16 @@ public class ChatActivity extends BaseShopActivity {
         return "product_card".equals(type) || "product_refs".equals(type);
     }
 
+    private void appendActiveBlock(JSONObject block) {
+        if (block == null) {
+            return;
+        }
+        if (isCartStateBlock(block)) {
+            activeAssistantBlocks = withoutCartStateBlocks(activeAssistantBlocks);
+        }
+        activeAssistantBlocks.put(block);
+    }
+
     private void appendBlockSegment(JSONObject block) {
         if (block == null) {
             return;
@@ -3454,9 +3472,75 @@ public class ChatActivity extends BaseShopActivity {
         try {
             segment.put("type", "block");
             segment.put("block", new JSONObject(block.toString()));
+            if (isCartStateBlock(block)) {
+                activeAssistantSegments = withoutCartStateSegments(activeAssistantSegments);
+            }
             activeAssistantSegments.put(segment);
         } catch (Exception ignored) {
         }
+    }
+
+    private boolean isCartStateBlock(JSONObject block) {
+        return block != null && "cart_state".equals(block.optString("type"));
+    }
+
+    private JSONArray withoutCartStateBlocks(JSONArray blocks) {
+        JSONArray filtered = new JSONArray();
+        if (blocks == null) {
+            return filtered;
+        }
+        for (int i = 0; i < blocks.length(); i++) {
+            JSONObject block = blocks.optJSONObject(i);
+            if (block != null && !isCartStateBlock(block)) {
+                filtered.put(block);
+            }
+        }
+        return filtered;
+    }
+
+    private JSONArray withoutCartStateSegments(JSONArray segments) {
+        JSONArray filtered = new JSONArray();
+        if (segments == null) {
+            return filtered;
+        }
+        for (int i = 0; i < segments.length(); i++) {
+            JSONObject segment = segments.optJSONObject(i);
+            if (segment == null) {
+                continue;
+            }
+            if ("block".equals(segment.optString("type")) && isCartStateBlock(segment.optJSONObject("block"))) {
+                continue;
+            }
+            filtered.put(segment);
+        }
+        return filtered;
+    }
+
+    private int lastCartStateSegmentIndex(JSONArray segments) {
+        int index = -1;
+        if (segments == null) {
+            return index;
+        }
+        for (int i = 0; i < segments.length(); i++) {
+            JSONObject segment = segments.optJSONObject(i);
+            if (segment != null && "block".equals(segment.optString("type")) && isCartStateBlock(segment.optJSONObject("block"))) {
+                index = i;
+            }
+        }
+        return index;
+    }
+
+    private int lastCartStateBlockIndex(JSONArray blocks) {
+        int index = -1;
+        if (blocks == null) {
+            return index;
+        }
+        for (int i = 0; i < blocks.length(); i++) {
+            if (isCartStateBlock(blocks.optJSONObject(i))) {
+                index = i;
+            }
+        }
+        return index;
     }
 
     private void appendTextSegment(String markdown) {
@@ -3539,7 +3623,11 @@ public class ChatActivity extends BaseShopActivity {
             return;
         }
         if ("cart_state".equals(type)) {
-            parent.addView(messageRenderer.cartStateCard(block.optJSONObject("cart")));
+            if (activeCartStateCard != null && activeCartStateCard.getParent() instanceof ViewGroup) {
+                ((ViewGroup) activeCartStateCard.getParent()).removeView(activeCartStateCard);
+            }
+            activeCartStateCard = messageRenderer.cartStateCard(block.optJSONObject("cart"));
+            parent.addView(activeCartStateCard);
             scrollBottom();
             return;
         }
@@ -3709,6 +3797,7 @@ public class ChatActivity extends BaseShopActivity {
             return;
         }
         JSONArray pendingThoughts = new JSONArray();
+        int lastCartStateSegmentIndex = lastCartStateSegmentIndex(segments);
         for (int i = 0; i < segments.length(); i++) {
             JSONObject segment = segments.optJSONObject(i);
             if (segment == null) {
@@ -3728,6 +3817,9 @@ public class ChatActivity extends BaseShopActivity {
             } else if ("table".equals(type)) {
                 renderHistoricalTableSegment(context, segment.optString("markdown", ""));
             } else if ("block".equals(type)) {
+                if (isCartStateBlock(segment.optJSONObject("block")) && i != lastCartStateSegmentIndex) {
+                    continue;
+                }
                 renderHistoricalBlock(context, segment.optJSONObject("block"));
             } else if ("product_refs".equals(type) || "product_card".equals(type)) {
                 renderHistoricalBlock(context, segment);
@@ -3764,9 +3856,13 @@ public class ChatActivity extends BaseShopActivity {
         if (blocks == null) {
             return;
         }
+        int lastCartStateIndex = lastCartStateBlockIndex(blocks);
         for (int i = 0; i < blocks.length(); i++) {
             JSONObject block = blocks.optJSONObject(i);
             if (block != null) {
+                if (isCartStateBlock(block) && i != lastCartStateIndex) {
+                    continue;
+                }
                 renderHistoricalBlock(context, block);
             }
         }
@@ -4194,6 +4290,7 @@ public class ChatActivity extends BaseShopActivity {
             textView.setTextSize(15);
             textView.setLineSpacing(4, 1);
             textView.setTextColor(Color.WHITE);
+            textView.setMaxWidth((int) (getResources().getDisplayMetrics().widthPixels * 0.76f) - dp(20));
             bubble.addView(textView, new LinearLayout.LayoutParams(-1, -2));
             shell.addView(bubble);
         }
@@ -4232,7 +4329,7 @@ public class ChatActivity extends BaseShopActivity {
         bubble.setOrientation(LinearLayout.VERTICAL);
         bubble.setPadding(dp(10), dp(9), dp(10), dp(9));
         bubble.setBackground(rounded(Color.rgb(20, 20, 20), dp(16)));
-        bubble.setLayoutParams(new LinearLayout.LayoutParams((int) (getResources().getDisplayMetrics().widthPixels * 0.76f), ViewGroup.LayoutParams.WRAP_CONTENT));
+        bubble.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         return bubble;
     }
 
