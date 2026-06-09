@@ -349,8 +349,9 @@ public final class MainNavigationDrawer {
         if (serverSessionId != null && !serverSessionId.isEmpty()) {
             intent.putExtra(Routes.EXTRA_SERVER_SESSION_ID, serverSessionId);
         }
-        intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_NO_ANIMATION);
         activity.startActivity(intent);
+        activity.overridePendingTransition(0, 0);
     }
 
     private static void close(FrameLayout root, FrameLayout layer, LinearLayout panel) {

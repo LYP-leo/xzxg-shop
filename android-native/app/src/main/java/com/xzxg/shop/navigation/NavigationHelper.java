@@ -40,8 +40,9 @@ public final class NavigationHelper {
             Toast.makeText(activity, "暂不支持该跳转", Toast.LENGTH_SHORT).show();
             return false;
         }
-        intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_NO_ANIMATION);
         activity.startActivity(intent);
+        activity.overridePendingTransition(0, 0);
         return true;
     }
 
