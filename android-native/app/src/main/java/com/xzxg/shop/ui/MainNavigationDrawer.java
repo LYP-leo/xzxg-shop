@@ -64,7 +64,6 @@ public final class MainNavigationDrawer {
 
         FrameLayout layer = new FrameLayout(activity);
         layer.setTag(TAG_LAYER);
-        layer.setBackgroundColor(Color.argb(92, 0, 0, 0));
         layer.setAlpha(0f);
 
         LinearLayout panel = new LinearLayout(activity);
@@ -72,6 +71,7 @@ public final class MainNavigationDrawer {
         panel.setPadding(dp(activity, 14), dp(activity, 24), dp(activity, 14), dp(activity, 10));
         panel.setBackgroundColor(Color.WHITE);
         panel.setClickable(true);
+        panel.setElevation(dp(activity, 10));
 
         LinearLayout header = new LinearLayout(activity);
         header.setGravity(Gravity.CENTER_VERTICAL);
@@ -115,6 +115,7 @@ public final class MainNavigationDrawer {
 
         ScrollView historyScroll = new ScrollView(activity);
         historyScroll.setFillViewport(true);
+        historyScroll.setVerticalScrollBarEnabled(false);
         LinearLayout historyList = new LinearLayout(activity);
         historyList.setOrientation(LinearLayout.VERTICAL);
         historyList.setPadding(0, dp(activity, 12), 0, dp(activity, 16));
@@ -176,6 +177,7 @@ public final class MainNavigationDrawer {
         panel.setTranslationX(-panelWidth);
         layer.setOnClickListener(v -> close(root, layer, panel));
         layer.addView(panel, new FrameLayout.LayoutParams(panelWidth, -1, Gravity.LEFT | Gravity.TOP));
+        pushContent(root, layer, panelWidth, true);
         root.addView(layer, new FrameLayout.LayoutParams(-1, -1));
         layer.animate().alpha(1f).setDuration(160).start();
         panel.animate().translationX(0f).setDuration(180).start();
@@ -360,6 +362,7 @@ public final class MainNavigationDrawer {
         }
         int panelWidth = panel.getWidth();
         panel.animate().translationX(-panelWidth).setDuration(150).start();
+        pushContent(root, layer, 0, false);
         layer.animate().alpha(0f).setDuration(150).withEndAction(() -> root.removeView(layer)).start();
     }
 
@@ -369,9 +372,23 @@ public final class MainNavigationDrawer {
         }
         root.postDelayed(() -> {
             if (layer.getParent() == root) {
+                pushContent(root, layer, 0, false);
                 root.removeView(layer);
             }
         }, 280);
+    }
+
+    private static void pushContent(FrameLayout root, FrameLayout layer, int translationX, boolean opening) {
+        if (root == null) {
+            return;
+        }
+        for (int i = 0; i < root.getChildCount(); i++) {
+            View child = root.getChildAt(i);
+            if (child == layer || TAG_LAYER.equals(child.getTag())) {
+                continue;
+            }
+            child.animate().translationX(translationX).setDuration(opening ? 220 : 180).start();
+        }
     }
 
     private static FrameLayout findOpenLayer(FrameLayout root) {
