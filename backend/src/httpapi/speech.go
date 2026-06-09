@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -28,6 +30,37 @@ type speechRealtimeConfig struct {
 	Lang        string
 	AudioEncode string
 	SampleRate  string
+}
+
+type speechTTSConfig struct {
+	EnabledFlag    bool
+	AppID          string
+	APIKey         string
+	APISecret      string
+	BaseURL        string
+	Voice          string
+	Speed          int
+	Volume         int
+	Pitch          int
+	AudioEncoding  string
+	TextEncoding   string
+	TimeoutSeconds int
+	MaxRunes       int
+}
+
+type speechTTSRequest struct {
+	Text  string `json:"text"`
+	Voice string `json:"voice"`
+}
+
+type xunfeiTTSFrame struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	SID     string `json:"sid"`
+	Data    struct {
+		Audio  string `json:"audio"`
+		Status int    `json:"status"`
+	} `json:"data"`
 }
 
 type speechClientControl struct {
@@ -75,6 +108,55 @@ func (s *Server) handleSpeechRealtime(w http.ResponseWriter, r *http.Request) {
 			return nil
 		},
 	}.ServeHTTP(w, r)
+}
+
+func (s *Server) handleSpeechTTS(w http.ResponseWriter, r *http.Request) {
+	cfg := s.speechTTSConfig(r.Context())
+	if !cfg.Enabled() {
+		writeError(w, http.StatusNotImplemented, "tts_not_enabled", "当前后端未配置讯飞语音合成")
+		return
+	}
+
+	var request speechTTSRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32*1024)).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	text := strings.TrimSpace(request.Text)
+	if text == "" {
+		writeError(w, http.StatusBadRequest, "empty_text", "合成文本不能为空")
+		return
+	}
+	if cfg.MaxRunes > 0 && len([]rune(text)) > cfg.MaxRunes {
+		writeError(w, http.StatusBadRequest, "text_too_long", "合成文本过长")
+		return
+	}
+	voice := strings.TrimSpace(request.Voice)
+	if voice == "" {
+		voice = cfg.Voice
+	}
+
+	timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 20 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+
+	audio, err := s.synthesizeSpeechTTS(ctx, cfg, text, voice)
+	if err != nil {
+		s.logger.Warn("xunfei tts synthesis failed", "request_id", requestIDFromContext(r.Context()), "error", redactXunfeiDialError(err))
+		writeError(w, http.StatusBadGateway, "tts_failed", "语音合成服务暂时不可用")
+		return
+	}
+	contentType := "audio/mpeg"
+	if cfg.AudioEncoding != "lame" {
+		contentType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(audio)
 }
 
 func (s *Server) proxySpeechRealtime(ctx context.Context, client *websocket.Conn, cfg speechRealtimeConfig) {
@@ -160,6 +242,61 @@ func (s *Server) proxySpeechRealtime(ctx context.Context, client *websocket.Conn
 			close(done)
 			return
 		}
+	}
+}
+
+func (s *Server) synthesizeSpeechTTS(ctx context.Context, cfg speechTTSConfig, text string, voice string) ([]byte, error) {
+	xfURL, err := cfg.SignedURL(time.Now())
+	if err != nil {
+		return nil, err
+	}
+	xf, err := websocket.Dial(xfURL, "", "http://localhost/")
+	if err != nil {
+		return nil, err
+	}
+	defer xf.Close()
+
+	if err := websocket.JSON.Send(xf, cfg.RequestPayload(text, voice)); err != nil {
+		return nil, err
+	}
+
+	done := make(chan struct{})
+	var audio []byte
+	var receiveErr error
+	go func() {
+		defer close(done)
+		for {
+			var raw []byte
+			if err := websocket.Message.Receive(xf, &raw); err != nil {
+				if err == io.EOF && len(audio) > 0 {
+					return
+				}
+				receiveErr = err
+				return
+			}
+			chunk, final, err := parseXunfeiTTSFrame(raw)
+			if err != nil {
+				receiveErr = err
+				return
+			}
+			audio = append(audio, chunk...)
+			if final {
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-done:
+		if receiveErr != nil {
+			return nil, receiveErr
+		}
+		if len(audio) == 0 {
+			return nil, fmt.Errorf("xunfei tts returned empty audio")
+		}
+		return audio, nil
 	}
 }
 
@@ -262,6 +399,28 @@ func (s *Server) speechRealtimeConfig(ctx context.Context) speechRealtimeConfig 
 	}
 }
 
+func (s *Server) speechTTSConfig(ctx context.Context) speechTTSConfig {
+	values := map[string]string{}
+	if s != nil && s.configs != nil {
+		values = s.configs.GetMap(ctx)
+	}
+	return speechTTSConfig{
+		EnabledFlag:    boolConfigValue(values, "XUNFEI_TTS_ENABLED", "xunfei.tts.enabled", false),
+		AppID:          speechConfigValue(values, "XUNFEI_TTS_APP_ID", "xunfei.tts.app_id", speechConfigValue(values, "XUNFEI_APP_ID", "xunfei.app_id", "")),
+		APIKey:         speechConfigValue(values, "XUNFEI_TTS_API_KEY", "xunfei.tts.api_key", speechConfigValue(values, "XUNFEI_API_KEY", "xunfei.api_key", "")),
+		APISecret:      speechConfigValue(values, "XUNFEI_TTS_API_SECRET", "xunfei.tts.api_secret", speechConfigValue(values, "XUNFEI_API_SECRET", "xunfei.api_secret", "")),
+		BaseURL:        speechConfigValue(values, "XUNFEI_TTS_BASE_URL", "xunfei.tts.base_url", "wss://tts-api.xfyun.cn/v2/tts"),
+		Voice:          speechConfigValue(values, "XUNFEI_TTS_VOICE", "xunfei.tts.voice", "xiaoyan"),
+		Speed:          boundedConfigInt(values, "XUNFEI_TTS_SPEED", "xunfei.tts.speed", 50, 0, 100),
+		Volume:         boundedConfigInt(values, "XUNFEI_TTS_VOLUME", "xunfei.tts.volume", 50, 0, 100),
+		Pitch:          boundedConfigInt(values, "XUNFEI_TTS_PITCH", "xunfei.tts.pitch", 50, 0, 100),
+		AudioEncoding:  speechConfigValue(values, "XUNFEI_TTS_AUDIO_ENCODING", "xunfei.tts.audio_encoding", "lame"),
+		TextEncoding:   speechConfigValue(values, "XUNFEI_TTS_TEXT_ENCODING", "xunfei.tts.text_encoding", "UTF8"),
+		TimeoutSeconds: boundedConfigInt(values, "XUNFEI_TTS_TIMEOUT_SECONDS", "xunfei.tts.timeout_seconds", 20, 1, 60),
+		MaxRunes:       boundedConfigInt(values, "XUNFEI_TTS_MAX_RUNES", "xunfei.tts.max_runes", 800, 1, 2000),
+	}
+}
+
 func speechConfigValue(values map[string]string, envKey string, configKey string, fallback string) string {
 	if value := strings.TrimSpace(values[envKey]); value != "" {
 		return value
@@ -275,8 +434,38 @@ func speechConfigValue(values map[string]string, envKey string, configKey string
 	return fallback
 }
 
+func boundedConfigInt(values map[string]string, envKey string, configKey string, fallback int, min int, max int) int {
+	raw := speechConfigValue(values, envKey, configKey, "")
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	if parsed < min {
+		return min
+	}
+	if parsed > max {
+		return max
+	}
+	return parsed
+}
+
+func boolConfigValue(values map[string]string, envKey string, configKey string, fallback bool) bool {
+	raw := strings.ToLower(speechConfigValue(values, envKey, configKey, ""))
+	if raw == "" {
+		return fallback
+	}
+	return raw == "true" || raw == "1" || raw == "yes" || raw == "on"
+}
+
 func (c speechRealtimeConfig) Enabled() bool {
 	return c.AppID != "" && c.APIKey != "" && c.APISecret != ""
+}
+
+func (c speechTTSConfig) Enabled() bool {
+	return c.EnabledFlag && c.AppID != "" && c.APIKey != "" && c.APISecret != "" && c.BaseURL != ""
 }
 
 func (c speechRealtimeConfig) SignedURL(uuid string) (string, error) {
@@ -302,6 +491,53 @@ func (c speechRealtimeConfig) SignedURL(uuid string) (string, error) {
 	values.Set("signature", base64.StdEncoding.EncodeToString(mac.Sum(nil)))
 	base.RawQuery = values.Encode()
 	return base.String(), nil
+}
+
+func (c speechTTSConfig) SignedURL(now time.Time) (string, error) {
+	base, err := url.Parse(c.BaseURL)
+	if err != nil {
+		return "", err
+	}
+	host := base.Host
+	date := now.UTC().Format(http.TimeFormat)
+	path := base.EscapedPath()
+	if path == "" {
+		path = "/v2/tts"
+	}
+	signatureOrigin := "host: " + host + "\n" + "date: " + date + "\n" + "GET " + path + " HTTP/1.1"
+	mac := hmac.New(sha256.New, []byte(c.APISecret))
+	_, _ = mac.Write([]byte(signatureOrigin))
+	signature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	authorizationOrigin := fmt.Sprintf(`api_key="%s", algorithm="hmac-sha256", headers="host date request-line", signature="%s"`, c.APIKey, signature)
+
+	query := base.Query()
+	query.Set("authorization", base64.StdEncoding.EncodeToString([]byte(authorizationOrigin)))
+	query.Set("date", date)
+	query.Set("host", host)
+	base.RawQuery = query.Encode()
+	return base.String(), nil
+}
+
+func (c speechTTSConfig) RequestPayload(text string, voice string) map[string]any {
+	if voice == "" {
+		voice = c.Voice
+	}
+	return map[string]any{
+		"common": map[string]any{"app_id": c.AppID},
+		"business": map[string]any{
+			"aue":    c.AudioEncoding,
+			"sfl":    1,
+			"vcn":    voice,
+			"speed":  c.Speed,
+			"volume": c.Volume,
+			"pitch":  c.Pitch,
+			"tte":    c.TextEncoding,
+		},
+		"data": map[string]any{
+			"status": 2,
+			"text":   base64.StdEncoding.EncodeToString([]byte(text)),
+		},
+	}
 }
 
 func redactXunfeiDialError(err error) string {
@@ -331,6 +567,28 @@ func canonicalQuery(values url.Values) string {
 		}
 	}
 	return strings.Join(parts, "&")
+}
+
+func parseXunfeiTTSFrame(raw []byte) ([]byte, bool, error) {
+	var frame xunfeiTTSFrame
+	if err := json.Unmarshal(raw, &frame); err != nil {
+		return nil, false, err
+	}
+	if frame.Code != 0 {
+		if frame.Message == "" {
+			frame.Message = "xunfei tts error"
+		}
+		return nil, false, fmt.Errorf("xunfei tts code %d: %s", frame.Code, frame.Message)
+	}
+	var audio []byte
+	if frame.Data.Audio != "" {
+		decoded, err := base64.StdEncoding.DecodeString(frame.Data.Audio)
+		if err != nil {
+			return nil, false, err
+		}
+		audio = decoded
+	}
+	return audio, frame.Data.Status == 2, nil
 }
 
 func parseXunfeiSpeechResult(raw []byte) (xunfeiSpeechResult, bool) {

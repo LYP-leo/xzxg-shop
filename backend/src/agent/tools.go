@@ -258,6 +258,7 @@ func (r *Runtime) toolSearchImageProducts(ctx context.Context, run domain.AgentR
 	args.FileID = strings.TrimSpace(args.FileID)
 	args.ObjectKey = strings.TrimSpace(args.ObjectKey)
 	args.ImageURL = strings.TrimSpace(args.ImageURL)
+	normalizeImageToolSource(&args.FileID, &args.ObjectKey, &args.ImageURL)
 	if args.FileID == "" && args.ObjectKey == "" && args.ImageURL == "" {
 		if source := firstImageAttachment(attachments); source != nil {
 			args.FileID = source.FileID
@@ -376,15 +377,46 @@ func firstImageAttachment(attachments []domain.Attachment) *imageToolSource {
 			ObjectKey: strings.TrimSpace(attachment.ObjectKey),
 			ImageURL:  strings.TrimSpace(attachment.URL),
 		}
-		if strings.HasPrefix(source.ImageURL, "/api/v1/files/") {
-			source.FileID = strings.TrimPrefix(source.ImageURL, "/api/v1/files/")
-			source.ImageURL = ""
-		}
+		normalizeImageToolSource(&source.FileID, &source.ObjectKey, &source.ImageURL)
 		if source.FileID != "" || source.ObjectKey != "" || source.ImageURL != "" {
 			return &source
 		}
 	}
 	return nil
+}
+
+func normalizeImageToolSource(fileID *string, objectKey *string, imageURL *string) {
+	*fileID = strings.TrimSpace(*fileID)
+	*objectKey = strings.TrimSpace(*objectKey)
+	*imageURL = strings.TrimSpace(*imageURL)
+	if *fileID != "" || *imageURL == "" {
+		return
+	}
+	if parsed := fileIDFromAPIFileURL(*imageURL); parsed != "" {
+		*fileID = parsed
+		*imageURL = ""
+	}
+}
+
+func fileIDFromAPIFileURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	const marker = "/api/v1/files/"
+	index := strings.Index(raw, marker)
+	if index < 0 {
+		return ""
+	}
+	rest := raw[index+len(marker):]
+	if cut := strings.IndexAny(rest, "?#/"); cut >= 0 {
+		rest = rest[:cut]
+	}
+	rest = strings.TrimSpace(rest)
+	if strings.HasPrefix(rest, "file_") {
+		return rest
+	}
+	return ""
 }
 
 func (r *Runtime) toolSearchProducts(ctx context.Context, run domain.AgentRun, raw json.RawMessage) toolObservation {
@@ -1563,6 +1595,7 @@ func (r *Runtime) rerankProductsByModel(ctx context.Context, query string, produ
 			Index:     len(scores),
 		})
 	}
+	out = filterProductsByModelRerankScore(out, scores, values)
 	return productRerankResult{
 		Products: out,
 		Scores:   scores,
@@ -1570,6 +1603,32 @@ func (r *Runtime) rerankProductsByModel(ctx context.Context, query string, produ
 		Provider: "dashscope",
 		Model:    config.Model,
 	}, nil
+}
+
+func filterProductsByModelRerankScore(products []domain.ProductCard, scores []productRerankScore, values map[string]string) []domain.ProductCard {
+	if len(products) == 0 || len(scores) == 0 {
+		return products
+	}
+	minScore := floatFromMap(values, "retrieval.product.rerank.model_min_score", 0.50)
+	maxDelta := floatFromMap(values, "retrieval.product.rerank.model_max_score_delta", 0.12)
+	topScore := scores[0].Score
+	threshold := minScore
+	if maxDelta > 0 && topScore-maxDelta > threshold {
+		threshold = topScore - maxDelta
+	}
+	allowed := make(map[string]bool, len(scores))
+	for _, score := range scores {
+		if score.Score >= threshold {
+			allowed[score.ProductID] = true
+		}
+	}
+	filtered := make([]domain.ProductCard, 0, len(products))
+	for _, product := range products {
+		if allowed[product.ProductID] {
+			filtered = append(filtered, product)
+		}
+	}
+	return filtered
 }
 
 func (r *Runtime) rerankProductsByRule(query string, products []domain.ProductCard, structured productSearchStructuredArguments, values map[string]string) productRerankResult {

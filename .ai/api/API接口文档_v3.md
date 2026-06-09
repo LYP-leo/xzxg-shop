@@ -577,6 +577,59 @@ Authorization: Bearer <token>
 }
 ```
 
+### POST /agent/guide-suggestions
+
+权限：用户
+
+用途：客户端浮窗向导在商品列表、购物车、订单和商品详情页请求可点击的 AI 问题建议。服务端先生成规则候选，再用小模型按 `agent.prompt.guide_suggestions` 改写和排序，最终返回最多 3 条 10 个中文字以内的短问题；模型失败时回退规则候选。客户端点击后可跳转 AI 会话并把 `question` 作为用户输入发送。
+
+请求：
+
+```json
+{
+  "page": "products",
+  "context": {
+    "keyword": "手机",
+    "category_id": "digital",
+    "category_name": "数码电子",
+    "cart_item_count": 3,
+    "visible_product_ids": ["p_digital_001", "p_digital_002"]
+  },
+  "limit": 3
+}
+```
+
+字段：
+
+- `page`：`products`、`cart`、`orders`、`product_detail`。
+- `context.keyword`：列表页搜索词。
+- `context.category_id` / `context.category_name`：当前分类。
+- `context.visible_product_ids`：当前屏幕可见商品 ID，用于后续扩展排序。
+- `context.product_id` / `context.product_name`：商品详情页当前商品。
+- `context.cart_item_count`：购物车商品数。
+- `context.pending_payment_count` / `context.pending_review_count`：订单页待处理数量。
+- `limit`：默认 3，最大 3。
+- `question`：服务端保证不超过 10 个中文字；前端可直接展示在浮窗气泡内。
+
+响应：
+
+```json
+{
+  "items": [
+    {
+      "id": "keyword_recommend",
+      "question": "帮我选手机",
+      "reason": "根据当前搜索词生成可直接发送给导购的选购问题"
+    }
+  ]
+}
+```
+
+错误：
+
+- `400 bad_page`：`page` 不在支持范围内。
+- `400 bad_request`：请求 JSON 不合法。
+
 ### POST /agent/runs/{run_id}:cancel
 
 权限：用户
@@ -617,6 +670,78 @@ Authorization: Bearer <token>
 - `query`：正向商品关键词，建议 2-4 个词。
 - `constraints`：用户明确需要的品牌、属性、型号、类目。
 - `negative`：用户明确不要的品牌、属性、型号、类目；这是硬约束，命中商品会被工具层剔除。
+
+## 语音
+
+### GET /speech/realtime
+
+权限：用户
+
+用途：客户端通过 WebSocket 上传 PCM 音频，后端代理讯飞实时语音识别并返回识别事件。
+
+Query：
+
+- `sample_rate`：当前仅支持 `16000`。
+
+服务端事件：
+
+```json
+{"type":"ready"}
+{"type":"partial","text":"你好","seq":1}
+{"type":"final","text":"你好世界","seq":2}
+{"type":"closed"}
+{"type":"error","code":"speech_network_error","message":"语音识别服务暂时不可用"}
+```
+
+### POST /speech/tts
+
+权限：用户
+
+用途：AI 回复完成后，客户端把可见回复文本发给后端，后端代理讯飞在线语音合成并直接返回音频字节。讯飞密钥只保存在服务端配置中心。
+
+请求头：
+
+```http
+Content-Type: application/json
+Accept: audio/mpeg
+Authorization: Bearer <token>
+```
+
+请求：
+
+```json
+{
+  "text": "这几款手机更适合日常拍照和长续航。",
+  "voice": "xiaoyan"
+}
+```
+
+字段：
+
+- `text`：必填，默认最大 800 个字符，可通过 `xunfei.tts.max_runes` 配置。
+- `voice`：可选，不传时使用 `xunfei.tts.voice`。
+
+响应：
+
+- `200`：音频字节，默认 `Content-Type: audio/mpeg`。
+- `400 empty_text`：文本为空。
+- `400 text_too_long`：文本超过服务端限制。
+- `501 tts_not_enabled`：未开启或未配置 TTS。
+- `502 tts_failed`：讯飞合成失败或网络异常。
+
+相关配置：
+
+- `xunfei.tts.enabled`
+- `xunfei.tts.app_id`
+- `xunfei.tts.api_key`
+- `xunfei.tts.api_secret`
+- `xunfei.tts.base_url`
+- `xunfei.tts.voice`
+- `xunfei.tts.speed`
+- `xunfei.tts.volume`
+- `xunfei.tts.pitch`
+- `xunfei.tts.timeout_seconds`
+- `xunfei.tts.max_runes`
 
 ## 图片搜索
 

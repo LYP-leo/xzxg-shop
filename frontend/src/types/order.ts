@@ -15,7 +15,7 @@ export type Order = {
   account_id: string;
   merchant_id: string;
   merchant_name: string;
-  status: 'pending_ship' | 'shipped' | 'completed' | 'canceled';
+  status: 'pending_payment' | 'pending_ship' | 'shipped' | 'completed' | 'canceled' | 'closed_timeout' | 'refund_requested' | 'refunded';
   total_amount: string;
   items: OrderItem[];
   created_at: string;

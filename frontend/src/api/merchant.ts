@@ -28,6 +28,13 @@ export type KnowledgeDocument = {
   created_at: string;
 };
 
+export type PagedResponse<T> = {
+  items: T[];
+  page: number;
+  page_size: number;
+  total: number;
+};
+
 export async function createMerchantProduct(token: string, input: MerchantProductInput): Promise<ProductDetail> {
   return requestJSON<ProductDetail>('/merchant/products', {
     method: 'POST',
@@ -51,11 +58,10 @@ export async function deleteMerchantProduct(token: string, productId: string): P
   });
 }
 
-export async function listMerchantOrders(token: string): Promise<Order[]> {
-  const data = await requestJSON<{ items: Order[] }>('/merchant/orders', {
+export async function listMerchantOrders(token: string, page = 1, pageSize = 10): Promise<PagedResponse<Order>> {
+  return requestJSON<PagedResponse<Order>>(`/merchant/orders?page=${page}&page_size=${pageSize}`, {
     headers: authHeaders(token)
   });
-  return data.items;
 }
 
 export async function updateMerchantOrderStatus(token: string, orderId: string, status: Order['status']): Promise<Order> {

@@ -3,10 +3,9 @@ import type { ProductCard as ProductCardType } from '../../types/product';
 type Props = {
   product: ProductCardType;
   onOpen?: (productId: string) => void;
-  onAddToCart?: (product: ProductCardType) => void;
 };
 
-export function ProductCard({ product, onOpen, onAddToCart }: Props) {
+export function ProductCard({ product, onOpen }: Props) {
   return (
     <article className="product-card">
       <button className="product-card__image" onClick={() => onOpen?.(product.productId)} aria-label={`查看 ${product.name}`}>
@@ -34,11 +33,6 @@ export function ProductCard({ product, onOpen, onAddToCart }: Props) {
           <button className="button button--ghost" onClick={() => onOpen?.(product.productId)}>
             详情
           </button>
-          {onAddToCart ? (
-            <button className="button" disabled={product.stockStatus !== 'in_stock'} onClick={() => onAddToCart(product)}>
-              加购
-            </button>
-          ) : null}
         </div>
       </div>
     </article>

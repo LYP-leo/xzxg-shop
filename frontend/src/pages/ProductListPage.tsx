@@ -1,16 +1,13 @@
 import { useEffect, useState } from 'react';
-import { addToCart } from '../api/cart';
 import { listCategories, listProducts } from '../api/product';
 import { ProductCard } from '../components/product/ProductCard';
 import type { Category, ProductCard as ProductCardType } from '../types/product';
 
 type Props = {
   onOpenProduct: (productId: string) => void;
-  onCartChange: () => void;
-  canAddToCart?: boolean;
 };
 
-export function ProductListPage({ onOpenProduct, onCartChange, canAddToCart = true }: Props) {
+export function ProductListPage({ onOpenProduct }: Props) {
   const [keyword, setKeyword] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [categories, setCategories] = useState<Category[]>([]);
@@ -24,17 +21,12 @@ export function ProductListPage({ onOpenProduct, onCartChange, canAddToCart = tr
     listProducts({ keyword, categoryId }).then(setProducts);
   }, [keyword, categoryId]);
 
-  async function addProduct(product: ProductCardType) {
-    await addToCart({ productId: product.productId, skuId: product.skuId, quantity: 1 });
-    onCartChange();
-  }
-
   return (
     <section>
       <header className="page-header">
         <div>
           <h1>商品</h1>
-          <p>最小电商域商品数据，供 Agent 推荐和购物车使用。</p>
+          <p>查看当前商品库数据、库存状态和风险标记，用于后台巡检。</p>
         </div>
       </header>
       <div className="toolbar">
@@ -50,7 +42,7 @@ export function ProductListPage({ onOpenProduct, onCartChange, canAddToCart = tr
       </div>
       <div className="product-grid">
         {products.map((product) => (
-          <ProductCard product={product} key={product.productId} onOpen={onOpenProduct} onAddToCart={canAddToCart ? addProduct : undefined} />
+          <ProductCard product={product} key={product.productId} onOpen={onOpenProduct} />
         ))}
       </div>
     </section>
