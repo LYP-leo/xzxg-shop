@@ -2,10 +2,10 @@ package com.xzxg.shop.product;
 
 import com.xzxg.shop.account.LoginActivity;
 import com.xzxg.shop.base.BaseShopActivity;
-import com.xzxg.shop.cart.CartActivity;
 import com.xzxg.shop.navigation.Routes;
 import com.xzxg.shop.network.ApiClient;
 import com.xzxg.shop.ui.BottomSheetHelper;
+import com.xzxg.shop.ui.CartFabHelper;
 import com.xzxg.shop.ui.ShopUi;
 import com.xzxg.shop.ui.TopBarHelper;
 
@@ -45,8 +45,7 @@ public class ProductListActivity extends BaseShopActivity {
     private LinearLayout content;
     private ScrollView productsScroll;
     private LinearLayout productsList;
-    private FrameLayout productCartFab;
-    private TextView productCartBadge;
+    private CartFabHelper cartFabHelper;
     private String activeProductTab = "list";
     private String lastProductKeyword = "";
     private String lastCategoryId = "";
@@ -54,7 +53,6 @@ public class ProductListActivity extends BaseShopActivity {
     private JSONArray cachedCategoryTree = new JSONArray();
     private ProductListState currentProductState;
     private boolean loadingProducts;
-    private int cartItemCountCache;
     private final Set<String> loadingProductKeys = new HashSet<>();
     private final Map<String, ProductListState> productListCache = new HashMap<>();
 
@@ -75,8 +73,17 @@ public class ProductListActivity extends BaseShopActivity {
         renderProductsTab(activeProductTab, false);
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (cartFabHelper != null) {
+            cartFabHelper.refresh();
+        }
+    }
+
     private void renderProductsTab(String tab, boolean restoreScroll) {
         activeProductTab = tab == null || tab.isEmpty() ? "list" : tab;
+        cartFabHelper = null;
         root = new FrameLayout(this);
         root.setBackgroundColor(BG_COLOR);
         content = new LinearLayout(this);
@@ -92,7 +99,7 @@ public class ProductListActivity extends BaseShopActivity {
         content.addView(productBottomBar(), new LinearLayout.LayoutParams(-1, ShopUi.dp(this, 58)));
         setContentView(root);
         bindRootSystemBarPadding(content);
-        addProductCartFab();
+        cartFabHelper = attachCartFab(root, 68);
     }
 
     private void renderProductListTab(boolean restoreScroll) {
@@ -231,92 +238,6 @@ public class ProductListActivity extends BaseShopActivity {
         view.setBackground(ShopUi.rounded(selected ? Color.rgb(245, 246, 248) : Color.WHITE, ShopUi.dp(this, 14)));
         view.setOnClickListener(v -> renderProductsTab(tab, true));
         return view;
-    }
-
-    private void addProductCartFab() {
-        if (sessionStore().token().isEmpty() || root == null) {
-            return;
-        }
-        FrameLayout fabWrap = new FrameLayout(this);
-        fabWrap.setClipChildren(false);
-        fabWrap.setClipToPadding(false);
-        productCartFab = new FrameLayout(this);
-        productCartFab.setClickable(true);
-        android.graphics.drawable.GradientDrawable fabBackground = ShopUi.rounded(Color.WHITE, ShopUi.dp(this, 28));
-        fabBackground.setStroke(ShopUi.dp(this, 1), Color.rgb(220, 224, 230));
-        productCartFab.setBackground(fabBackground);
-        productCartFab.setElevation(0);
-        productCartFab.setTranslationZ(0);
-        TextView icon = new TextView(this);
-        icon.setText("购物车");
-        icon.setTextSize(13);
-        icon.setTypeface(Typeface.DEFAULT_BOLD);
-        icon.setTextColor(Color.rgb(17, 24, 39));
-        icon.setGravity(Gravity.CENTER);
-        productCartFab.addView(icon, new FrameLayout.LayoutParams(ShopUi.dp(this, 56), ShopUi.dp(this, 56), Gravity.CENTER));
-        productCartFab.setOnClickListener(v -> openLegacyCartPage());
-        fabWrap.addView(productCartFab, new FrameLayout.LayoutParams(ShopUi.dp(this, 56), ShopUi.dp(this, 56), Gravity.CENTER));
-        productCartBadge = new TextView(this);
-        productCartBadge.setTextSize(10);
-        productCartBadge.setTextColor(Color.WHITE);
-        productCartBadge.setGravity(Gravity.CENTER);
-        productCartBadge.setTypeface(Typeface.DEFAULT_BOLD);
-        productCartBadge.setIncludeFontPadding(false);
-        productCartBadge.setBackground(ShopUi.rounded(Color.rgb(220, 38, 38), ShopUi.dp(this, 10)));
-        productCartBadge.setElevation(0);
-        productCartBadge.setTranslationZ(0);
-        FrameLayout.LayoutParams badgeParams = new FrameLayout.LayoutParams(ShopUi.dp(this, 30), ShopUi.dp(this, 20), Gravity.RIGHT | Gravity.TOP);
-        badgeParams.topMargin = 0;
-        badgeParams.rightMargin = 0;
-        fabWrap.addView(productCartBadge, badgeParams);
-        productCartBadge.bringToFront();
-        FrameLayout.LayoutParams fabParams = new FrameLayout.LayoutParams(ShopUi.dp(this, 72), ShopUi.dp(this, 72), Gravity.RIGHT | Gravity.BOTTOM);
-        fabParams.rightMargin = ShopUi.dp(this, 18);
-        fabParams.bottomMargin = ShopUi.dp(this, 68);
-        root.addView(fabWrap, fabParams);
-        updateProductCartBadge(cartItemCountCache);
-        refreshProductCartBadge();
-    }
-
-    private void refreshProductCartBadge() {
-        if (sessionStore().token().isEmpty() || productCartBadge == null) {
-            return;
-        }
-        new Thread(() -> {
-            try {
-                JSONObject cart = api().cart();
-                int count = cartItemCount(cart);
-                cartItemCountCache = count;
-                runOnUiThread(() -> updateProductCartBadge(count));
-            } catch (Exception ignored) {
-            }
-        }).start();
-    }
-
-    private void updateProductCartBadge(int count) {
-        if (productCartBadge == null) {
-            return;
-        }
-        if (count <= 0) {
-            productCartBadge.setVisibility(View.GONE);
-            return;
-        }
-        productCartBadge.setVisibility(View.VISIBLE);
-        productCartBadge.setText(count > 99 ? "99+" : String.valueOf(count));
-    }
-
-    private int cartItemCount(JSONObject cart) {
-        JSONArray items = cart == null ? null : cart.optJSONArray("items");
-        int count = 0;
-        if (items != null) {
-            for (int i = 0; i < items.length(); i++) {
-                JSONObject item = items.optJSONObject(i);
-                if (item != null) {
-                    count += Math.max(0, item.optInt("quantity", 0));
-                }
-            }
-        }
-        return count;
     }
 
     private void ensureCategoriesLoaded() {
@@ -648,7 +569,9 @@ public class ProductListActivity extends BaseShopActivity {
                 api().addCartItem(item.optString("productId"), skuId, 1);
                 runOnUiThread(() -> {
                     showToastLine("已加入购物车");
-                    refreshProductCartBadge();
+                    if (cartFabHelper != null) {
+                        cartFabHelper.refresh();
+                    }
                     sourceButton.setEnabled(true);
                     sourceButton.setAlpha(1f);
                     sourceButton.setText("已加入");
@@ -719,10 +642,6 @@ public class ProductListActivity extends BaseShopActivity {
         Intent intent = new Intent(this, ProductDetailActivity.class);
         intent.putExtra(Routes.EXTRA_PRODUCT_ID, id);
         startActivity(intent);
-    }
-
-    private void openLegacyCartPage() {
-        startActivity(new Intent(this, CartActivity.class));
     }
 
     private void hideKeyboardFrom(View view) {

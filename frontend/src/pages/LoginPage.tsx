@@ -9,6 +9,7 @@ type LoginPageProps = {
 const demoAccounts = [
   { role: '用户端', username: 'user', password: 'user123456' },
   { role: '商家端', username: 'merchant', password: 'merchant123456' },
+  { role: '真实数据集商家端', username: 'dataset_merchant', password: 'merchant123456' },
   { role: '管理员端', username: 'admin', password: 'admin123456' }
 ];
 

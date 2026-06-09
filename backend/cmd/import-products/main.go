@@ -181,11 +181,19 @@ func readProduct(path string) (datasetProduct, error) {
 }
 
 func upsertDatasetBase(ctx context.Context, tx *sql.Tx) error {
-	_, err := tx.ExecContext(ctx, `
+	now := time.Now()
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO merchants (merchant_id, name, logo_url, description, service_phone, status, created_at, updated_at)
 		VALUES ('m_dataset_001', '真实商品数据集旗舰店', '/placeholder-merchant.svg', '由 quality/data/ecommerce_agent_dataset 导入的比赛演示商品。', '400-888-0000', 'active', ?, ?)
 		ON DUPLICATE KEY UPDATE name = VALUES(name), description = VALUES(description), status = VALUES(status), updated_at = VALUES(updated_at)
-	`, time.Now(), time.Now())
+	`, now, now); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO accounts (account_id, username, password_hash, display_name, role, merchant_id, status, created_at, updated_at)
+		VALUES ('acct_merchant_dataset_001', 'dataset_merchant', '0b2a8a42a665ad403419c5f3f0d6cea853357272459d8e4c30a0900dd4718ebc', '真实商品数据集运营', 'merchant', 'm_dataset_001', 'active', ?, ?)
+		ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), role = VALUES(role), merchant_id = VALUES(merchant_id), status = VALUES(status), updated_at = VALUES(updated_at)
+	`, now, now)
 	return err
 }
 

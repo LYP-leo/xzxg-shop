@@ -2,6 +2,8 @@ package com.xzxg.shop.order;
 
 import com.xzxg.shop.base.BaseShopActivity;
 import com.xzxg.shop.ui.BottomSheetHelper;
+import com.xzxg.shop.ui.CartFabHelper;
+import com.xzxg.shop.ui.DateTimeFormatter;
 import com.xzxg.shop.ui.ShopUi;
 import com.xzxg.shop.ui.TopBarHelper;
 
@@ -29,7 +31,9 @@ import java.util.Set;
 
 public class OrderListActivity extends BaseShopActivity {
     private static final int BG_COLOR = 0xFFF8F9FB;
+    private FrameLayout root;
     private LinearLayout content;
+    private CartFabHelper cartFabHelper;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -38,10 +42,22 @@ public class OrderListActivity extends BaseShopActivity {
         renderOrders();
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (cartFabHelper != null) {
+            cartFabHelper.refresh();
+        }
+    }
+
     private void renderOrders() {
+        cartFabHelper = null;
+        root = new FrameLayout(this);
+        root.setBackgroundColor(BG_COLOR);
         content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setBackgroundColor(BG_COLOR);
+        root.addView(content, new FrameLayout.LayoutParams(-1, -1));
         content.addView(createBackTopBar("订单"), new LinearLayout.LayoutParams(-1, ShopUi.dp(this, 56)));
 
         ScrollView scroll = new ScrollView(this);
@@ -50,13 +66,14 @@ public class OrderListActivity extends BaseShopActivity {
         page.setPadding(ShopUi.dp(this, 16), ShopUi.dp(this, 10), ShopUi.dp(this, 16), ShopUi.dp(this, 16));
         scroll.addView(page);
         content.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
-        setContentView(content);
+        setContentView(root);
         bindRootSystemBarPadding(content);
 
         if (sessionStore().token().isEmpty()) {
             page.addView(ShopUi.card(this, "请先登录", "登录后可查看订单。"));
             return;
         }
+        cartFabHelper = attachCartFab(root, 24);
         page.addView(ShopUi.muted(this, "正在加载订单..."));
         loadOrders(page);
     }
@@ -97,9 +114,33 @@ public class OrderListActivity extends BaseShopActivity {
             String more = items.length() > 1 ? " 等 " + items.length() + " 件商品" : "";
             card.addView(ShopUi.muted(this, "商品：" + (first == null ? "" : first.optString("name", "")) + more));
         }
-        card.addView(ShopUi.muted(this, "创建时间：" + item.optString("created_at", "")));
+        addOrderTimeLine(card, "创建时间", readOrderTime(item, "created_at", "createdAt"));
+        addOrderTimeLine(card, "付款时间", readOrderTime(item, "paid_at", "paidAt", "paid_time", "paidTime"));
+        addOrderTimeLine(card, "发货时间", readOrderTime(item, "shipped_at", "shippedAt", "shipped_time", "shippedTime"));
+        addOrderTimeLine(card, "完成时间", readOrderTime(item, "completed_at", "completedAt", "completed_time", "completedTime", "received_at", "receivedAt"));
         addOrderActions(card, item);
         return card;
+    }
+
+    private String readOrderTime(JSONObject order, String... keys) {
+        if (order == null || keys == null) {
+            return "";
+        }
+        for (String key : keys) {
+            String value = order.optString(key, "");
+            String formatted = DateTimeFormatter.formatOrderTime(value);
+            if (!formatted.isEmpty()) {
+                return formatted;
+            }
+        }
+        return "";
+    }
+
+    private void addOrderTimeLine(LinearLayout card, String label, String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return;
+        }
+        card.addView(ShopUi.muted(this, label + "：" + value));
     }
 
     private void addOrderActions(LinearLayout card, JSONObject order) {

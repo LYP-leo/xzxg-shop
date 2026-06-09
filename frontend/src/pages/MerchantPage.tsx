@@ -5,12 +5,12 @@ import {
   KnowledgeDocument,
   listMerchantDocuments,
   listMerchantOrders,
+  listMerchantProducts,
   MerchantProductInput,
   updateMerchantOrderStatus,
   updateMerchantProduct,
   uploadMerchantDocument
 } from '../api/merchant';
-import { listProducts } from '../api/product';
 import type { Account } from '../types/auth';
 import type { Order } from '../types/order';
 import type { ProductCard } from '../types/product';
@@ -51,8 +51,8 @@ export function MerchantPage({ account, token }: MerchantPageProps) {
   }, [token]);
 
   async function refreshMerchantData() {
-    const [nextProducts, nextDocuments, nextOrders] = await Promise.all([listProducts(), listMerchantDocuments(token), listMerchantOrders(token)]);
-    setProducts(nextProducts.filter((product) => product.merchantId === account.merchant_id));
+    const [nextProducts, nextDocuments, nextOrders] = await Promise.all([listMerchantProducts(token), listMerchantDocuments(token), listMerchantOrders(token)]);
+    setProducts(nextProducts);
     setDocuments(nextDocuments);
     setOrders(nextOrders);
   }

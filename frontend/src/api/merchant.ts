@@ -1,4 +1,5 @@
 import type { ProductDetail } from '../types/product';
+import type { ProductCard } from '../types/product';
 import type { Order } from '../types/order';
 import { requestJSON } from './http';
 
@@ -34,6 +35,13 @@ export async function createMerchantProduct(token: string, input: MerchantProduc
     headers: authHeaders(token),
     body: JSON.stringify(input)
   });
+}
+
+export async function listMerchantProducts(token: string): Promise<ProductCard[]> {
+  const data = await requestJSON<{ items: ProductCard[] }>('/merchant/products?page=1&page_size=200', {
+    headers: authHeaders(token)
+  });
+  return data.items;
 }
 
 export async function updateMerchantProduct(token: string, productId: string, input: MerchantProductInput): Promise<ProductDetail> {

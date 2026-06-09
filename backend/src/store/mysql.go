@@ -356,6 +356,12 @@ func (s *MySQLStore) ensureCommerceV3Tables(ctx context.Context) error {
 		) VALUES
 		('coupon_platform_001', '平台新人满 200 减 20', 'platform', '', 'fixed_amount', 200.00, 20.00, 10000, 0, 1, '2026-01-01 00:00:00', '2026-12-31 23:59:59', 'active'),
 		('coupon_m_001_001', '小猪数码满 500 减 50', 'merchant', 'm_001', 'fixed_amount', 500.00, 50.00, 10000, 0, 1, '2026-01-01 00:00:00', '2026-12-31 23:59:59', 'active')`,
+		`INSERT INTO merchants (merchant_id, name, logo_url, description, service_phone, status, created_at, updated_at)
+		VALUES ('m_dataset_001', '真实商品数据集旗舰店', '/placeholder-merchant.svg', '由 quality/data/ecommerce_agent_dataset 导入的比赛演示商品。', '400-888-0000', 'active', NOW(), NOW())
+		ON DUPLICATE KEY UPDATE name = VALUES(name), description = VALUES(description), status = VALUES(status), updated_at = VALUES(updated_at)`,
+		`INSERT INTO accounts (account_id, username, password_hash, display_name, role, merchant_id, status, created_at, updated_at)
+		VALUES ('acct_merchant_dataset_001', 'dataset_merchant', '0b2a8a42a665ad403419c5f3f0d6cea853357272459d8e4c30a0900dd4718ebc', '真实商品数据集运营', 'merchant', 'm_dataset_001', 'active', NOW(), NOW())
+		ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), role = VALUES(role), merchant_id = VALUES(merchant_id), status = VALUES(status), updated_at = VALUES(updated_at)`,
 	}
 	for _, stmt := range statements {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
@@ -1646,6 +1652,13 @@ func (s *MySQLStore) ListProductsPage(ctx context.Context, keyword string, categ
 	query += " ORDER BY p.sort_order, p.product_id LIMIT ? OFFSET ?"
 	args = append(args, pageSize, pageOffset(page, pageSize))
 	return s.queryProductCards(ctx, query, args...), total
+}
+
+func (s *MySQLStore) ListMerchantProductsPage(ctx context.Context, merchantID string, page int, pageSize int) ([]domain.ProductCard, int) {
+	page, pageSize = normalizePage(page, pageSize)
+	total := s.countRowsWhere(ctx, "products", "merchant_id = ? AND status = 'active'", merchantID)
+	query := productCardSelect() + ` WHERE ` + activeProductCardPredicate() + ` AND p.merchant_id = ? ORDER BY p.sort_order, p.product_id LIMIT ? OFFSET ?`
+	return s.queryProductCards(ctx, query, merchantID, pageSize, pageOffset(page, pageSize)), total
 }
 
 func productListQuery(keyword string, categoryID string) (string, []any) {

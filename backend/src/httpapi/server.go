@@ -80,6 +80,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/merchant/promotions/", s.handleUpdateMerchantPromotion)
 	mux.HandleFunc("GET /api/v1/merchant/reviews", s.handleListMerchantReviews)
 	mux.HandleFunc("POST /api/v1/merchant/reviews/", s.handleMerchantReviewAction)
+	mux.HandleFunc("GET /api/v1/merchant/products", s.handleListMerchantProducts)
 	mux.HandleFunc("POST /api/v1/merchant/products", s.handleCreateMerchantProduct)
 	mux.HandleFunc("PATCH /api/v1/merchant/products/", s.handleUpdateMerchantProduct)
 	mux.HandleFunc("DELETE /api/v1/merchant/products/", s.handleDeleteMerchantProduct)
@@ -748,6 +749,16 @@ func (s *Server) handleCreateMerchantProduct(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, product)
+}
+
+func (s *Server) handleListMerchantProducts(w http.ResponseWriter, r *http.Request) {
+	account, ok := s.requireMerchant(w, r)
+	if !ok {
+		return
+	}
+	page, pageSize := readPagination(r)
+	items, total := s.store.ListMerchantProductsPage(r.Context(), account.MerchantID, page, pageSize)
+	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
 func (s *Server) handleUpdateMerchantProduct(w http.ResponseWriter, r *http.Request) {

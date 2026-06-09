@@ -2844,15 +2844,6 @@ public class ChatActivity extends BaseShopActivity {
         } else {
             userNeed.text.append("已理解用户本轮导购需求。");
         }
-
-        ThinkingStageState buyerExperience = ensureThinkingStage(thinking, "buyer_experience");
-        buyerExperience.status = "completed";
-        buyerExperience.text.append(fallbackBuyerExperienceText());
-
-        ThinkingStageState answerSummary = ensureThinkingStage(thinking, "answer_summary");
-        answerSummary.status = "running";
-        answerSummary.text.append("正在整理回答。");
-
         thinking.expanded = true;
         renderThinkingView(thinking);
     }
@@ -2900,20 +2891,10 @@ public class ChatActivity extends BaseShopActivity {
         if (parent != null) {
             parent.addView(thinking.container, new LinearLayout.LayoutParams(-1, -2));
         }
-        initializeThinkingStages(thinking);
         if (active) {
             activeThinking = thinking;
         }
         return thinking;
-    }
-
-    private void initializeThinkingStages(ThinkingViewState thinking) {
-        if (thinking == null) {
-            return;
-        }
-        for (String key : thinkingStageOrder()) {
-            ensureThinkingStage(thinking, key);
-        }
     }
 
     private ThinkingStageState ensureThinkingStage(ThinkingViewState thinking, String key) {
@@ -2933,18 +2914,19 @@ public class ChatActivity extends BaseShopActivity {
         if (thinking == null) {
             return;
         }
-        String[] order = thinkingStageOrder();
-        for (String key : order) {
-            ThinkingStageState stage = ensureThinkingStage(thinking, key);
-            if (key.equals(stageKey)) {
-                if (!"completed".equals(stage.status) && !"failed".equals(stage.status)) {
-                    stage.status = "running";
-                }
-                return;
+        int activeIndex = thinkingStageIndex(stageKey);
+        for (ThinkingStageState existing : thinking.stages.values()) {
+            if (existing == null || existing.stage == null) {
+                continue;
             }
-            if (!"failed".equals(stage.status)) {
-                stage.status = "completed";
+            int existingIndex = thinkingStageIndex(existing.stage);
+            if (activeIndex >= 0 && existingIndex >= 0 && existingIndex < activeIndex && !"failed".equals(existing.status)) {
+                existing.status = "completed";
             }
+        }
+        ThinkingStageState activeStage = ensureThinkingStage(thinking, stageKey);
+        if (!"completed".equals(activeStage.status) && !"failed".equals(activeStage.status)) {
+            activeStage.status = "running";
         }
     }
 
@@ -3205,7 +3187,6 @@ public class ChatActivity extends BaseShopActivity {
         }
         boolean animateCollapse = !activeThinking.completed && !activeThinking.userToggled;
         activeThinking.completed = true;
-        initializeThinkingStages(activeThinking);
         markKnownThinkingStagesCompleted(activeThinking);
         if (!activeThinking.userToggled) {
             activeThinking.expanded = false;
@@ -3315,7 +3296,6 @@ public class ChatActivity extends BaseShopActivity {
         ThinkingViewState thinking = ensureThinkingView(parent, false);
         thinking.completed = value.optBoolean("completed", true);
         thinking.expanded = !thinking.completed;
-        initializeThinkingStages(thinking);
         JSONArray stages = value.optJSONArray("stages");
         if (stages != null) {
             for (int i = 0; i < stages.length(); i++) {
@@ -3344,6 +3324,17 @@ public class ChatActivity extends BaseShopActivity {
 
     private String[] thinkingStageOrder() {
         return new String[]{"user_need", "buyer_experience", "answer_summary"};
+    }
+
+    private int thinkingStageIndex(String stage) {
+        String key = thinkingStageKey(stage);
+        String[] order = thinkingStageOrder();
+        for (int i = 0; i < order.length; i++) {
+            if (order[i].equals(key)) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private String thinkingStageKey(String stage) {
@@ -4141,8 +4132,8 @@ public class ChatActivity extends BaseShopActivity {
                     if (sourceButton != null) {
                         sourceButton.setEnabled(true);
                         sourceButton.setAlpha(1f);
-                        sourceButton.setText("已加入");
-                        sourceButton.postDelayed(() -> sourceButton.setText("加入购物车"), 600);
+                        sourceButton.setText("进入购物车");
+                        sourceButton.setOnClickListener(v -> startActivity(new Intent(this, CartActivity.class)));
                     }
                 });
             } catch (Exception error) {
@@ -4151,6 +4142,7 @@ public class ChatActivity extends BaseShopActivity {
                         sourceButton.setEnabled(true);
                         sourceButton.setAlpha(1f);
                         sourceButton.setText("加入购物车");
+                        sourceButton.setOnClickListener(v -> addProductToCart(item, sourceButton));
                     }
                     toastLine("加入失败：" + error.getMessage());
                 });
