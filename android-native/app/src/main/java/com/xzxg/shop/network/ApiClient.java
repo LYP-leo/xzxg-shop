@@ -148,7 +148,12 @@ public class ApiClient {
         int currentPage = response.optInt("page", Math.max(1, page));
         int currentPageSize = response.optInt("page_size", pageSize);
         int total = response.optInt("total", items.length());
-        boolean hasMore = currentPageSize > 0 && currentPage * currentPageSize < total;
+        boolean hasMore;
+        if (total > 0) {
+            hasMore = currentPageSize > 0 && currentPage * currentPageSize < total;
+        } else {
+            hasMore = currentPageSize > 0 && items.length() >= currentPageSize;
+        }
         return new ProductPage(items, currentPage + 1, hasMore, total);
     }
 
@@ -476,6 +481,7 @@ public class ApiClient {
         JSONObject attachment = new JSONObject();
         String fileId = file.optString("file_id", "");
         attachment.put("attachment_id", fileId);
+        attachment.put("file_id", fileId);
         attachment.put("type", type == null || type.trim().isEmpty() ? attachmentTypeFromMime(file.optString("mime_type", "")) : type.trim());
         attachment.put("url", file.optString("url", ""));
         attachment.put("name", name == null || name.trim().isEmpty() ? fileId : name.trim());

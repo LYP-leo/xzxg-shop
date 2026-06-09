@@ -77,6 +77,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.InputStream;
+import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -703,14 +704,18 @@ public class ChatActivity extends BaseShopActivity {
             enterVoiceMode();
             return;
         }
+        if (text.isEmpty() && !attachmentSnapshot.isEmpty()) {
+            text = defaultAttachmentPrompt(attachmentSnapshot);
+        }
+        final String messageText = text;
         JSONArray attachments = new JSONArray();
         hideAttachmentPanel();
         if (attachmentSnapshot.isEmpty()) {
-            sendMessage(text, attachments);
+            sendMessage(messageText, attachments);
             return;
         }
         if (sessionStore.token().isEmpty()) {
-            sendMessage(text, localAttachmentPlaceholders(attachmentSnapshot));
+            sendMessage(messageText, localAttachmentPlaceholders(attachmentSnapshot));
             List<PendingAttachment> current = attachmentController.pendingAttachments(attachmentSessionKey);
             if (current != null) {
                 current.removeAll(attachmentSnapshot);
@@ -719,7 +724,7 @@ public class ChatActivity extends BaseShopActivity {
             updateInputActionButtonState();
             return;
         }
-        UploadingMessageViewState uploadingState = addUploadingUserMessageBubble(text, attachmentSnapshot);
+        UploadingMessageViewState uploadingState = addUploadingUserMessageBubble(messageText, attachmentSnapshot);
         if (input != null && !voiceMode) {
             input.setText("");
         }
@@ -732,24 +737,17 @@ public class ChatActivity extends BaseShopActivity {
                     PendingAttachment attachment = attachmentSnapshot.get(i);
                     int index = i;
                     runOnUiThread(() -> updateUploadingAttachmentState(uploadingState, index, "正在上传 " + (index + 1) + "/" + attachmentSnapshot.size()));
-                    if (attachment.size > 10 * 1024 * 1024) {
-                        throw new RuntimeException("单个附件不能超过 10MB");
+                    if (!isSupportedAgentAttachment(attachment)) {
+                        throw new RuntimeException("当前只支持发送图片和 PDF 文件");
                     }
-                    JSONObject item;
-                    if (attachment.size > 0) {
-                        try (InputStream in = getContentResolver().openInputStream(attachment.uri)) {
-                            item = api.uploadAttachment(attachment.name, attachment.mimeType, attachment.type, attachment.size, in);
-                        }
-                    } else {
-                        byte[] data = attachmentController.readBytes(getContentResolver(), attachment.uri);
-                        if (data.length == 0) {
-                            throw new RuntimeException("附件内容为空，无法发送");
-                        }
-                        item = api.uploadAttachment(attachment.name, attachment.mimeType, attachment.type, data);
+                    byte[] data = attachmentController.readBytes(getContentResolver(), attachment.uri);
+                    if (data.length == 0) {
+                        throw new RuntimeException("附件内容为空，无法发送");
                     }
+                    JSONObject item = api.uploadAttachment(attachment.name, attachment.mimeType, attachment.type, data);
                     try {
                         item.put("mime_type", attachment.mimeType == null ? "application/octet-stream" : attachment.mimeType);
-                        item.put("size", Math.max(0, attachment.size));
+                        item.put("size", data.length);
                         item.put("local_uri", attachment.uri == null ? "" : attachment.uri.toString());
                     } catch (Exception ignored) {
                     }
@@ -765,12 +763,13 @@ public class ChatActivity extends BaseShopActivity {
                     if (actionButton != null) {
                         actionButton.setEnabled(true);
                     }
-                    finishUploadingUserMessageBubble(uploadingState, text, uploaded);
+                    finishUploadingUserMessageBubble(uploadingState, messageText, uploaded);
                 });
             } catch (Exception error) {
+                Log.w(TAG, "upload attachment failed", error);
                 runOnUiThread(() -> {
-                    if (input != null && !voiceMode && input.getText().toString().trim().isEmpty() && text != null && !text.trim().isEmpty()) {
-                        input.setText(text);
+                    if (input != null && !voiceMode && input.getText().toString().trim().isEmpty() && messageText != null && !messageText.trim().isEmpty()) {
+                        input.setText(messageText);
                         input.setSelection(input.getText().length());
                     }
                     if (actionButton != null) {
@@ -782,6 +781,40 @@ public class ChatActivity extends BaseShopActivity {
                 });
             }
         }).start();
+    }
+
+    private String defaultAttachmentPrompt(List<PendingAttachment> attachments) {
+        if (attachments == null || attachments.isEmpty()) {
+            return "";
+        }
+        int imageCount = 0;
+        int fileCount = 0;
+        for (PendingAttachment attachment : attachments) {
+            if (attachment != null && "image".equals(attachment.type)) {
+                imageCount++;
+            } else {
+                fileCount++;
+            }
+        }
+        if (imageCount > 0 && fileCount == 0) {
+            return "帮我看看这张图片";
+        }
+        if (imageCount == 0 && fileCount > 0) {
+            return "请根据这个附件帮我分析";
+        }
+        return "请根据这些附件帮我分析";
+    }
+
+    private boolean isSupportedAgentAttachment(PendingAttachment attachment) {
+        if (attachment == null) {
+            return false;
+        }
+        if ("image".equals(attachment.type)) {
+            return true;
+        }
+        String mime = attachment.mimeType == null ? "" : attachment.mimeType.toLowerCase();
+        String name = attachment.name == null ? "" : attachment.name.toLowerCase();
+        return "application/pdf".equals(mime) || name.endsWith(".pdf");
     }
 
     private void toggleAttachmentPanel() {
@@ -920,14 +953,7 @@ public class ChatActivity extends BaseShopActivity {
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         intent.setType("*/*");
         intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
-                "application/pdf",
-                "application/msword",
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                "application/vnd.ms-excel",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                "application/vnd.ms-powerpoint",
-                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                "text/*"
+                "application/pdf"
         });
         intent.putExtra("android.provider.extra.INITIAL_URI", Uri.parse("content://com.android.externalstorage.documents/root/primary"));
         intent.putExtra("android.provider.extra.SHOW_ADVANCED", true);
@@ -4155,21 +4181,23 @@ public class ChatActivity extends BaseShopActivity {
             return addBubble(text == null ? "" : text, true);
         }
         LinearLayout shell = new LinearLayout(this);
+        shell.setOrientation(LinearLayout.VERTICAL);
         shell.setGravity(Gravity.RIGHT);
         LinearLayout.LayoutParams shellParams = new LinearLayout.LayoutParams(-1, -2);
         shellParams.setMargins(0, dp(6), 0, dp(6));
 
-        LinearLayout bubble = userMessageBubbleContainer();
         String safeText = text == null ? "" : text.trim();
         if (!safeText.isEmpty()) {
+            LinearLayout bubble = userMessageBubbleContainer();
             TextView textView = new TextView(this);
             textView.setText(safeText);
             textView.setTextSize(15);
             textView.setLineSpacing(4, 1);
             textView.setTextColor(Color.WHITE);
-            textView.setPadding(0, 0, 0, dp(8));
             bubble.addView(textView, new LinearLayout.LayoutParams(-1, -2));
+            shell.addView(bubble);
         }
+        LinearLayout attachmentPanel = userAttachmentPanel();
         LinearLayout attachmentList = new LinearLayout(this);
         attachmentList.setOrientation(attachments.length() > 1 ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
         for (int i = 0; i < attachments.length(); i++) {
@@ -4178,7 +4206,7 @@ public class ChatActivity extends BaseShopActivity {
                 continue;
             }
             View view = isImageAttachment(attachment) ? userImageAttachmentView(attachment) : userFileAttachmentView(attachment);
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(attachments.length() > 1 ? dp(104) : dp(176), attachments.length() > 1 ? dp(104) : dp(132));
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(attachments.length() > 1 ? dp(132) : -1, attachments.length() > 1 ? dp(132) : dp(260));
             params.setMargins(0, 0, i < attachments.length() - 1 ? dp(8) : 0, 0);
             attachmentList.addView(view, params);
         }
@@ -4186,12 +4214,14 @@ public class ChatActivity extends BaseShopActivity {
             HorizontalScrollView scroll = new HorizontalScrollView(this);
             scroll.setHorizontalScrollBarEnabled(false);
             scroll.addView(attachmentList);
-            bubble.addView(scroll, new LinearLayout.LayoutParams(-1, -2));
+            attachmentPanel.addView(scroll, new LinearLayout.LayoutParams(-1, -2));
         } else {
-            bubble.addView(attachmentList, new LinearLayout.LayoutParams(-1, -2));
+            attachmentPanel.addView(attachmentList, new LinearLayout.LayoutParams(-1, -2));
         }
-        enableCopy(bubble, userMessageCopyText(safeText, attachments));
-        shell.addView(bubble);
+        enableCopy(attachmentPanel, userMessageCopyText(safeText, attachments));
+        LinearLayout.LayoutParams panelParams = new LinearLayout.LayoutParams((int) (getResources().getDisplayMetrics().widthPixels * 0.76f), ViewGroup.LayoutParams.WRAP_CONTENT);
+        panelParams.topMargin = safeText.isEmpty() ? 0 : dp(6);
+        shell.addView(attachmentPanel, panelParams);
         chatList.addView(shell, shellParams);
         scrollBottom();
         return shell;
@@ -4206,11 +4236,21 @@ public class ChatActivity extends BaseShopActivity {
         return bubble;
     }
 
+    private LinearLayout userAttachmentPanel() {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(8), dp(8), dp(8), dp(8));
+        panel.setBackground(rounded(Color.WHITE, dp(14)));
+        return panel;
+    }
+
     private View userImageAttachmentView(JSONObject attachment) {
         FrameLayout frame = new FrameLayout(this);
         frame.setBackground(rounded(Color.rgb(235, 238, 243), dp(12)));
         ImageView image = new ImageView(this);
-        image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        image.setAdjustViewBounds(true);
+        image.setBackgroundColor(Color.rgb(248, 250, 252));
         String imageUri = attachmentImageUri(attachment);
         if (!imageUri.isEmpty()) {
             loadAttachmentImage(image, imageUri);
@@ -4363,13 +4403,13 @@ public class ChatActivity extends BaseShopActivity {
         if (attachment == null) {
             return "";
         }
-        String local = attachment.optString("local_uri", "");
-        if (!local.isEmpty()) {
-            return local;
-        }
         String url = attachment.optString("url", "");
         if (!url.isEmpty()) {
             return url;
+        }
+        String local = attachment.optString("local_uri", "");
+        if (!local.isEmpty()) {
+            return local;
         }
         return attachment.optString("object_key", "");
     }
@@ -4379,14 +4419,32 @@ public class ChatActivity extends BaseShopActivity {
             return;
         }
         String value = uri.trim();
+        if (value.startsWith("/")) {
+            value = api.absoluteUrl(value);
+        }
         if (value.startsWith("http://") || value.startsWith("https://")) {
+            String imageUrl = value;
             new Thread(() -> {
-                try (InputStream inputStream = new URL(value).openStream()) {
-                    Bitmap bitmap = BitmapFactory.decodeStream(inputStream);
-                    if (bitmap != null) {
-                        runOnUiThread(() -> image.setImageBitmap(bitmap));
+                HttpURLConnection connection = null;
+                try {
+                    connection = (HttpURLConnection) new URL(imageUrl).openConnection();
+                    connection.setConnectTimeout(10000);
+                    connection.setReadTimeout(30000);
+                    String token = sessionStore == null ? "" : sessionStore.token();
+                    if (token != null && !token.isEmpty()) {
+                        connection.setRequestProperty("Authorization", "Bearer " + token);
+                    }
+                    try (InputStream inputStream = connection.getInputStream()) {
+                        Bitmap bitmap = BitmapFactory.decodeStream(inputStream);
+                        if (bitmap != null) {
+                            runOnUiThread(() -> image.setImageBitmap(bitmap));
+                        }
                     }
                 } catch (Exception ignored) {
+                } finally {
+                    if (connection != null) {
+                        connection.disconnect();
+                    }
                 }
             }).start();
             return;
