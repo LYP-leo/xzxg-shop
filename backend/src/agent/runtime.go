@@ -554,8 +554,10 @@ func normalizeRouteIntent(route string, query string, fallback string) string {
 func normalizeNonGuideIntent(intent string, fallback string) string {
 	intent = strings.TrimSpace(intent)
 	switch intent {
-	case "cart_add", "cart_remove", "cart_update_quantity", "checkout_confirm":
-		return intent
+	case "cart_add", "cart_remove", "cart_update_quantity":
+		return "cart_service"
+	case "checkout_confirm":
+		return "order_service"
 	case "cart_service", "order_service", "coupon_service", "review_service", "after_sales_service", "account_service", "navigation_service", "chitchat", "unsupported":
 		return intent
 	case "non_guide", "":
@@ -567,8 +569,10 @@ func normalizeNonGuideIntent(intent string, fallback string) string {
 
 func normalizeNonGuideFallback(fallback string) string {
 	switch strings.TrimSpace(fallback) {
-	case "cart_add", "cart_remove", "cart_update_quantity", "checkout_confirm":
-		return fallback
+	case "cart_add", "cart_remove", "cart_update_quantity":
+		return "cart_service"
+	case "checkout_confirm":
+		return "order_service"
 	case "cart_service", "order_service", "coupon_service", "review_service", "after_sales_service", "account_service", "navigation_service", "chitchat", "unsupported", "non_guide":
 		return fallback
 	default:

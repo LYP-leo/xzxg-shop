@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { Order } from '../../types/order';
 import type { ProductCard } from '../../types/product';
 
 export type LoadState = {
@@ -216,6 +217,17 @@ export function statusText(status: string) {
   if (status === 'risk') return '风险';
   if (status === 'deleted') return '删除';
   return status || '-';
+}
+
+export function orderStatusText(status: Order['status']) {
+  if (status === 'pending_payment') return '待支付';
+  if (status === 'pending_ship') return '待发货';
+  if (status === 'shipped') return '已发货';
+  if (status === 'completed') return '已完成';
+  if (status === 'closed_timeout') return '支付超时关闭';
+  if (status === 'refund_requested') return '退款中';
+  if (status === 'refunded') return '已退款';
+  return '已取消';
 }
 
 export function formatCount(value?: number) {

@@ -121,6 +121,25 @@ func TestProductSearchRerankPrioritizesStructuredConstraints(t *testing.T) {
 	}
 }
 
+func TestModelRerankScoreFilterDropsLowConfidenceTail(t *testing.T) {
+	products := []domain.ProductCard{
+		{ProductID: "p_beauty_003", Name: "SK-II神仙水"},
+		{ProductID: "p_dummyjson_140", Name: "篮球"},
+		{ProductID: "p_dummyjson_141", Name: "篮球框"},
+	}
+	filtered := filterProductsByModelRerankScore(products, []productRerankScore{
+		{ProductID: "p_beauty_003", Score: 0.6298},
+		{ProductID: "p_dummyjson_140", Score: 0.4744},
+		{ProductID: "p_dummyjson_141", Score: 0.4667},
+	}, map[string]string{
+		"retrieval.product.rerank.model_min_score":       "0.50",
+		"retrieval.product.rerank.model_max_score_delta": "0.12",
+	})
+	if len(filtered) != 1 || filtered[0].ProductID != "p_beauty_003" {
+		t.Fatalf("filtered = %v, want only p_beauty_003", productCardIDs(filtered))
+	}
+}
+
 func TestProductSearchNegativeHardFilterRunsBeforeRerank(t *testing.T) {
 	products := []domain.ProductCard{
 		{
@@ -237,5 +256,27 @@ func TestStreamTextFilterEmitsStructuredServiceBlock(t *testing.T) {
 	}
 	if blocks[0].Type != "coupon_list" || blocks[0].Title != "可用券" || len(blocks[0].Items) != 1 {
 		t.Fatalf("block = %#v", blocks[0])
+	}
+}
+
+func TestBlocksFromReactDoesNotAutoAppendAllToolProducts(t *testing.T) {
+	blocks := blocksFromReact(reactAction{}, []string{"p_beauty_003", "p_dummyjson_140"}, []string{"chunk_001"})
+	if len(blocks) != 1 {
+		t.Fatalf("blocks len = %d, want only citation block: %#v", len(blocks), blocks)
+	}
+	if blocks[0].Type != "citation_refs" {
+		t.Fatalf("block type = %s, want citation_refs", blocks[0].Type)
+	}
+}
+
+func TestBlocksFromReactFiltersExplicitProductRefsByAllowedIDs(t *testing.T) {
+	blocks := blocksFromReact(reactAction{Blocks: []reactBlock{
+		{Type: "product_refs", ProductIDs: []string{"p_beauty_003", "p_dummyjson_140"}},
+	}}, []string{"p_beauty_003"}, nil)
+	if len(blocks) != 1 {
+		t.Fatalf("blocks len = %d, want 1: %#v", len(blocks), blocks)
+	}
+	if len(blocks[0].ProductIDs) != 1 || blocks[0].ProductIDs[0] != "p_beauty_003" {
+		t.Fatalf("product ids = %v, want [p_beauty_003]", blocks[0].ProductIDs)
 	}
 }

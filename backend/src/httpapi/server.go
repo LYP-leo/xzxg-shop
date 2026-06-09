@@ -98,6 +98,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/admin/documents", s.handleListAdminDocuments)
 	mux.HandleFunc("POST /api/v1/admin/unstructured-ingestions", s.handleCreateAdminUnstructuredIngestion)
 	mux.HandleFunc("GET /api/v1/admin/orders", s.handleListAdminOrders)
+	mux.HandleFunc("PATCH /api/v1/admin/orders/", s.handleUpdateAdminOrder)
 	mux.HandleFunc("GET /api/v1/admin/promotions", s.handleListAdminPromotions)
 	mux.HandleFunc("POST /api/v1/admin/promotions", s.handleCreateAdminPromotion)
 	mux.HandleFunc("PATCH /api/v1/admin/promotions/", s.handleUpdateAdminPromotion)
@@ -121,6 +122,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/orders/", s.handleUserOrderAction)
 	mux.HandleFunc("POST /api/v1/orders/", s.handleUserOrderAction)
 	mux.HandleFunc("GET /api/v1/speech/realtime", s.handleSpeechRealtime)
+	mux.HandleFunc("POST /api/v1/speech/tts", s.handleSpeechTTS)
+	mux.HandleFunc("POST /api/v1/agent/guide-suggestions", s.handleGuideSuggestions)
 	mux.HandleFunc("GET /api/v1/agent/sessions", s.handleListAgentSessions)
 	mux.HandleFunc("GET /api/v1/agent/sessions/search", s.handleSearchAgentSessions)
 	mux.HandleFunc("POST /api/v1/agent/sessions", s.handleCreateAgentSession)
@@ -634,6 +637,15 @@ func (s *Server) writeImageSearchResult(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
 		return
 	}
+	request.FileID = strings.TrimSpace(request.FileID)
+	request.ObjectKey = strings.TrimSpace(request.ObjectKey)
+	request.ImageURL = strings.TrimSpace(request.ImageURL)
+	if request.FileID == "" {
+		if fileID := fileIDFromAPIFileURL(request.ImageURL); fileID != "" {
+			request.FileID = fileID
+			request.ImageURL = ""
+		}
+	}
 	downloadStartedAt := time.Now()
 	downloadMS := int64(0)
 	if request.FileID != "" {
@@ -703,6 +715,15 @@ func (s *Server) writeImageSearchResult(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) imageVectorFromSearchRequest(ctx context.Context, fileID string, objectKey string, imageURL string) ([]float32, error) {
+	fileID = strings.TrimSpace(fileID)
+	objectKey = strings.TrimSpace(objectKey)
+	imageURL = strings.TrimSpace(imageURL)
+	if fileID == "" {
+		if parsed := fileIDFromAPIFileURL(imageURL); parsed != "" {
+			fileID = parsed
+			imageURL = ""
+		}
+	}
 	embedder := imagevector.NewEmbedderFromMap(s.configs.GetMap(ctx), "")
 	if fileID != "" {
 		fileMeta, ok := s.store.GetStoredFile(ctx, fileID)
@@ -724,6 +745,27 @@ func (s *Server) imageVectorFromSearchRequest(ctx context.Context, fileID string
 		return embedder.EmbedReader(ctx, object)
 	}
 	return embedder.EmbedSource(ctx, imageURL)
+}
+
+func fileIDFromAPIFileURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	const marker = "/api/v1/files/"
+	index := strings.Index(raw, marker)
+	if index < 0 {
+		return ""
+	}
+	rest := raw[index+len(marker):]
+	if cut := strings.IndexAny(rest, "?#/"); cut >= 0 {
+		rest = rest[:cut]
+	}
+	rest = strings.TrimSpace(rest)
+	if strings.HasPrefix(rest, "file_") {
+		return rest
+	}
+	return ""
 }
 
 func (s *Server) handleCreateMerchantProduct(w http.ResponseWriter, r *http.Request) {
@@ -1756,6 +1798,35 @@ func (s *Server) handleListAdminOrders(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, pagedPayload(items, page, pageSize, total))
 }
 
+func (s *Server) handleUpdateAdminOrder(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	orderID := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/orders/")
+	orderID = strings.Trim(orderID, "/")
+	if orderID == "" {
+		writeError(w, http.StatusBadRequest, "empty_order_id", "订单 ID 不能为空")
+		return
+	}
+	var request struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求 JSON 不合法")
+		return
+	}
+	if !allowedOrderStatus(request.Status) {
+		writeError(w, http.StatusBadRequest, "bad_status", "订单状态不合法")
+		return
+	}
+	order, ok := s.store.UpdateOrderStatus(r.Context(), "", orderID, request.Status)
+	if !ok {
+		writeError(w, http.StatusConflict, "order_status_update_failed", "订单不存在或当前状态不允许更新")
+		return
+	}
+	writeJSON(w, http.StatusOK, order)
+}
+
 func (s *Server) handleListAdminPromotions(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAdmin(w, r); !ok {
 		return
@@ -2325,6 +2396,13 @@ func (s *Server) streamAgentRun(w http.ResponseWriter, r *http.Request, run doma
 		case "text_delta":
 			content.WriteString(event.Delta)
 			currentText.WriteString(event.Delta)
+		case "content_delta":
+			if event.Part != nil && event.Part.Type != "text" {
+				flushText()
+				block := *event.Part
+				blocks = append(blocks, block)
+				segments = append(segments, domain.AgentSegment{Type: "block", Block: &block})
+			}
 		case "block_delta":
 			flushText()
 			if event.Block != nil {
@@ -2366,7 +2444,11 @@ func (s *Server) streamAgentRun(w http.ResponseWriter, r *http.Request, run doma
 	finalAnswer := strings.TrimSpace(content.String())
 	s.store.UpdateRunResult(r.Context(), run.AccountID, run.RunID, finalAnswer, string(blocksJSON), string(followupsJSON), string(segmentsJSON))
 	if !skipSessionSummaryAfterRun(blocks) {
-		s.runtime.UpdateSessionSummaryAfterRun(r.Context(), run, message, finalAnswer)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			s.runtime.UpdateSessionSummaryAfterRun(ctx, run, message, finalAnswer)
+		}()
 	}
 }
 

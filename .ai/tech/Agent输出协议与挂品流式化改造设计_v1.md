@@ -1,5 +1,7 @@
 # Agent 输出协议与挂品流式化改造设计 v1
 
+文档状态：历史技术设计。当前用户端主实现已迁移到 `android-native/`，React Web 用户端已废弃；本文中涉及 React 用户端的改造清单仅用于追溯协议演进，当前正式协议以 `.ai/api/Agent输出协议_v1.md` 为准。
+
 ## 1. 背景
 
 当前 Agent 最终回答存在三个问题：
@@ -327,7 +329,9 @@ Prompt 层：
 <further>追问内容，40字左右</further>
 ```
 
-## 8. React 前端改造清单
+## 8. 历史 React 前端改造清单
+
+说明：本节记录当时 React Web 用户端仍存在时的改造计划。当前 React Web 用户端已废弃，后续客户端协议实现以 `android-native/` 为准。
 
 ### 8.1 类型
 

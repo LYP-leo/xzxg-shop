@@ -12,7 +12,7 @@ func RuntimeConfigFromEnv() RuntimeConfig {
 			BaseURL:        env("AI_BASE_URL", env("DASHSCOPE_BASE_URL", defaultDashScopeBaseURL)),
 			APIKey:         env("DASHSCOPE_API_KEY", env("AI_API_KEY", "")),
 			SmallModel:     env("AI_SMALL_MODEL", "qwen3.5-flash"),
-			LargeModel:     env("AI_LARGE_MODEL", "qwen3.6-plus"),
+			LargeModel:     env("AI_LARGE_MODEL", "qwen3.7-plus"),
 			EnableThinking: parseEnvBool(env("AI_ENABLE_THINKING", "false"), false),
 		},
 	}

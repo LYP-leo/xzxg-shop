@@ -61,6 +61,38 @@ func TestIntentToolPolicyAllowsNonGuideSkills(t *testing.T) {
 	}
 }
 
+func TestCartServiceAllowsCartReadWriteToolsWithoutCheckout(t *testing.T) {
+	runtime := &Runtime{configs: configcenter.NewMemoryCenter(configcenter.DefaultConfigs(""))}
+	plan := runPlan{Route: "non_guide", Intent: "cart_service"}
+	for _, tool := range []string{toolGetCart, toolAddCartItem, toolUpdateCartItem, toolDeleteCartItem, toolPreviewDiscount} {
+		if !runtime.toolAllowedForPlan(context.Background(), plan, tool) {
+			t.Fatalf("cart_service should allow %s", tool)
+		}
+	}
+	if runtime.toolAllowedForPlan(context.Background(), plan, toolSearchProducts) {
+		t.Fatalf("cart_service should not allow product search")
+	}
+	if runtime.toolAllowedForPlan(context.Background(), plan, toolCheckout) {
+		t.Fatalf("cart_service should not allow checkout")
+	}
+	if !runtime.skillAllowedForPlan(context.Background(), plan, skillNavigateCart) {
+		t.Fatalf("cart_service should allow navigate_cart")
+	}
+}
+
+func TestOrderServiceAllowsCheckoutTools(t *testing.T) {
+	runtime := &Runtime{configs: configcenter.NewMemoryCenter(configcenter.DefaultConfigs(""))}
+	plan := runPlan{Route: "non_guide", Intent: "order_service"}
+	for _, tool := range []string{toolGetCart, toolPreviewDiscount, toolCheckout, toolListOrders, toolGetOrder} {
+		if !runtime.toolAllowedForPlan(context.Background(), plan, tool) {
+			t.Fatalf("order_service should allow %s", tool)
+		}
+	}
+	if runtime.toolAllowedForPlan(context.Background(), plan, toolAddCartItem) {
+		t.Fatalf("order_service should not allow add_cart_item")
+	}
+}
+
 func TestFinalOutputRulesOnlyInjectsServiceBlocksForNonGuide(t *testing.T) {
 	runtime := &Runtime{configs: configcenter.NewMemoryCenter(configcenter.DefaultConfigs(""))}
 

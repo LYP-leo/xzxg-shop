@@ -14,7 +14,7 @@ import { listProducts } from '../api/product';
 import type { Account } from '../types/auth';
 import type { Order } from '../types/order';
 import type { ProductCard } from '../types/product';
-import { orderStatusText } from './OrderPage';
+import { PageSizeSelect, PaginationBar, PanelMessage, orderStatusText, totalPages } from './admin/AdminCommon';
 
 type MerchantPageProps = {
   account: Account;
@@ -45,16 +45,36 @@ export function MerchantPage({ account, token }: MerchantPageProps) {
   const [productForm, setProductForm] = useState<MerchantProductInput>(emptyProductForm);
   const [documentForm, setDocumentForm] = useState({ title: '', doc_type: 'product_detail', content: '' });
   const [status, setStatus] = useState('');
+  const [error, setError] = useState('');
+  const [orderPage, setOrderPage] = useState(1);
+  const [orderPageSize, setOrderPageSize] = useState(10);
+  const [orderTotal, setOrderTotal] = useState(0);
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [ordersError, setOrdersError] = useState('');
+  const [shippingOrderId, setShippingOrderId] = useState('');
 
   useEffect(() => {
-    refreshMerchantData();
-  }, [token]);
+    void refreshMerchantData();
+  }, [token, orderPage, orderPageSize]);
 
   async function refreshMerchantData() {
-    const [nextProducts, nextDocuments, nextOrders] = await Promise.all([listProducts(), listMerchantDocuments(token), listMerchantOrders(token)]);
-    setProducts(nextProducts.filter((product) => product.merchantId === account.merchant_id));
-    setDocuments(nextDocuments);
-    setOrders(nextOrders);
+    setOrdersLoading(true);
+    setOrdersError('');
+    try {
+      const [nextProducts, nextDocuments, nextOrders] = await Promise.all([
+        listProducts(),
+        listMerchantDocuments(token),
+        listMerchantOrders(token, orderPage, orderPageSize)
+      ]);
+      setProducts(nextProducts.filter((product) => product.merchantId === account.merchant_id));
+      setDocuments(nextDocuments);
+      setOrders(nextOrders.items);
+      setOrderTotal(nextOrders.total);
+    } catch (err) {
+      setOrdersError(errorMessage(err));
+    } finally {
+      setOrdersLoading(false);
+    }
   }
 
   function editProduct(product: ProductCard) {
@@ -78,6 +98,7 @@ export function MerchantPage({ account, token }: MerchantPageProps) {
 
   async function saveProduct() {
     setStatus('');
+    setError('');
     if (!productForm.name.trim()) {
       setStatus('商品名称不能为空');
       return;
@@ -97,6 +118,7 @@ export function MerchantPage({ account, token }: MerchantPageProps) {
 
   async function uploadDocument() {
     setStatus('');
+    setError('');
     if (!documentForm.title.trim() || !documentForm.content.trim()) {
       setStatus('资料标题和内容不能为空');
       return;
@@ -108,16 +130,28 @@ export function MerchantPage({ account, token }: MerchantPageProps) {
   }
 
   async function removeProduct(productId: string) {
+    setError('');
     await deleteMerchantProduct(token, productId);
     setStatus('商品已删除');
     await refreshMerchantData();
   }
 
   async function shipOrder(orderId: string) {
-    await updateMerchantOrderStatus(token, orderId, 'shipped');
-    setStatus('订单已标记发货');
-    await refreshMerchantData();
+    setStatus('');
+    setError('');
+    setShippingOrderId(orderId);
+    try {
+      await updateMerchantOrderStatus(token, orderId, 'shipped');
+      setStatus('订单已标记发货');
+      await refreshMerchantData();
+    } catch (err) {
+      setError(errorMessage(err) || '发货失败，请确认订单已支付且属于当前商家');
+    } finally {
+      setShippingOrderId('');
+    }
   }
+
+  const orderPages = totalPages(orderTotal, orderPageSize);
 
   return (
     <section>
@@ -142,6 +176,7 @@ export function MerchantPage({ account, token }: MerchantPageProps) {
         </section>
       </div>
       {status ? <p className="notice">{status}</p> : null}
+      {error ? <p className="form-error">{error}</p> : null}
       <div className="merchant-grid">
         <section className="panel">
           <h2>{editingProductId ? '编辑商品' : '新增商品'}</h2>
@@ -278,7 +313,19 @@ export function MerchantPage({ account, token }: MerchantPageProps) {
         </table>
       </section>
       <section className="panel">
-        <h2>订单履约</h2>
+        <div className="panel-title-row">
+          <div>
+            <h2>订单履约</h2>
+            <p>共 {orderTotal} 个订单，第 {orderPage} / {orderPages} 页。只有已支付的待发货订单可以发货。</p>
+          </div>
+          <PageSizeSelect
+            value={orderPageSize}
+            onChange={(value) => {
+              setOrderPageSize(value);
+              setOrderPage(1);
+            }}
+          />
+        </div>
         <table className="data-table">
           <thead>
             <tr>
@@ -297,14 +344,32 @@ export function MerchantPage({ account, token }: MerchantPageProps) {
                 <td>¥{order.total_amount}</td>
                 <td>{order.items.map((item) => `${item.name} x${item.quantity}`).join('，')}</td>
                 <td>
-                  <button className="button button--ghost" disabled={order.status !== 'pending_ship'} onClick={() => shipOrder(order.order_id)}>
-                    发货
-                  </button>
+                  {order.status === 'pending_ship' ? (
+                    <button
+                      className="button button--ghost"
+                      disabled={shippingOrderId === order.order_id}
+                      onClick={() => shipOrder(order.order_id)}
+                    >
+                      {shippingOrderId === order.order_id ? '发货中...' : '发货'}
+                    </button>
+                  ) : (
+                    <span className="muted-text">{merchantOrderActionHint(order.status)}</span>
+                  )}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
+        <PanelMessage loading={ordersLoading} error={ordersError} empty={!orders.length ? '暂无订单' : ''} />
+        <PaginationBar
+          loading={ordersLoading}
+          page={orderPage}
+          totalPages={orderPages}
+          visibleCount={orders.length}
+          total={orderTotal}
+          onPrev={() => setOrderPage((current) => Math.max(1, current - 1))}
+          onNext={() => setOrderPage((current) => Math.min(orderPages, current + 1))}
+        />
       </section>
       <section className="panel">
         <h2>已上传资料</h2>
@@ -338,6 +403,21 @@ function splitWords(value: string) {
     .split(/[，,]/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function merchantOrderActionHint(status: Order['status']) {
+  if (status === 'pending_payment') return '待用户支付';
+  if (status === 'shipped') return '已发货';
+  if (status === 'completed') return '已完成';
+  if (status === 'closed_timeout') return '支付超时关闭';
+  if (status === 'refund_requested') return '退款处理中';
+  if (status === 'refunded') return '已退款';
+  return '不可发货';
+}
+
+function errorMessage(err: unknown) {
+  if (err instanceof Error) return err.message;
+  return '操作失败';
 }
 
 function normalizeForm(input: MerchantProductInput): MerchantProductInput {

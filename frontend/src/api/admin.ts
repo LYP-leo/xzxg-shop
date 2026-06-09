@@ -253,6 +253,14 @@ export async function listAdminOrdersPage(token: string, page = 1, pageSize = 10
   });
 }
 
+export async function updateAdminOrderStatus(token: string, orderId: string, status: Order['status']): Promise<Order> {
+  return requestJSON<Order>(`/admin/orders/${orderId}`, {
+    method: 'PATCH',
+    headers: authHeaders(token),
+    body: JSON.stringify({ status })
+  });
+}
+
 export async function listDocuments(token: string): Promise<DocumentItem[]> {
   const data = await requestJSON<{ items: DocumentResponse[] }>('/admin/documents', {
     headers: authHeaders(token)

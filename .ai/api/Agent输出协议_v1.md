@@ -65,11 +65,10 @@ data: {"type":"text_delta","run_id":"run_xxx","delta":"你好"}
 3. `JSON.parse(data)` 得到 `AgentSseEvent`。
 4. 按 `type` 分发。
 
-当前前端实现位置：
+当前客户端实现位置：
 
-- `frontend/src/api/agent.ts`
-- `frontend/src/pages/AgentSessionPage.tsx`
-- `frontend/src/types/agent.ts`
+- `android-native/`：用户端主实现，优先消费 `content_delta`、商品卡片、思考过程和非导购结构化 block。
+- `frontend/`：React Web 用户端已废弃；React 当前只保留管理员/商家后台，不再作为用户聊天协议的主实现。
 
 ## 事件类型
 

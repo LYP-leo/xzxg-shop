@@ -10,18 +10,19 @@ import {
   listAppConfigsPage,
   listDocumentsPage,
   updateAccountStatus,
+  updateAdminOrderStatus,
   updateAdminProductStatus,
   updateAppConfig
 } from '../../api/admin';
 import type { Account } from '../../types/auth';
 import type { Order } from '../../types/order';
 import type { ProductCard } from '../../types/product';
-import { orderStatusText } from '../OrderPage';
 import {
   PageSizeSelect,
   PaginationBar,
   PanelMessage,
   formatDateTime,
+  orderStatusText,
   productStatus,
   shortURL,
   totalPages,
@@ -103,6 +104,20 @@ export function AdminPlatformPage({ token }: { token: string }) {
       await updateAdminProductStatus(token, product.productId, 'inactive');
       notice.showNotice('商品已下架');
       await products.reload();
+    } catch (error) {
+      notice.showError(error);
+    } finally {
+      setMutatingId('');
+    }
+  }
+
+  async function shipAdminOrder(order: Order) {
+    setMutatingId(order.order_id);
+    notice.clear();
+    try {
+      await updateAdminOrderStatus(token, order.order_id, 'shipped');
+      notice.showNotice('订单已标记发货');
+      await orders.reload();
     } catch (error) {
       notice.showError(error);
     } finally {
@@ -301,6 +316,7 @@ export function AdminPlatformPage({ token }: { token: string }) {
                   <th>商家</th>
                   <th>状态</th>
                   <th>金额</th>
+                  <th>操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -310,6 +326,15 @@ export function AdminPlatformPage({ token }: { token: string }) {
                     <td>{order.merchant_name}</td>
                     <td>{orderStatusText(order.status)}</td>
                     <td>¥{order.total_amount}</td>
+                    <td>
+                      {order.status === 'pending_ship' ? (
+                        <button className="button button--ghost" disabled={mutatingId === order.order_id} onClick={() => shipAdminOrder(order)}>
+                          {mutatingId === order.order_id ? '发货中' : '发货'}
+                        </button>
+                      ) : (
+                        <span className="muted-text">{adminOrderActionHint(order.status)}</span>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -670,6 +695,16 @@ function SummaryCard({ title, value, loading }: { title: string; value: number; 
   );
 }
 
+function adminOrderActionHint(status: Order['status']) {
+  if (status === 'pending_payment') return '待用户支付';
+  if (status === 'shipped') return '已发货';
+  if (status === 'completed') return '已完成';
+  if (status === 'closed_timeout') return '支付超时关闭';
+  if (status === 'refund_requested') return '退款处理中';
+  if (status === 'refunded') return '已退款';
+  return '不可发货';
+}
+
 function reloadActiveTab(
   tab: PlatformTab,
   loaders: Record<'accounts' | 'products' | 'orders' | 'documents' | 'configs', { reload: () => Promise<void> }>
@@ -701,4 +736,3 @@ function validateConfigValue(config: AppConfig, value: string, editingSecret: bo
   }
   return '';
 }
-
