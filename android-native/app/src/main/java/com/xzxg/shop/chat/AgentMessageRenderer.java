@@ -590,7 +590,6 @@ public class AgentMessageRenderer {
     private View productImage(String imageUrl, int sizeDp) {
         FrameLayout frame = new FrameLayout(context);
         frame.setBackground(rounded(Color.rgb(243, 244, 246), dp(12)));
-        frame.addView(imagePlaceholder(), new FrameLayout.LayoutParams(-1, -1));
         ImageView image = new ImageView(context);
         image.setScaleType(ImageView.ScaleType.CENTER_CROP);
         String url = api == null ? "" : api.absoluteUrl(imageUrl);
@@ -600,16 +599,6 @@ public class AgentMessageRenderer {
         }
         frame.setLayoutParams(new LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp)));
         return frame;
-    }
-
-    private TextView imagePlaceholder() {
-        TextView image = new TextView(context);
-        image.setText("图");
-        image.setTextSize(14);
-        image.setGravity(Gravity.CENTER);
-        image.setTextColor(Color.rgb(107, 114, 128));
-        image.setBackground(rounded(Color.rgb(243, 244, 246), dp(12)));
-        return image;
     }
 
     private String productCopyMarkdown(JSONObject item) {

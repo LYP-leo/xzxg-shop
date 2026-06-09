@@ -3,6 +3,7 @@ package com.xzxg.shop.product;
 import com.xzxg.shop.account.LoginActivity;
 import com.xzxg.shop.base.BaseShopActivity;
 import com.xzxg.shop.navigation.Routes;
+import com.xzxg.shop.ui.CartFabHelper;
 import com.xzxg.shop.ui.ShopUi;
 import com.xzxg.shop.ui.TopBarHelper;
 
@@ -30,6 +31,7 @@ public class ProductDetailActivity extends BaseShopActivity {
     private static final int BG_COLOR = 0xFFF8F9FB;
     private FrameLayout root;
     private LinearLayout page;
+    private CartFabHelper cartFabHelper;
     private String productId;
 
     @Override
@@ -43,7 +45,16 @@ public class ProductDetailActivity extends BaseShopActivity {
         render();
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (cartFabHelper != null) {
+            cartFabHelper.refresh();
+        }
+    }
+
     private void render() {
+        cartFabHelper = null;
         root = new FrameLayout(this);
         root.setBackgroundColor(BG_COLOR);
 
@@ -62,6 +73,7 @@ public class ProductDetailActivity extends BaseShopActivity {
         root.addView(content, new FrameLayout.LayoutParams(-1, -1));
         setContentView(root);
         bindRootSystemBarPadding(content);
+        cartFabHelper = attachCartFab(root, 24);
         loadProductDetail();
     }
 
@@ -116,12 +128,6 @@ public class ProductDetailActivity extends BaseShopActivity {
     private View productDetailImage(String imageUrl) {
         FrameLayout frame = new FrameLayout(this);
         frame.setBackground(ShopUi.rounded(Color.rgb(243, 244, 246), ShopUi.dp(this, 12)));
-        TextView placeholder = new TextView(this);
-        placeholder.setText("图");
-        placeholder.setTextSize(14);
-        placeholder.setGravity(Gravity.CENTER);
-        placeholder.setTextColor(Color.rgb(107, 114, 128));
-        frame.addView(placeholder, new FrameLayout.LayoutParams(-1, -1));
 
         String url = api().absoluteUrl(imageUrl);
         if (!url.isEmpty()) {
@@ -409,6 +415,9 @@ public class ProductDetailActivity extends BaseShopActivity {
                 api().addCartItem(targetProductId, skuId, 1);
                 runOnUiThread(() -> {
                     showToastLine("已加入购物车");
+                    if (cartFabHelper != null) {
+                        cartFabHelper.refresh();
+                    }
                     sourceButton.setEnabled(true);
                     sourceButton.setAlpha(1f);
                     sourceButton.setText("已加入");

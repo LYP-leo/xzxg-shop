@@ -261,12 +261,6 @@ public class CheckoutActivity extends BaseShopActivity {
     private View productImage(String imageUrl, int sizeDp) {
         FrameLayout frame = new FrameLayout(this);
         frame.setBackground(ShopUi.rounded(Color.rgb(243, 244, 246), ShopUi.dp(this, 12)));
-        TextView placeholder = new TextView(this);
-        placeholder.setText("图");
-        placeholder.setTextSize(14);
-        placeholder.setGravity(Gravity.CENTER);
-        placeholder.setTextColor(Color.rgb(107, 114, 128));
-        frame.addView(placeholder, new FrameLayout.LayoutParams(-1, -1));
         String url = api().absoluteUrl(imageUrl);
         if (!url.isEmpty()) {
             ImageView image = new ImageView(this);

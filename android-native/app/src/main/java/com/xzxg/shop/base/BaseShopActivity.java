@@ -4,6 +4,7 @@ import com.xzxg.shop.app.ShopApplication;
 import com.xzxg.shop.network.ApiClient;
 import com.xzxg.shop.storage.LocalChatStore;
 import com.xzxg.shop.storage.SessionStore;
+import com.xzxg.shop.ui.CartFabHelper;
 import com.xzxg.shop.ui.ImageLoader;
 
 import android.app.Activity;
@@ -13,6 +14,7 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.widget.FrameLayout;
 import android.widget.Toast;
 
 public abstract class BaseShopActivity extends Activity {
@@ -45,6 +47,10 @@ public abstract class BaseShopActivity extends Activity {
 
     protected ImageLoader imageLoader() {
         return shopApplication().imageLoader();
+    }
+
+    protected CartFabHelper attachCartFab(FrameLayout root, int bottomMarginDp) {
+        return CartFabHelper.attach(this, sessionStore(), api(), root, bottomMarginDp);
     }
 
     protected boolean isAuthExpiredError(Throwable error) {

@@ -19,6 +19,8 @@ import com.xzxg.shop.product.ProductListActivity;
 import com.xzxg.shop.settings.SettingsActivity;
 import com.xzxg.shop.storage.LocalChatStore;
 import com.xzxg.shop.storage.SessionStore;
+import com.xzxg.shop.tts.TtsController;
+import com.xzxg.shop.tts.TtsPlaybackController;
 import com.xzxg.shop.ui.BottomSheetHelper;
 import com.xzxg.shop.ui.ImageLoader;
 import com.xzxg.shop.ui.MarkdownRenderer;
@@ -32,6 +34,7 @@ import android.animation.AnimatorListenerAdapter;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.Manifest;
+import android.content.ContentValues;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ActivityNotFoundException;
@@ -77,6 +80,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.InputStream;
+import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -98,6 +102,7 @@ public class ChatActivity extends BaseShopActivity {
     private static final int REQUEST_PICK_IMAGE = 3101;
     private static final int REQUEST_PICK_FILE = 3102;
     private static final int REQUEST_RECORD_AUDIO = 3103;
+    private static final int REQUEST_TAKE_PHOTO = 3104;
     private static final int REQUEST_SPEECH_INPUT = 3105;
     private static final boolean DEBUG_AGENT_BLOCKS = BuildConfig.DEBUG;
     private static final String TAG = "XzxgShop";
@@ -130,6 +135,7 @@ public class ChatActivity extends BaseShopActivity {
     private ChatAttachmentController attachmentController;
     private ChatMarkdownRenderer markdownRenderer;
     private VoiceInputController voiceController;
+    private TtsController ttsController;
     private AgentStreamController streamController;
     private ChatHistoryDrawer historyDrawer;
     private AgentMessageRenderer messageRenderer;
@@ -141,6 +147,7 @@ public class ChatActivity extends BaseShopActivity {
     private ScrollView chatScroll;
     private EditText input;
     private TextView actionButton;
+    private Button ttsButton;
     private Button addButton;
     private LinearLayout composerOuter;
     private LinearLayout attachmentBufferView;
@@ -168,6 +175,7 @@ public class ChatActivity extends BaseShopActivity {
     private JSONArray activeAssistantBlocks = new JSONArray();
     private JSONArray activeAssistantSegments = new JSONArray();
     private ThinkingViewState activeThinking;
+    private View activeCartStateCard;
     private boolean activeAssistantAnswerStarted;
     private boolean hasReceivedThinkingDelta;
     private boolean loggedMissingThinkingDelta;
@@ -189,6 +197,7 @@ public class ChatActivity extends BaseShopActivity {
     private boolean userDetachedFromBottom;
     private String lastRiskNoticeText = "";
     private long lastRiskNoticeAt;
+    private Uri pendingCameraUri;
 
     private String currentAttachmentSessionKey() {
         return attachmentController.sessionKey(localSessionId);
@@ -255,6 +264,18 @@ public class ChatActivity extends BaseShopActivity {
         attachmentController = new ChatAttachmentController();
         markdownRenderer = new ChatMarkdownRenderer(this, markdown -> sanitizeAgentMarkdown(markdown).visibleMarkdown, this::enableCopy);
         voiceController = new VoiceInputController();
+        ttsController = new TtsController(sessionStore, api, new TtsPlaybackController(this));
+        ttsController.setListener(new TtsController.Listener() {
+            @Override
+            public void onStateChanged(boolean enabled) {
+                runOnUiThread(() -> refreshTtsButton());
+            }
+
+            @Override
+            public void onUnavailable(String message) {
+                runOnUiThread(() -> toastLine(message));
+            }
+        });
         streamController = new AgentStreamController();
         historyDrawer = new ChatHistoryDrawer(chatStore);
         messageRenderer = new AgentMessageRenderer(this, api, imageLoader, markdownRenderer, this::enableCopy, this::navigateRoute, new AgentMessageRenderer.ProductActions() {
@@ -490,6 +511,19 @@ public class ChatActivity extends BaseShopActivity {
         title.setPadding(dp(10), 0, dp(8), 0);
         toolbar.addView(title, new LinearLayout.LayoutParams(0, -1, 1));
 
+        if ("AI导购".equals(titleText)) {
+            ttsButton = transparentIconButton("");
+            ttsButton.setTextSize(22);
+            ttsButton.setOnClickListener(v -> {
+                hideAttachmentPanel();
+                hideKeyboard();
+                ttsController.toggle();
+                toastLine(ttsController.isEnabled() ? "语音朗读已开启" : "语音朗读已关闭");
+            });
+            refreshTtsButton();
+            toolbar.addView(ttsButton, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        }
+
         toolbar.setOnClickListener(v -> {
             hideAttachmentPanel();
             hideKeyboard();
@@ -703,14 +737,18 @@ public class ChatActivity extends BaseShopActivity {
             enterVoiceMode();
             return;
         }
+        if (text.isEmpty() && !attachmentSnapshot.isEmpty()) {
+            text = defaultAttachmentPrompt(attachmentSnapshot);
+        }
+        final String messageText = text;
         JSONArray attachments = new JSONArray();
         hideAttachmentPanel();
         if (attachmentSnapshot.isEmpty()) {
-            sendMessage(text, attachments);
+            sendMessage(messageText, attachments);
             return;
         }
         if (sessionStore.token().isEmpty()) {
-            sendMessage(text, localAttachmentPlaceholders(attachmentSnapshot));
+            sendMessage(messageText, localAttachmentPlaceholders(attachmentSnapshot));
             List<PendingAttachment> current = attachmentController.pendingAttachments(attachmentSessionKey);
             if (current != null) {
                 current.removeAll(attachmentSnapshot);
@@ -719,7 +757,7 @@ public class ChatActivity extends BaseShopActivity {
             updateInputActionButtonState();
             return;
         }
-        UploadingMessageViewState uploadingState = addUploadingUserMessageBubble(text, attachmentSnapshot);
+        UploadingMessageViewState uploadingState = addUploadingUserMessageBubble(messageText, attachmentSnapshot);
         if (input != null && !voiceMode) {
             input.setText("");
         }
@@ -732,24 +770,17 @@ public class ChatActivity extends BaseShopActivity {
                     PendingAttachment attachment = attachmentSnapshot.get(i);
                     int index = i;
                     runOnUiThread(() -> updateUploadingAttachmentState(uploadingState, index, "正在上传 " + (index + 1) + "/" + attachmentSnapshot.size()));
-                    if (attachment.size > 10 * 1024 * 1024) {
-                        throw new RuntimeException("单个附件不能超过 10MB");
+                    if (!isSupportedAgentAttachment(attachment)) {
+                        throw new RuntimeException("当前只支持发送图片和 PDF 文件");
                     }
-                    JSONObject item;
-                    if (attachment.size > 0) {
-                        try (InputStream in = getContentResolver().openInputStream(attachment.uri)) {
-                            item = api.uploadAttachment(attachment.name, attachment.mimeType, attachment.type, attachment.size, in);
-                        }
-                    } else {
-                        byte[] data = attachmentController.readBytes(getContentResolver(), attachment.uri);
-                        if (data.length == 0) {
-                            throw new RuntimeException("附件内容为空，无法发送");
-                        }
-                        item = api.uploadAttachment(attachment.name, attachment.mimeType, attachment.type, data);
+                    byte[] data = attachmentController.readBytes(getContentResolver(), attachment.uri);
+                    if (data.length == 0) {
+                        throw new RuntimeException("附件内容为空，无法发送");
                     }
+                    JSONObject item = api.uploadAttachment(attachment.name, attachment.mimeType, attachment.type, data);
                     try {
                         item.put("mime_type", attachment.mimeType == null ? "application/octet-stream" : attachment.mimeType);
-                        item.put("size", Math.max(0, attachment.size));
+                        item.put("size", data.length);
                         item.put("local_uri", attachment.uri == null ? "" : attachment.uri.toString());
                     } catch (Exception ignored) {
                     }
@@ -765,12 +796,13 @@ public class ChatActivity extends BaseShopActivity {
                     if (actionButton != null) {
                         actionButton.setEnabled(true);
                     }
-                    finishUploadingUserMessageBubble(uploadingState, text, uploaded);
+                    finishUploadingUserMessageBubble(uploadingState, messageText, uploaded);
                 });
             } catch (Exception error) {
+                Log.w(TAG, "upload attachment failed", error);
                 runOnUiThread(() -> {
-                    if (input != null && !voiceMode && input.getText().toString().trim().isEmpty() && text != null && !text.trim().isEmpty()) {
-                        input.setText(text);
+                    if (input != null && !voiceMode && input.getText().toString().trim().isEmpty() && messageText != null && !messageText.trim().isEmpty()) {
+                        input.setText(messageText);
                         input.setSelection(input.getText().length());
                     }
                     if (actionButton != null) {
@@ -782,6 +814,40 @@ public class ChatActivity extends BaseShopActivity {
                 });
             }
         }).start();
+    }
+
+    private String defaultAttachmentPrompt(List<PendingAttachment> attachments) {
+        if (attachments == null || attachments.isEmpty()) {
+            return "";
+        }
+        int imageCount = 0;
+        int fileCount = 0;
+        for (PendingAttachment attachment : attachments) {
+            if (attachment != null && "image".equals(attachment.type)) {
+                imageCount++;
+            } else {
+                fileCount++;
+            }
+        }
+        if (imageCount > 0 && fileCount == 0) {
+            return "帮我看看这张图片";
+        }
+        if (imageCount == 0 && fileCount > 0) {
+            return "请根据这个附件帮我分析";
+        }
+        return "请根据这些附件帮我分析";
+    }
+
+    private boolean isSupportedAgentAttachment(PendingAttachment attachment) {
+        if (attachment == null) {
+            return false;
+        }
+        if ("image".equals(attachment.type)) {
+            return true;
+        }
+        String mime = attachment.mimeType == null ? "" : attachment.mimeType.toLowerCase();
+        String name = attachment.name == null ? "" : attachment.name.toLowerCase();
+        return "application/pdf".equals(mime) || name.endsWith(".pdf");
     }
 
     private void toggleAttachmentPanel() {
@@ -806,10 +872,13 @@ public class ChatActivity extends BaseShopActivity {
             return;
         }
         attachmentPanelView.removeAllViews();
-        attachmentPanelView.addView(attachmentEntry("相册", "图片", v -> pickImage()), new LinearLayout.LayoutParams(dp(86), dp(70)));
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(86), dp(70));
-        params.leftMargin = dp(10);
-        attachmentPanelView.addView(attachmentEntry("文件", "文档", v -> pickFile()), params);
+        attachmentPanelView.addView(attachmentEntry("拍照", "相机", v -> takePhoto()), new LinearLayout.LayoutParams(dp(86), dp(70)));
+        LinearLayout.LayoutParams imageParams = new LinearLayout.LayoutParams(dp(86), dp(70));
+        imageParams.leftMargin = dp(10);
+        attachmentPanelView.addView(attachmentEntry("相册", "图片", v -> pickImage()), imageParams);
+        LinearLayout.LayoutParams fileParams = new LinearLayout.LayoutParams(dp(86), dp(70));
+        fileParams.leftMargin = dp(10);
+        attachmentPanelView.addView(attachmentEntry("文件", "文档", v -> pickFile()), fileParams);
     }
 
     private View attachmentEntry(String title, String subtitle, View.OnClickListener listener) {
@@ -913,6 +982,51 @@ public class ChatActivity extends BaseShopActivity {
         }
     }
 
+    private void takePhoto() {
+        hideAttachmentPanel();
+        Uri outputUri = createCameraImageUri();
+        if (outputUri == null) {
+            toastLine("照片保存失败");
+            return;
+        }
+        pendingCameraUri = outputUri;
+        Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+        intent.putExtra(MediaStore.EXTRA_OUTPUT, outputUri);
+        intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try {
+            startActivityForResult(intent, REQUEST_TAKE_PHOTO);
+        } catch (ActivityNotFoundException error) {
+            deletePendingCameraUri();
+            toastLine("无法打开相机");
+        }
+    }
+
+    private Uri createCameraImageUri() {
+        try {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.Images.Media.DISPLAY_NAME, "xzxg_camera_" + System.currentTimeMillis() + ".jpg");
+            values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                values.put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/XZXGShop");
+            }
+            return getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+        } catch (Exception error) {
+            return null;
+        }
+    }
+
+    private void deletePendingCameraUri() {
+        Uri uri = pendingCameraUri;
+        pendingCameraUri = null;
+        if (uri == null) {
+            return;
+        }
+        try {
+            getContentResolver().delete(uri, null, null);
+        } catch (Exception ignored) {
+        }
+    }
+
     private void pickFile() {
         hideAttachmentPanel();
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -920,14 +1034,7 @@ public class ChatActivity extends BaseShopActivity {
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         intent.setType("*/*");
         intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
-                "application/pdf",
-                "application/msword",
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                "application/vnd.ms-excel",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                "application/vnd.ms-powerpoint",
-                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                "text/*"
+                "application/pdf"
         });
         intent.putExtra("android.provider.extra.INITIAL_URI", Uri.parse("content://com.android.externalstorage.documents/root/primary"));
         intent.putExtra("android.provider.extra.SHOW_ADVANCED", true);
@@ -951,6 +1058,15 @@ public class ChatActivity extends BaseShopActivity {
             }
             return;
         }
+        if (requestCode == REQUEST_TAKE_PHOTO) {
+            if (resultCode == RESULT_OK && pendingCameraUri != null) {
+                addPendingAttachment(pendingCameraUri, true);
+                pendingCameraUri = null;
+            } else {
+                deletePendingCameraUri();
+            }
+            return;
+        }
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
             return;
         }
@@ -959,7 +1075,11 @@ public class ChatActivity extends BaseShopActivity {
             getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
         } catch (Exception ignored) {
         }
-        PendingAttachment attachment = attachmentController.fromUri(getContentResolver(), uri, requestCode == REQUEST_PICK_IMAGE);
+        addPendingAttachment(uri, requestCode == REQUEST_PICK_IMAGE);
+    }
+
+    private void addPendingAttachment(Uri uri, boolean forceImage) {
+        PendingAttachment attachment = attachmentController.fromUri(getContentResolver(), uri, forceImage);
         currentPendingAttachments().add(attachment);
         renderAttachmentBuffer();
         hideAttachmentPanel();
@@ -1234,13 +1354,19 @@ public class ChatActivity extends BaseShopActivity {
     private String greetingPrefix() {
         Calendar calendar = Calendar.getInstance();
         int hour = calendar.get(Calendar.HOUR_OF_DAY);
-        if (hour >= 5 && hour < 11) {
+        if (hour >= 6 && hour < 8) {
             return "早上好";
         }
-        if (hour >= 11 && hour < 14) {
+        if (hour >= 8 && hour < 11) {
+            return "上午好";
+        }
+        if (hour >= 11 && hour < 13) {
             return "中午好";
         }
-        if (hour >= 14 && hour < 24) {
+        if (hour >= 13 && hour < 18) {
+            return "下午好";
+        }
+        if (hour >= 18 && hour < 24) {
             return "晚上好";
         }
         return "夜深了";
@@ -1904,6 +2030,9 @@ public class ChatActivity extends BaseShopActivity {
     }
 
     private void sendMessage(String text, JSONArray attachments) {
+        if (ttsController != null) {
+            ttsController.stop();
+        }
         chatAutoScrollEnabled = true;
         userDetachedFromBottom = false;
         clearWelcomeIfNeeded();
@@ -1986,6 +2115,7 @@ public class ChatActivity extends BaseShopActivity {
         activeAssistantBlocks = new JSONArray();
         activeAssistantSegments = new JSONArray();
         activeThinking = null;
+        activeCartStateCard = null;
         activeAssistantAnswerStarted = false;
         hasReceivedThinkingDelta = false;
         loggedMissingThinkingDelta = false;
@@ -2056,7 +2186,7 @@ public class ChatActivity extends BaseShopActivity {
             } else {
                 flushActiveTextSegment(false);
             }
-            activeAssistantBlocks.put(part);
+            appendActiveBlock(part);
             appendBlockSegment(part);
             renderAgentBlock(part, chatList);
             return;
@@ -2075,7 +2205,7 @@ public class ChatActivity extends BaseShopActivity {
             } else {
                 flushActiveTextSegment(false);
             }
-            activeAssistantBlocks.put(value);
+            appendActiveBlock(value);
             appendBlockSegment(value);
             renderAgentBlock(value, chatList);
             return;
@@ -2386,6 +2516,9 @@ public class ChatActivity extends BaseShopActivity {
         renderItemRefs(rendered.itemIds, chatList);
         saveAssistantTurnForActiveStream(ownerLocalSessionId, visibleMarkdown, activeAssistantBlocks.toString(), activeFollowups.toString(), activeAssistantSegments.toString(), "completed");
         enqueueSessionSync(ownerLocalSessionId, streamController.activeServerSessionId(), streamController.activeTitle(), visibleMarkdown);
+        if (ttsController != null && ownerLocalSessionId.equals(localSessionId)) {
+            ttsController.speakAssistantMarkdown(visibleMarkdown);
+        }
         activeAssistantMarkdown = null;
         activeAssistantFullMarkdown = null;
         activeAssistantFormMode = false;
@@ -2553,6 +2686,9 @@ public class ChatActivity extends BaseShopActivity {
     }
 
     private void persistAndCancelActiveStreamForNavigation() {
+        if (ttsController != null) {
+            ttsController.stop();
+        }
         if (!streamController.isStreaming()) {
             return;
         }
@@ -2844,15 +2980,6 @@ public class ChatActivity extends BaseShopActivity {
         } else {
             userNeed.text.append("已理解用户本轮导购需求。");
         }
-
-        ThinkingStageState buyerExperience = ensureThinkingStage(thinking, "buyer_experience");
-        buyerExperience.status = "completed";
-        buyerExperience.text.append(fallbackBuyerExperienceText());
-
-        ThinkingStageState answerSummary = ensureThinkingStage(thinking, "answer_summary");
-        answerSummary.status = "running";
-        answerSummary.text.append("正在整理回答。");
-
         thinking.expanded = true;
         renderThinkingView(thinking);
     }
@@ -2900,20 +3027,10 @@ public class ChatActivity extends BaseShopActivity {
         if (parent != null) {
             parent.addView(thinking.container, new LinearLayout.LayoutParams(-1, -2));
         }
-        initializeThinkingStages(thinking);
         if (active) {
             activeThinking = thinking;
         }
         return thinking;
-    }
-
-    private void initializeThinkingStages(ThinkingViewState thinking) {
-        if (thinking == null) {
-            return;
-        }
-        for (String key : thinkingStageOrder()) {
-            ensureThinkingStage(thinking, key);
-        }
     }
 
     private ThinkingStageState ensureThinkingStage(ThinkingViewState thinking, String key) {
@@ -2933,18 +3050,19 @@ public class ChatActivity extends BaseShopActivity {
         if (thinking == null) {
             return;
         }
-        String[] order = thinkingStageOrder();
-        for (String key : order) {
-            ThinkingStageState stage = ensureThinkingStage(thinking, key);
-            if (key.equals(stageKey)) {
-                if (!"completed".equals(stage.status) && !"failed".equals(stage.status)) {
-                    stage.status = "running";
-                }
-                return;
+        int activeIndex = thinkingStageIndex(stageKey);
+        for (ThinkingStageState existing : thinking.stages.values()) {
+            if (existing == null || existing.stage == null) {
+                continue;
             }
-            if (!"failed".equals(stage.status)) {
-                stage.status = "completed";
+            int existingIndex = thinkingStageIndex(existing.stage);
+            if (activeIndex >= 0 && existingIndex >= 0 && existingIndex < activeIndex && !"failed".equals(existing.status)) {
+                existing.status = "completed";
             }
+        }
+        ThinkingStageState activeStage = ensureThinkingStage(thinking, stageKey);
+        if (!"completed".equals(activeStage.status) && !"failed".equals(activeStage.status)) {
+            activeStage.status = "running";
         }
     }
 
@@ -3205,7 +3323,6 @@ public class ChatActivity extends BaseShopActivity {
         }
         boolean animateCollapse = !activeThinking.completed && !activeThinking.userToggled;
         activeThinking.completed = true;
-        initializeThinkingStages(activeThinking);
         markKnownThinkingStagesCompleted(activeThinking);
         if (!activeThinking.userToggled) {
             activeThinking.expanded = false;
@@ -3315,7 +3432,6 @@ public class ChatActivity extends BaseShopActivity {
         ThinkingViewState thinking = ensureThinkingView(parent, false);
         thinking.completed = value.optBoolean("completed", true);
         thinking.expanded = !thinking.completed;
-        initializeThinkingStages(thinking);
         JSONArray stages = value.optJSONArray("stages");
         if (stages != null) {
             for (int i = 0; i < stages.length(); i++) {
@@ -3344,6 +3460,17 @@ public class ChatActivity extends BaseShopActivity {
 
     private String[] thinkingStageOrder() {
         return new String[]{"user_need", "buyer_experience", "answer_summary"};
+    }
+
+    private int thinkingStageIndex(String stage) {
+        String key = thinkingStageKey(stage);
+        String[] order = thinkingStageOrder();
+        for (int i = 0; i < order.length; i++) {
+            if (order[i].equals(key)) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private String thinkingStageKey(String stage) {
@@ -3429,6 +3556,16 @@ public class ChatActivity extends BaseShopActivity {
         return "product_card".equals(type) || "product_refs".equals(type);
     }
 
+    private void appendActiveBlock(JSONObject block) {
+        if (block == null) {
+            return;
+        }
+        if (isCartStateBlock(block)) {
+            activeAssistantBlocks = withoutCartStateBlocks(activeAssistantBlocks);
+        }
+        activeAssistantBlocks.put(block);
+    }
+
     private void appendBlockSegment(JSONObject block) {
         if (block == null) {
             return;
@@ -3437,9 +3574,75 @@ public class ChatActivity extends BaseShopActivity {
         try {
             segment.put("type", "block");
             segment.put("block", new JSONObject(block.toString()));
+            if (isCartStateBlock(block)) {
+                activeAssistantSegments = withoutCartStateSegments(activeAssistantSegments);
+            }
             activeAssistantSegments.put(segment);
         } catch (Exception ignored) {
         }
+    }
+
+    private boolean isCartStateBlock(JSONObject block) {
+        return block != null && "cart_state".equals(block.optString("type"));
+    }
+
+    private JSONArray withoutCartStateBlocks(JSONArray blocks) {
+        JSONArray filtered = new JSONArray();
+        if (blocks == null) {
+            return filtered;
+        }
+        for (int i = 0; i < blocks.length(); i++) {
+            JSONObject block = blocks.optJSONObject(i);
+            if (block != null && !isCartStateBlock(block)) {
+                filtered.put(block);
+            }
+        }
+        return filtered;
+    }
+
+    private JSONArray withoutCartStateSegments(JSONArray segments) {
+        JSONArray filtered = new JSONArray();
+        if (segments == null) {
+            return filtered;
+        }
+        for (int i = 0; i < segments.length(); i++) {
+            JSONObject segment = segments.optJSONObject(i);
+            if (segment == null) {
+                continue;
+            }
+            if ("block".equals(segment.optString("type")) && isCartStateBlock(segment.optJSONObject("block"))) {
+                continue;
+            }
+            filtered.put(segment);
+        }
+        return filtered;
+    }
+
+    private int lastCartStateSegmentIndex(JSONArray segments) {
+        int index = -1;
+        if (segments == null) {
+            return index;
+        }
+        for (int i = 0; i < segments.length(); i++) {
+            JSONObject segment = segments.optJSONObject(i);
+            if (segment != null && "block".equals(segment.optString("type")) && isCartStateBlock(segment.optJSONObject("block"))) {
+                index = i;
+            }
+        }
+        return index;
+    }
+
+    private int lastCartStateBlockIndex(JSONArray blocks) {
+        int index = -1;
+        if (blocks == null) {
+            return index;
+        }
+        for (int i = 0; i < blocks.length(); i++) {
+            if (isCartStateBlock(blocks.optJSONObject(i))) {
+                index = i;
+            }
+        }
+        return index;
     }
 
     private void appendTextSegment(String markdown) {
@@ -3522,7 +3725,11 @@ public class ChatActivity extends BaseShopActivity {
             return;
         }
         if ("cart_state".equals(type)) {
-            parent.addView(messageRenderer.cartStateCard(block.optJSONObject("cart")));
+            if (activeCartStateCard != null && activeCartStateCard.getParent() instanceof ViewGroup) {
+                ((ViewGroup) activeCartStateCard.getParent()).removeView(activeCartStateCard);
+            }
+            activeCartStateCard = messageRenderer.cartStateCard(block.optJSONObject("cart"));
+            parent.addView(activeCartStateCard);
             scrollBottom();
             return;
         }
@@ -3692,6 +3899,7 @@ public class ChatActivity extends BaseShopActivity {
             return;
         }
         JSONArray pendingThoughts = new JSONArray();
+        int lastCartStateSegmentIndex = lastCartStateSegmentIndex(segments);
         for (int i = 0; i < segments.length(); i++) {
             JSONObject segment = segments.optJSONObject(i);
             if (segment == null) {
@@ -3711,6 +3919,9 @@ public class ChatActivity extends BaseShopActivity {
             } else if ("table".equals(type)) {
                 renderHistoricalTableSegment(context, segment.optString("markdown", ""));
             } else if ("block".equals(type)) {
+                if (isCartStateBlock(segment.optJSONObject("block")) && i != lastCartStateSegmentIndex) {
+                    continue;
+                }
                 renderHistoricalBlock(context, segment.optJSONObject("block"));
             } else if ("product_refs".equals(type) || "product_card".equals(type)) {
                 renderHistoricalBlock(context, segment);
@@ -3747,9 +3958,13 @@ public class ChatActivity extends BaseShopActivity {
         if (blocks == null) {
             return;
         }
+        int lastCartStateIndex = lastCartStateBlockIndex(blocks);
         for (int i = 0; i < blocks.length(); i++) {
             JSONObject block = blocks.optJSONObject(i);
             if (block != null) {
+                if (isCartStateBlock(block) && i != lastCartStateIndex) {
+                    continue;
+                }
                 renderHistoricalBlock(context, block);
             }
         }
@@ -4141,8 +4356,8 @@ public class ChatActivity extends BaseShopActivity {
                     if (sourceButton != null) {
                         sourceButton.setEnabled(true);
                         sourceButton.setAlpha(1f);
-                        sourceButton.setText("已加入");
-                        sourceButton.postDelayed(() -> sourceButton.setText("加入购物车"), 600);
+                        sourceButton.setText("进入购物车");
+                        sourceButton.setOnClickListener(v -> startActivity(new Intent(this, CartActivity.class)));
                     }
                 });
             } catch (Exception error) {
@@ -4151,6 +4366,7 @@ public class ChatActivity extends BaseShopActivity {
                         sourceButton.setEnabled(true);
                         sourceButton.setAlpha(1f);
                         sourceButton.setText("加入购物车");
+                        sourceButton.setOnClickListener(v -> addProductToCart(item, sourceButton));
                     }
                     toastLine("加入失败：" + error.getMessage());
                 });
@@ -4163,21 +4379,24 @@ public class ChatActivity extends BaseShopActivity {
             return addBubble(text == null ? "" : text, true);
         }
         LinearLayout shell = new LinearLayout(this);
+        shell.setOrientation(LinearLayout.VERTICAL);
         shell.setGravity(Gravity.RIGHT);
         LinearLayout.LayoutParams shellParams = new LinearLayout.LayoutParams(-1, -2);
         shellParams.setMargins(0, dp(6), 0, dp(6));
 
-        LinearLayout bubble = userMessageBubbleContainer();
         String safeText = text == null ? "" : text.trim();
         if (!safeText.isEmpty()) {
+            LinearLayout bubble = userMessageBubbleContainer();
             TextView textView = new TextView(this);
             textView.setText(safeText);
             textView.setTextSize(15);
             textView.setLineSpacing(4, 1);
             textView.setTextColor(Color.WHITE);
-            textView.setPadding(0, 0, 0, dp(8));
+            textView.setMaxWidth((int) (getResources().getDisplayMetrics().widthPixels * 0.76f) - dp(20));
             bubble.addView(textView, new LinearLayout.LayoutParams(-1, -2));
+            shell.addView(bubble);
         }
+        LinearLayout attachmentPanel = userAttachmentPanel();
         LinearLayout attachmentList = new LinearLayout(this);
         attachmentList.setOrientation(attachments.length() > 1 ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
         for (int i = 0; i < attachments.length(); i++) {
@@ -4186,7 +4405,7 @@ public class ChatActivity extends BaseShopActivity {
                 continue;
             }
             View view = isImageAttachment(attachment) ? userImageAttachmentView(attachment) : userFileAttachmentView(attachment);
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(attachments.length() > 1 ? dp(104) : dp(176), attachments.length() > 1 ? dp(104) : dp(132));
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(attachments.length() > 1 ? dp(132) : -1, attachments.length() > 1 ? dp(132) : dp(260));
             params.setMargins(0, 0, i < attachments.length() - 1 ? dp(8) : 0, 0);
             attachmentList.addView(view, params);
         }
@@ -4194,12 +4413,14 @@ public class ChatActivity extends BaseShopActivity {
             HorizontalScrollView scroll = new HorizontalScrollView(this);
             scroll.setHorizontalScrollBarEnabled(false);
             scroll.addView(attachmentList);
-            bubble.addView(scroll, new LinearLayout.LayoutParams(-1, -2));
+            attachmentPanel.addView(scroll, new LinearLayout.LayoutParams(-1, -2));
         } else {
-            bubble.addView(attachmentList, new LinearLayout.LayoutParams(-1, -2));
+            attachmentPanel.addView(attachmentList, new LinearLayout.LayoutParams(-1, -2));
         }
-        enableCopy(bubble, userMessageCopyText(safeText, attachments));
-        shell.addView(bubble);
+        enableCopy(attachmentPanel, userMessageCopyText(safeText, attachments));
+        LinearLayout.LayoutParams panelParams = new LinearLayout.LayoutParams((int) (getResources().getDisplayMetrics().widthPixels * 0.76f), ViewGroup.LayoutParams.WRAP_CONTENT);
+        panelParams.topMargin = safeText.isEmpty() ? 0 : dp(6);
+        shell.addView(attachmentPanel, panelParams);
         chatList.addView(shell, shellParams);
         scrollBottom();
         return shell;
@@ -4210,15 +4431,25 @@ public class ChatActivity extends BaseShopActivity {
         bubble.setOrientation(LinearLayout.VERTICAL);
         bubble.setPadding(dp(10), dp(9), dp(10), dp(9));
         bubble.setBackground(rounded(Color.rgb(20, 20, 20), dp(16)));
-        bubble.setLayoutParams(new LinearLayout.LayoutParams((int) (getResources().getDisplayMetrics().widthPixels * 0.76f), ViewGroup.LayoutParams.WRAP_CONTENT));
+        bubble.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         return bubble;
+    }
+
+    private LinearLayout userAttachmentPanel() {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(8), dp(8), dp(8), dp(8));
+        panel.setBackground(rounded(Color.WHITE, dp(14)));
+        return panel;
     }
 
     private View userImageAttachmentView(JSONObject attachment) {
         FrameLayout frame = new FrameLayout(this);
         frame.setBackground(rounded(Color.rgb(235, 238, 243), dp(12)));
         ImageView image = new ImageView(this);
-        image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        image.setAdjustViewBounds(true);
+        image.setBackgroundColor(Color.rgb(248, 250, 252));
         String imageUri = attachmentImageUri(attachment);
         if (!imageUri.isEmpty()) {
             loadAttachmentImage(image, imageUri);
@@ -4371,13 +4602,13 @@ public class ChatActivity extends BaseShopActivity {
         if (attachment == null) {
             return "";
         }
-        String local = attachment.optString("local_uri", "");
-        if (!local.isEmpty()) {
-            return local;
-        }
         String url = attachment.optString("url", "");
         if (!url.isEmpty()) {
             return url;
+        }
+        String local = attachment.optString("local_uri", "");
+        if (!local.isEmpty()) {
+            return local;
         }
         return attachment.optString("object_key", "");
     }
@@ -4387,14 +4618,32 @@ public class ChatActivity extends BaseShopActivity {
             return;
         }
         String value = uri.trim();
+        if (value.startsWith("/")) {
+            value = api.absoluteUrl(value);
+        }
         if (value.startsWith("http://") || value.startsWith("https://")) {
+            String imageUrl = value;
             new Thread(() -> {
-                try (InputStream inputStream = new URL(value).openStream()) {
-                    Bitmap bitmap = BitmapFactory.decodeStream(inputStream);
-                    if (bitmap != null) {
-                        runOnUiThread(() -> image.setImageBitmap(bitmap));
+                HttpURLConnection connection = null;
+                try {
+                    connection = (HttpURLConnection) new URL(imageUrl).openConnection();
+                    connection.setConnectTimeout(10000);
+                    connection.setReadTimeout(30000);
+                    String token = sessionStore == null ? "" : sessionStore.token();
+                    if (token != null && !token.isEmpty()) {
+                        connection.setRequestProperty("Authorization", "Bearer " + token);
+                    }
+                    try (InputStream inputStream = connection.getInputStream()) {
+                        Bitmap bitmap = BitmapFactory.decodeStream(inputStream);
+                        if (bitmap != null) {
+                            runOnUiThread(() -> image.setImageBitmap(bitmap));
+                        }
                     }
                 } catch (Exception ignored) {
+                } finally {
+                    if (connection != null) {
+                        connection.disconnect();
+                    }
                 }
             }).start();
             return;
@@ -5225,14 +5474,29 @@ public class ChatActivity extends BaseShopActivity {
 
     @Override
     protected void onPause() {
+        if (ttsController != null) {
+            ttsController.stop();
+        }
         persistActiveAssistantDraft("partial");
         super.onPause();
     }
 
     @Override
     protected void onDestroy() {
+        if (ttsController != null) {
+            ttsController.destroy();
+        }
         voiceController.destroy();
         super.onDestroy();
+    }
+
+    private void refreshTtsButton() {
+        if (ttsButton == null || ttsController == null) {
+            return;
+        }
+        ttsButton.setText(ttsController.isEnabled() ? "🔊" : "🔇");
+        ttsButton.setContentDescription(ttsController.isEnabled() ? "关闭语音朗读" : "开启语音朗读");
+        ttsButton.setTextColor(ttsController.isEnabled() ? Color.rgb(20, 184, 166) : Color.rgb(75, 85, 99));
     }
 
     private int statusBarHeight() {
