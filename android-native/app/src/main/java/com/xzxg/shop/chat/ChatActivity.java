@@ -19,6 +19,8 @@ import com.xzxg.shop.product.ProductListActivity;
 import com.xzxg.shop.settings.SettingsActivity;
 import com.xzxg.shop.storage.LocalChatStore;
 import com.xzxg.shop.storage.SessionStore;
+import com.xzxg.shop.tts.TtsController;
+import com.xzxg.shop.tts.TtsPlaybackController;
 import com.xzxg.shop.ui.BottomSheetHelper;
 import com.xzxg.shop.ui.ImageLoader;
 import com.xzxg.shop.ui.MarkdownRenderer;
@@ -32,6 +34,7 @@ import android.animation.AnimatorListenerAdapter;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.Manifest;
+import android.content.ContentValues;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ActivityNotFoundException;
@@ -99,6 +102,7 @@ public class ChatActivity extends BaseShopActivity {
     private static final int REQUEST_PICK_IMAGE = 3101;
     private static final int REQUEST_PICK_FILE = 3102;
     private static final int REQUEST_RECORD_AUDIO = 3103;
+    private static final int REQUEST_TAKE_PHOTO = 3104;
     private static final int REQUEST_SPEECH_INPUT = 3105;
     private static final boolean DEBUG_AGENT_BLOCKS = BuildConfig.DEBUG;
     private static final String TAG = "XzxgShop";
@@ -131,6 +135,7 @@ public class ChatActivity extends BaseShopActivity {
     private ChatAttachmentController attachmentController;
     private ChatMarkdownRenderer markdownRenderer;
     private VoiceInputController voiceController;
+    private TtsController ttsController;
     private AgentStreamController streamController;
     private ChatHistoryDrawer historyDrawer;
     private AgentMessageRenderer messageRenderer;
@@ -142,6 +147,7 @@ public class ChatActivity extends BaseShopActivity {
     private ScrollView chatScroll;
     private EditText input;
     private TextView actionButton;
+    private Button ttsButton;
     private Button addButton;
     private LinearLayout composerOuter;
     private LinearLayout attachmentBufferView;
@@ -191,6 +197,7 @@ public class ChatActivity extends BaseShopActivity {
     private boolean userDetachedFromBottom;
     private String lastRiskNoticeText = "";
     private long lastRiskNoticeAt;
+    private Uri pendingCameraUri;
 
     private String currentAttachmentSessionKey() {
         return attachmentController.sessionKey(localSessionId);
@@ -257,6 +264,18 @@ public class ChatActivity extends BaseShopActivity {
         attachmentController = new ChatAttachmentController();
         markdownRenderer = new ChatMarkdownRenderer(this, markdown -> sanitizeAgentMarkdown(markdown).visibleMarkdown, this::enableCopy);
         voiceController = new VoiceInputController();
+        ttsController = new TtsController(sessionStore, api, new TtsPlaybackController(this));
+        ttsController.setListener(new TtsController.Listener() {
+            @Override
+            public void onStateChanged(boolean enabled) {
+                runOnUiThread(() -> refreshTtsButton());
+            }
+
+            @Override
+            public void onUnavailable(String message) {
+                runOnUiThread(() -> toastLine(message));
+            }
+        });
         streamController = new AgentStreamController();
         historyDrawer = new ChatHistoryDrawer(chatStore);
         messageRenderer = new AgentMessageRenderer(this, api, imageLoader, markdownRenderer, this::enableCopy, this::navigateRoute, new AgentMessageRenderer.ProductActions() {
@@ -491,6 +510,19 @@ public class ChatActivity extends BaseShopActivity {
         title.setGravity(Gravity.CENTER_VERTICAL);
         title.setPadding(dp(10), 0, dp(8), 0);
         toolbar.addView(title, new LinearLayout.LayoutParams(0, -1, 1));
+
+        if ("AI导购".equals(titleText)) {
+            ttsButton = transparentIconButton("");
+            ttsButton.setTextSize(22);
+            ttsButton.setOnClickListener(v -> {
+                hideAttachmentPanel();
+                hideKeyboard();
+                ttsController.toggle();
+                toastLine(ttsController.isEnabled() ? "语音朗读已开启" : "语音朗读已关闭");
+            });
+            refreshTtsButton();
+            toolbar.addView(ttsButton, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        }
 
         toolbar.setOnClickListener(v -> {
             hideAttachmentPanel();
@@ -840,10 +872,13 @@ public class ChatActivity extends BaseShopActivity {
             return;
         }
         attachmentPanelView.removeAllViews();
-        attachmentPanelView.addView(attachmentEntry("相册", "图片", v -> pickImage()), new LinearLayout.LayoutParams(dp(86), dp(70)));
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(86), dp(70));
-        params.leftMargin = dp(10);
-        attachmentPanelView.addView(attachmentEntry("文件", "文档", v -> pickFile()), params);
+        attachmentPanelView.addView(attachmentEntry("拍照", "相机", v -> takePhoto()), new LinearLayout.LayoutParams(dp(86), dp(70)));
+        LinearLayout.LayoutParams imageParams = new LinearLayout.LayoutParams(dp(86), dp(70));
+        imageParams.leftMargin = dp(10);
+        attachmentPanelView.addView(attachmentEntry("相册", "图片", v -> pickImage()), imageParams);
+        LinearLayout.LayoutParams fileParams = new LinearLayout.LayoutParams(dp(86), dp(70));
+        fileParams.leftMargin = dp(10);
+        attachmentPanelView.addView(attachmentEntry("文件", "文档", v -> pickFile()), fileParams);
     }
 
     private View attachmentEntry(String title, String subtitle, View.OnClickListener listener) {
@@ -947,6 +982,51 @@ public class ChatActivity extends BaseShopActivity {
         }
     }
 
+    private void takePhoto() {
+        hideAttachmentPanel();
+        Uri outputUri = createCameraImageUri();
+        if (outputUri == null) {
+            toastLine("照片保存失败");
+            return;
+        }
+        pendingCameraUri = outputUri;
+        Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+        intent.putExtra(MediaStore.EXTRA_OUTPUT, outputUri);
+        intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try {
+            startActivityForResult(intent, REQUEST_TAKE_PHOTO);
+        } catch (ActivityNotFoundException error) {
+            deletePendingCameraUri();
+            toastLine("无法打开相机");
+        }
+    }
+
+    private Uri createCameraImageUri() {
+        try {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.Images.Media.DISPLAY_NAME, "xzxg_camera_" + System.currentTimeMillis() + ".jpg");
+            values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                values.put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/XZXGShop");
+            }
+            return getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+        } catch (Exception error) {
+            return null;
+        }
+    }
+
+    private void deletePendingCameraUri() {
+        Uri uri = pendingCameraUri;
+        pendingCameraUri = null;
+        if (uri == null) {
+            return;
+        }
+        try {
+            getContentResolver().delete(uri, null, null);
+        } catch (Exception ignored) {
+        }
+    }
+
     private void pickFile() {
         hideAttachmentPanel();
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -978,6 +1058,15 @@ public class ChatActivity extends BaseShopActivity {
             }
             return;
         }
+        if (requestCode == REQUEST_TAKE_PHOTO) {
+            if (resultCode == RESULT_OK && pendingCameraUri != null) {
+                addPendingAttachment(pendingCameraUri, true);
+                pendingCameraUri = null;
+            } else {
+                deletePendingCameraUri();
+            }
+            return;
+        }
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
             return;
         }
@@ -986,7 +1075,11 @@ public class ChatActivity extends BaseShopActivity {
             getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
         } catch (Exception ignored) {
         }
-        PendingAttachment attachment = attachmentController.fromUri(getContentResolver(), uri, requestCode == REQUEST_PICK_IMAGE);
+        addPendingAttachment(uri, requestCode == REQUEST_PICK_IMAGE);
+    }
+
+    private void addPendingAttachment(Uri uri, boolean forceImage) {
+        PendingAttachment attachment = attachmentController.fromUri(getContentResolver(), uri, forceImage);
         currentPendingAttachments().add(attachment);
         renderAttachmentBuffer();
         hideAttachmentPanel();
@@ -1267,10 +1360,10 @@ public class ChatActivity extends BaseShopActivity {
         if (hour >= 8 && hour < 11) {
             return "上午好";
         }
-        if (hour >= 11 && hour < 14) {
+        if (hour >= 11 && hour < 13) {
             return "中午好";
         }
-        if (hour >= 14 && hour < 18) {
+        if (hour >= 13 && hour < 18) {
             return "下午好";
         }
         if (hour >= 18 && hour < 24) {
@@ -1937,6 +2030,9 @@ public class ChatActivity extends BaseShopActivity {
     }
 
     private void sendMessage(String text, JSONArray attachments) {
+        if (ttsController != null) {
+            ttsController.stop();
+        }
         chatAutoScrollEnabled = true;
         userDetachedFromBottom = false;
         clearWelcomeIfNeeded();
@@ -2420,6 +2516,9 @@ public class ChatActivity extends BaseShopActivity {
         renderItemRefs(rendered.itemIds, chatList);
         saveAssistantTurnForActiveStream(ownerLocalSessionId, visibleMarkdown, activeAssistantBlocks.toString(), activeFollowups.toString(), activeAssistantSegments.toString(), "completed");
         enqueueSessionSync(ownerLocalSessionId, streamController.activeServerSessionId(), streamController.activeTitle(), visibleMarkdown);
+        if (ttsController != null && ownerLocalSessionId.equals(localSessionId)) {
+            ttsController.speakAssistantMarkdown(visibleMarkdown);
+        }
         activeAssistantMarkdown = null;
         activeAssistantFullMarkdown = null;
         activeAssistantFormMode = false;
@@ -2587,6 +2686,9 @@ public class ChatActivity extends BaseShopActivity {
     }
 
     private void persistAndCancelActiveStreamForNavigation() {
+        if (ttsController != null) {
+            ttsController.stop();
+        }
         if (!streamController.isStreaming()) {
             return;
         }
@@ -5372,14 +5474,29 @@ public class ChatActivity extends BaseShopActivity {
 
     @Override
     protected void onPause() {
+        if (ttsController != null) {
+            ttsController.stop();
+        }
         persistActiveAssistantDraft("partial");
         super.onPause();
     }
 
     @Override
     protected void onDestroy() {
+        if (ttsController != null) {
+            ttsController.destroy();
+        }
         voiceController.destroy();
         super.onDestroy();
+    }
+
+    private void refreshTtsButton() {
+        if (ttsButton == null || ttsController == null) {
+            return;
+        }
+        ttsButton.setText(ttsController.isEnabled() ? "🔊" : "🔇");
+        ttsButton.setContentDescription(ttsController.isEnabled() ? "关闭语音朗读" : "开启语音朗读");
+        ttsButton.setTextColor(ttsController.isEnabled() ? Color.rgb(20, 184, 166) : Color.rgb(75, 85, 99));
     }
 
     private int statusBarHeight() {

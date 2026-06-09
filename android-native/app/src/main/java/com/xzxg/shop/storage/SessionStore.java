@@ -89,6 +89,14 @@ public class SessionStore {
         prefs.edit().putBoolean("show_drawer_return_chat", value).apply();
     }
 
+    public boolean ttsEnabled() {
+        return prefs.getBoolean("chat_tts_enabled", false);
+    }
+
+    public void saveTtsEnabled(boolean value) {
+        prefs.edit().putBoolean("chat_tts_enabled", value).apply();
+    }
+
     public void clearAuth() {
         prefs.edit()
                 .remove("token")

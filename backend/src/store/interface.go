@@ -64,7 +64,6 @@ type Store interface {
 	UpdateMerchantStatus(ctx context.Context, merchantID string, status string) (domain.Merchant, bool)
 	ListProducts(ctx context.Context, keyword string, categoryID string) []domain.ProductCard
 	ListProductsPage(ctx context.Context, keyword string, categoryID string, page int, pageSize int) ([]domain.ProductCard, int)
-	ListMerchantProductsPage(ctx context.Context, merchantID string, page int, pageSize int) ([]domain.ProductCard, int)
 	ListAllProducts(ctx context.Context) []domain.ProductCard
 	ListAllProductsPage(ctx context.Context, page int, pageSize int) ([]domain.ProductCard, int)
 	GetProduct(ctx context.Context, productID string) (domain.ProductDetail, bool)

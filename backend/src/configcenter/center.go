@@ -90,8 +90,8 @@ P6 open_explore：有潜在购买意图，但没有明确品类，只由风格�
 const DefaultNonGuideIntentPrompt = `你是电商非导购服务意图分类器。当前 query 已被前置路由判定为 non_guide，你只需要把它细分到唯一一个服务域。只输出 JSON，不要输出解释文本。
 
 服务域：
-- cart_service：查看购物车、购物车说明、购物车项查询；明确加购/删购/改数量/结算由规则 intent 处理。
-- order_service：订单列表、订单详情、物流、支付、取消订单、确认收货、取件、复购。
+- cart_service：购物车域，包括查看购物车、加购、删除购物车商品、修改数量或选中状态、优惠试算和购物车页面入口；不包含结算/提交订单。
+- order_service：订单与履约域，包括结算、提交订单、创建订单、订单列表、订单详情、物流、支付、取消订单、确认收货、取件、复购。
 - coupon_service：优惠券、领券、已领券、促销活动、满减折扣、凑单、优惠试算。
 - review_service：商品评价、订单评价、评分、好评差评、评价摘要、发布评价。
 - after_sales_service：退货、退款、换货、保修、发票、投诉、售后规则、客服。
@@ -151,6 +151,23 @@ const DefaultSessionSummaryPrompt = `你是电商导购会话摘要器。根据�
 输出 JSON：
 {
   "summary": "中文摘要"
+}`
+
+const DefaultGuideSuggestionsPrompt = `你是电商 App 的小猪 AI 浮窗向导。请根据当前页面、上下文和候选问题，生成 1-3 个最适合展示给用户点击的问题。
+
+要求：
+- 只输出 JSON，不要解释。
+- 每个 question 不超过 10 个中文字，越短越好。
+- question 要能直接发送给 AI 导购。
+- 贴合当前页面和上下文，不要承诺平台没有的数据能力。
+- 可以改写候选问题，也可以从候选中挑选排序。
+- 不要输出商品 ID、内部字段名、工具名或策略说明。
+
+返回 JSON：
+{
+  "items": [
+    {"id": "短英文id", "question": "十字以内", "reason": "中文，说明为什么适合"}
+  ]
 }`
 
 const DefaultAnswerBasePrompt = `你是小猪小狗电商平台的 AI 导购主 Agent。
@@ -368,16 +385,16 @@ const DefaultIntentToolPolicyPrompt = `{
     "focus": ["非导购兜底策略，只用于二级分类失败；优先用只读工具获取真实状态。", "不要用固定模板回答可查询的订单、优惠、购物车或售后问题。"]
   },
   "cart_service": {
-    "tools": ["get_cart", "preview_discount"],
+    "tools": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "preview_discount"],
     "skills": ["navigate_cart"],
-    "disabled": ["search_products", "search_image_products", "search_knowledge", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
-    "focus": ["购物车查询先调用 get_cart；如果用户只想打开页面才调用 navigate_cart。", "购物车优惠、应付金额、凑单前先调用 preview_discount。"]
+    "disabled": ["search_products", "search_image_products", "search_knowledge", "checkout"],
+    "focus": ["购物车域只处理查看、加购、删除、改数量、选中状态、优惠试算和购物车页面入口；结算/提交订单属于 order_service。", "加购必须有明确真实 product_id；如果用户说第一个/刚才那个，优先使用相关历史商品里的 item_id/product_id。", "修改或删除购物车前必须有 cart_item_id；如果用户按序号描述，先调用 get_cart。", "如果用户只想打开页面才调用 navigate_cart。", "购物车优惠、应付金额、凑单前先调用 preview_discount。"]
   },
   "order_service": {
-    "tools": ["list_orders", "get_order", "pay_order", "cancel_order", "confirm_receipt", "search_knowledge"],
+    "tools": ["get_cart", "preview_discount", "checkout", "list_orders", "get_order", "pay_order", "cancel_order", "confirm_receipt", "search_knowledge"],
     "skills": ["navigate_orders", "order_help"],
-    "disabled": ["search_products", "search_image_products", "get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
-    "focus": ["订单/物流先调用 list_orders 或 get_order 读取真实状态。", "pay_order、cancel_order、confirm_receipt 必须有明确 order_id；缺少时先 list_orders 定位。", "订单规则、物流说明、复购边界可调用 search_knowledge。"]
+    "disabled": ["search_products", "search_image_products", "add_cart_item", "update_cart_item", "delete_cart_item"],
+    "focus": ["结算/提交订单/确认下单属于订单创建动作，必须调用 checkout；不要只跳转购物车页面。", "checkout 前先调用 get_cart 或 preview_discount，确认存在选中商品和应付金额。", "订单/物流先调用 list_orders 或 get_order 读取真实状态。", "pay_order、cancel_order、confirm_receipt 必须有明确 order_id；缺少时先 list_orders 定位。", "订单规则、物流说明、复购边界可调用 search_knowledge。"]
   },
   "coupon_service": {
     "tools": ["list_coupons", "list_user_coupons", "claim_coupon", "list_promotions", "preview_discount"],
@@ -420,30 +437,6 @@ const DefaultIntentToolPolicyPrompt = `{
     "skills": [],
     "disabled": ["search_products", "search_image_products", "search_knowledge", "get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "checkout"],
     "focus": ["说明当前平台暂不支持该能力；给出可支持的替代方向。"]
-  },
-  "cart_add": {
-    "tools": ["add_cart_item"],
-    "skills": [],
-    "disabled": ["search_products", "search_knowledge", "get_cart", "update_cart_item", "delete_cart_item", "checkout"],
-    "focus": ["加购属于 non_guide 下的固定动作，优先由后端确定性执行。", "缺少明确 product_id 时必须澄清，禁止根据购物车内容、列表位置或猜测的 product_id 加购。"]
-  },
-  "cart_remove": {
-    "tools": ["get_cart", "delete_cart_item"],
-    "skills": [],
-    "disabled": ["search_products", "search_knowledge", "add_cart_item", "update_cart_item", "checkout"],
-    "focus": ["删除购物车项前必须有 cart_item_id；如果用户按序号描述，先调用 get_cart。"]
-  },
-  "cart_update_quantity": {
-    "tools": ["get_cart", "update_cart_item"],
-    "skills": [],
-    "disabled": ["search_products", "search_knowledge", "add_cart_item", "delete_cart_item", "checkout"],
-    "focus": ["修改购物车数量前必须有 cart_item_id；如果用户按序号描述，先调用 get_cart。"]
-  },
-  "checkout_confirm": {
-    "tools": ["get_cart", "checkout"],
-    "skills": [],
-    "disabled": ["search_products", "search_knowledge", "add_cart_item", "update_cart_item", "delete_cart_item"],
-    "focus": ["结算属于 non_guide 下的固定动作，确认购物车存在选中商品后提交。"]
   }
 }`
 
@@ -463,8 +456,8 @@ var defaultIntentPrompts = map[string]string{
 	"scene_solution":         "当前导购意图是 P5/scene_solution：用户需要场景驱动的跨品类清单或方案。先给场景方案结构，再按必要性推荐关键品类和候选商品。",
 	"open_explore":           "当前导购意图是 P6/open_explore：用户有潜在购买意图但没有明确品类。先把风格/IP/美学描述收敛为可购买品类，再给探索式建议和澄清问题。",
 	"non_guide":              "当前请求是 non_guide：核心诉求不是商品选购，而是平台服务、订单、物流、优惠、评价、购物车或售后等。优先调用可用工具读取真实数据或执行明确动作；只有用户明确要求打开页面/去某页面/找入口，才调用 navigate 类 skill。不要在未查工具时直接用模板话术回答订单状态、优惠券、评价、购物车或售后问题。缺少必要 ID 时，先调用列表类工具定位；仍无法确定再澄清。",
-	"cart_service":           "当前非导购服务意图是 cart_service：处理购物车查看、购物车状态和购物车优惠试算。必须优先读取 get_cart 或 preview_discount 的真实结果；只有用户明确要求打开页面时才调用 navigate_cart。输出要说明当前购物车关键商品、数量、选中状态和下一步可做动作，缺少数据时直接说明。",
-	"order_service":          "当前非导购服务意图是 order_service：处理订单列表、订单详情、物流、支付、取消订单、确认收货、取件和复购。必须优先调用 list_orders 或 get_order 获取真实订单状态；支付、取消、确认收货必须有明确 order_id。输出要展示订单状态、关键时间、金额和下一步动作，不要编造物流或支付结果。",
+	"cart_service":           "当前非导购服务意图是 cart_service：处理购物车查看、加购、删除、改数量、选中状态、优惠试算和购物车页面入口；不处理结算/提交订单。读写都必须通过工具执行：加购必须有明确真实 product_id，删除/改数量必须有 cart_item_id；缺少必要 ID 时先查询或澄清，不要声称没有加购能力。",
+	"order_service":          "当前非导购服务意图是 order_service：处理结算、提交订单、创建订单、订单列表、订单详情、物流、支付、取消订单、确认收货、取件和复购。结算/提交订单必须调用 checkout 创建待支付订单，不能只跳转购物车页面；订单查询必须优先调用 list_orders 或 get_order 获取真实状态。输出要展示订单状态、关键时间、金额和下一步动作，不要编造物流或支付结果。",
 	"coupon_service":         "当前非导购服务意图是 coupon_service：处理优惠券、已领券、可领券、促销活动、凑单和优惠试算。根据问题调用 list_user_coupons、list_coupons、list_promotions 或 preview_discount。输出要区分已领取、可领取、可用/不可用和优惠试算结果，不要凭空承诺折扣。列优惠券时可输出 <coupon_list>JSON</coupon_list>；优惠试算时可输出 <discount_preview>JSON</discount_preview>，JSON 必须来自工具 observation。",
 	"review_service":         "当前非导购服务意图是 review_service：处理商品评价查询、评价摘要、评分、差评要点和发布评价。查询评价必须有 product_id；发布评价必须定位已完成订单项。输出要基于工具返回的评分、评论内容和摘要，不要编造用户评价。评价摘要可输出 <review_summary>JSON</review_summary>，JSON 必须来自评价工具 observation。",
 	"after_sales_service":    "当前非导购服务意图是 after_sales_service：处理退款、退货、换货、保修、发票、投诉和售后规则。规则类问题优先查 search_knowledge；已购商品相关问题先定位订单。输出要说明可确认规则、需要用户补充的信息和下一步入口，不承诺未查到的售后结论。规则清单可输出 <after_sales_policy>JSON</after_sales_policy>，JSON 必须来自知识库或订单 observation。",
@@ -501,7 +494,7 @@ func DefaultConfigs(envAPIKey string) []domain.AppConfig {
 		{ConfigKey: "ai.active_provider", ConfigValue: "qwen", ValueType: "string", Description: "当前生效模型供应商：qwen 或 doubao", Domain: "app"},
 		{ConfigKey: "ai.qwen.base_url", ConfigValue: "https://dashscope.aliyuncs.com/compatible-mode/v1", ValueType: "string", Description: "千问 OpenAI 兼容模型服务 Base URL", Domain: "app"},
 		{ConfigKey: "ai.qwen.small_model", ConfigValue: "qwen3.5-flash", ValueType: "string", Description: "千问低成本小模型", Domain: "app"},
-		{ConfigKey: "ai.qwen.large_model", ConfigValue: "qwen3.6-plus", ValueType: "string", Description: "千问复杂导购决策模型", Domain: "app"},
+		{ConfigKey: "ai.qwen.large_model", ConfigValue: "qwen3.7-plus", ValueType: "string", Description: "千问复杂导购决策模型", Domain: "app"},
 		{ConfigKey: "ai.qwen.api_key", ConfigValue: envAPIKey, ValueType: "string", Description: "千问模型服务 API Key，列表接口脱敏", Domain: "app", IsSecret: true},
 		{ConfigKey: "ai.model.planner_route", ConfigValue: "deepseek-v4-flash", ValueType: "string", Description: "Agent 一级路由模型", Domain: "app"},
 		{ConfigKey: "ai.model.planner_guide_intent", ConfigValue: "deepseek-v4-flash", ValueType: "string", Description: "导购 P1-P6 意图识别模型", Domain: "app"},
@@ -511,15 +504,38 @@ func DefaultConfigs(envAPIKey string) []domain.AppConfig {
 		{ConfigKey: "ai.model.memory_summary", ConfigValue: "deepseek-v4-flash", ValueType: "string", Description: "会话摘要模型", Domain: "app"},
 		{ConfigKey: "ai.model.followups", ConfigValue: "deepseek-v4-flash", ValueType: "string", Description: "追问生成模型", Domain: "app"},
 		{ConfigKey: "ai.model.product_filter", ConfigValue: "deepseek-v4-flash", ValueType: "string", Description: "商品相关性过滤模型", Domain: "app"},
-		{ConfigKey: "ai.model.react_guide", ConfigValue: "deepseek-v4-flash", ValueType: "string", Description: "导购主 Agent ReAct 模型", Domain: "app"},
-		{ConfigKey: "ai.model.react_non_guide", ConfigValue: "deepseek-v4-flash", ValueType: "string", Description: "非导购服务类 Agent 模型", Domain: "app"},
-		{ConfigKey: "ai.model.react_tool_intent", ConfigValue: "deepseek-v4-flash", ValueType: "string", Description: "购物车/订单固定动作模型兜底", Domain: "app"},
+		{ConfigKey: "ai.model.guide_suggestions", ConfigValue: "deepseek-v4-flash", ValueType: "string", Description: "小猪浮窗建议问题生成模型", Domain: "app"},
+		{ConfigKey: "ai.model.react_guide", ConfigValue: "qwen3.7-plus", ValueType: "string", Description: "导购主 Agent ReAct 模型", Domain: "app"},
+		{ConfigKey: "ai.model.react_non_guide", ConfigValue: "qwen3.7-plus", ValueType: "string", Description: "非导购服务类 Agent 模型", Domain: "app"},
+		{ConfigKey: "ai.model.react_tool_intent", ConfigValue: "qwen3.7-plus", ValueType: "string", Description: "购物车/订单固定动作模型兜底", Domain: "app"},
 		{ConfigKey: "ai.enabled", ConfigValue: "true", ValueType: "bool", Description: "是否启用真实模型调用", Domain: "app"},
 		{ConfigKey: "ai.enable_thinking", ConfigValue: "false", ValueType: "bool", Description: "是否启用模型思考模式，默认关闭以降低首 token 延迟", Domain: "app"},
 		{ConfigKey: "http.cors.allowed_origins", ConfigValue: "*", ValueType: "string", Description: "允许跨域访问的 Origin，生产环境应配置为明确域名，多个用逗号分隔", Domain: "infra"},
 		{ConfigKey: "http.trusted_proxy_cidrs", ConfigValue: "", ValueType: "string", Description: "可信反向代理 CIDR，只有这些来源的 X-Forwarded-For 会被采信", Domain: "infra"},
 		{ConfigKey: "http.trust_all_proxies", ConfigValue: "false", ValueType: "bool", Description: "是否信任所有代理头，仅本地调试可开启", Domain: "infra"},
 		{ConfigKey: "files.max_upload_bytes", ConfigValue: "10485760", ValueType: "int", Description: "文件上传最大字节数", Domain: "infra"},
+		{ConfigKey: "voice.tts.enabled", ConfigValue: "false", ValueType: "bool", Description: "是否启用移动端 AI 回复朗读代理；生产环境配置供应商密钥后再开启", Domain: "infra"},
+		{ConfigKey: "voice.tts.provider", ConfigValue: "volcengine", ValueType: "string", Description: "TTS 供应商，推荐 volcengine；当前代理保留 xunfei 兼容实现", Domain: "infra"},
+		{ConfigKey: "voice.tts.max_text_chars", ConfigValue: "800", ValueType: "int", Description: "TTS 单次合成最大字符数", Domain: "infra"},
+		{ConfigKey: "volcengine.tts.app_id", ConfigValue: "", ValueType: "string", Description: "火山引擎语音合成 AppID", Domain: "infra"},
+		{ConfigKey: "volcengine.tts.access_token", ConfigValue: "", ValueType: "string", Description: "火山引擎语音合成访问 Token", Domain: "infra", IsSecret: true},
+		{ConfigKey: "volcengine.tts.api_key", ConfigValue: "", ValueType: "string", Description: "火山引擎语音合成 API Key 或访问凭证；兼容字段，优先使用 access_token", Domain: "infra", IsSecret: true},
+		{ConfigKey: "volcengine.tts.api_secret", ConfigValue: "", ValueType: "string", Description: "火山引擎语音合成 API Secret；按最终接入协议映射", Domain: "infra", IsSecret: true},
+		{ConfigKey: "volcengine.tts.base_url", ConfigValue: "https://openspeech.bytedance.com/api/v1/tts", ValueType: "string", Description: "火山引擎语音合成服务地址；按官方文档配置", Domain: "infra"},
+		{ConfigKey: "volcengine.tts.cluster", ConfigValue: "volcano_tts", ValueType: "string", Description: "火山引擎语音合成集群", Domain: "infra"},
+		{ConfigKey: "volcengine.tts.voice_type", ConfigValue: "", ValueType: "string", Description: "火山引擎默认音色", Domain: "infra"},
+		{ConfigKey: "volcengine.tts.encoding", ConfigValue: "mp3", ValueType: "string", Description: "火山引擎语音合成音频编码", Domain: "infra"},
+		{ConfigKey: "xunfei.tts.enabled", ConfigValue: "false", ValueType: "bool", Description: "是否启用讯飞在线语音合成代理；生产环境配置密钥后再开启", Domain: "infra"},
+		{ConfigKey: "xunfei.tts.app_id", ConfigValue: "", ValueType: "string", Description: "讯飞在线语音合成 AppID；为空时复用 xunfei.app_id", Domain: "infra"},
+		{ConfigKey: "xunfei.tts.api_key", ConfigValue: "", ValueType: "string", Description: "讯飞在线语音合成 API Key；为空时复用 xunfei.api_key", Domain: "infra", IsSecret: true},
+		{ConfigKey: "xunfei.tts.api_secret", ConfigValue: "", ValueType: "string", Description: "讯飞在线语音合成 API Secret；为空时复用 xunfei.api_secret", Domain: "infra", IsSecret: true},
+		{ConfigKey: "xunfei.tts.base_url", ConfigValue: "wss://tts-api.xfyun.cn/v2/tts", ValueType: "string", Description: "讯飞在线语音合成 WebAPI 地址", Domain: "infra"},
+		{ConfigKey: "xunfei.tts.voice", ConfigValue: "xiaoyan", ValueType: "string", Description: "默认 TTS 发音人", Domain: "infra"},
+		{ConfigKey: "xunfei.tts.speed", ConfigValue: "50", ValueType: "int", Description: "TTS 语速，0-100", Domain: "infra"},
+		{ConfigKey: "xunfei.tts.volume", ConfigValue: "50", ValueType: "int", Description: "TTS 音量，0-100", Domain: "infra"},
+		{ConfigKey: "xunfei.tts.pitch", ConfigValue: "50", ValueType: "int", Description: "TTS 音高，0-100", Domain: "infra"},
+		{ConfigKey: "xunfei.tts.timeout_seconds", ConfigValue: "20", ValueType: "int", Description: "TTS 单次合成超时时间", Domain: "infra"},
+		{ConfigKey: "xunfei.tts.max_runes", ConfigValue: "800", ValueType: "int", Description: "TTS 单次合成最大字符数", Domain: "infra"},
 		{ConfigKey: "minio.endpoint", ConfigValue: "127.0.0.1:9000", ValueType: "string", Description: "MinIO/S3 对象存储地址", Domain: "infra"},
 		{ConfigKey: "minio.access_key", ConfigValue: "minioadmin", ValueType: "string", Description: "MinIO Access Key，生产环境必须改为独立账号", Domain: "infra", IsSecret: true},
 		{ConfigKey: "minio.secret_key", ConfigValue: "minioadmin", ValueType: "string", Description: "MinIO Secret Key，生产环境必须改为强密钥", Domain: "infra", IsSecret: true},
@@ -556,6 +572,8 @@ func DefaultConfigs(envAPIKey string) []domain.AppConfig {
 		{ConfigKey: "retrieval.product.rerank.model", ConfigValue: "qwen3-vl-rerank", ValueType: "string", Description: "商品候选专用重排模型", Domain: "rag"},
 		{ConfigKey: "retrieval.product.rerank.api_key", ConfigValue: "", ValueType: "string", Description: "商品重排 API Key；为空时复用 Qwen API Key", Domain: "rag", IsSecret: true},
 		{ConfigKey: "retrieval.product.rerank.max_candidates", ConfigValue: "80", ValueType: "int", Description: "商品重排最多处理的候选数；由初召回扩池后交给 rerank 排序", Domain: "rag"},
+		{ConfigKey: "retrieval.product.rerank.model_min_score", ConfigValue: "0.50", ValueType: "float", Description: "商品重排模型最低保留分；低于该分数不能进入可挂品白名单", Domain: "rag"},
+		{ConfigKey: "retrieval.product.rerank.model_max_score_delta", ConfigValue: "0.12", ValueType: "float", Description: "商品重排模型相对最高分最大分差；超过该分差的候选不能进入可挂品白名单", Domain: "rag"},
 		{ConfigKey: "retrieval.product.rerank.weight.query_term", ConfigValue: "6", ValueType: "float", Description: "商品重排：query 有效词命中权重", Domain: "rag"},
 		{ConfigKey: "retrieval.product.rerank.weight.constraint", ConfigValue: "12", ValueType: "float", Description: "商品重排：结构化正向约束命中权重", Domain: "rag"},
 		{ConfigKey: "retrieval.product.rerank.weight.brand", ConfigValue: "18", ValueType: "float", Description: "商品重排：品牌字段命中加权", Domain: "rag"},
@@ -596,6 +614,7 @@ func PromptDefaults() []domain.AgentPromptInput {
 		{PromptKey: "agent.prompt.non_guide_final_output_rules", Title: "非导购最终输出规范 Prompt", Content: DefaultNonGuideFinalOutputRulesPrompt, Description: "非导购服务块 XML-like 标签输出规范"},
 		{PromptKey: "agent.prompt.intent_tool_policy", Title: "意图工具策略 Prompt", Content: DefaultIntentToolPolicyPrompt, Description: "按 route/intent 注入可用工具、skill 和禁用能力"},
 		{PromptKey: "agent.prompt.followups", Title: "追问生成 Prompt", Content: DefaultFollowupsPrompt, Description: "导购追问生成"},
+		{PromptKey: "agent.prompt.guide_suggestions", Title: "小猪浮窗建议 Prompt", Content: DefaultGuideSuggestionsPrompt, Description: "生成移动端小猪浮窗建议问题"},
 		{PromptKey: "agent.prompt.memory_retrieval", Title: "短期记忆检索 Prompt", Content: DefaultMemoryRetrievalPrompt, Description: "从最近对话中抽取当前问题相关记忆"},
 		{PromptKey: "agent.prompt.session_summary", Title: "会话摘要 Prompt", Content: DefaultSessionSummaryPrompt, Description: "回答完成后生成会话滚动摘要"},
 	}

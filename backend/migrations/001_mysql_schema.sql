@@ -365,8 +365,7 @@ CREATE TABLE IF NOT EXISTS order_items (
 );
 
 INSERT IGNORE INTO merchants (merchant_id, name, logo_url, description, service_phone, status) VALUES
-('m_001', '小猪数码旗舰店', '/placeholder-merchant.svg', '主营手机、耳机、智能设备和办公外设。', '400-000-0000', 'active'),
-('m_dataset_001', '真实商品数据集旗舰店', '/placeholder-merchant.svg', '由 quality/data/ecommerce_agent_dataset 导入的比赛演示商品。', '400-888-0000', 'active');
+('m_001', '小猪数码旗舰店', '/placeholder-merchant.svg', '主营手机、耳机、智能设备和办公外设。', '400-000-0000', 'active');
 
 INSERT IGNORE INTO promotion_rules (
   promotion_id, name, scope, merchant_id, type, threshold_amount, discount_amount, discount_rate, stackable, start_at, end_at, status
@@ -452,5 +451,4 @@ INSERT IGNORE INTO knowledge_documents (document_id, merchant_id, title, doc_typ
 INSERT IGNORE INTO accounts (account_id, username, password_hash, display_name, role, merchant_id, status) VALUES
 ('acct_user_001', 'user', '90aae915da86d3b3a4da7a996bc264bfbaf50a953cbbe8cd3478a2a6ccc7b900', '演示用户', 'user', '', 'active'),
 ('acct_merchant_001', 'merchant', '0b2a8a42a665ad403419c5f3f0d6cea853357272459d8e4c30a0900dd4718ebc', '小猪数码运营', 'merchant', 'm_001', 'active'),
-('acct_merchant_dataset_001', 'dataset_merchant', '0b2a8a42a665ad403419c5f3f0d6cea853357272459d8e4c30a0900dd4718ebc', '真实商品数据集运营', 'merchant', 'm_dataset_001', 'active'),
 ('acct_admin_001', 'admin', 'ac0e7d037817094e9e0b4441f9bae3209d67b02fa484917065f71b16109a1a78', '平台管理员', 'admin', '', 'active');

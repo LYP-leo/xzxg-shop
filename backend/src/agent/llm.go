@@ -32,7 +32,7 @@ func (c ModelConfig) withDefaults() ModelConfig {
 		c.SmallModel = "qwen3.5-flash"
 	}
 	if c.LargeModel == "" {
-		c.LargeModel = "qwen3.6-plus"
+		c.LargeModel = "qwen3.7-plus"
 	}
 	return c
 }

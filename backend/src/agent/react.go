@@ -745,7 +745,7 @@ func blocksFromReact(action reactAction, productIDs []string, chunkIDs []string)
 	for _, block := range action.Blocks {
 		switch block.Type {
 		case "product_refs":
-			ids := appendUnique(nil, block.ProductIDs...)
+			ids := filterAllowedProductIDs(block.ProductIDs, productIDs)
 			if len(ids) > 0 {
 				blocks = append(blocks, domain.AgentBlock{Type: "product_refs", ProductIDs: ids})
 			}
@@ -768,19 +768,28 @@ func blocksFromReact(action reactAction, productIDs []string, chunkIDs []string)
 			blocks = append(blocks, domain.AgentBlock{Type: "citation_refs", ChunkIDs: appendUnique(nil, chunkIDs...)})
 		}
 	}
-	if len(productIDs) > 0 {
-		hasProductRefs := false
-		for _, block := range blocks {
-			if block.Type == "product_refs" {
-				hasProductRefs = true
-				break
-			}
-		}
-		if !hasProductRefs {
-			blocks = append(blocks, domain.AgentBlock{Type: "product_refs", ProductIDs: appendUnique(nil, productIDs...)})
+	return blocks
+}
+
+func filterAllowedProductIDs(ids []string, allowed []string) []string {
+	allowedSet := make(map[string]bool, len(allowed))
+	for _, id := range allowed {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			allowedSet[id] = true
 		}
 	}
-	return blocks
+	out := make([]string, 0, len(ids))
+	seen := map[string]bool{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] || !allowedSet[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 func compactObservations(observations []toolObservation) []map[string]any {

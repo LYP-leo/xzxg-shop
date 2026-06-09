@@ -70,6 +70,31 @@ func TestFirstImageAttachmentSupportsFileIDAliases(t *testing.T) {
 	}
 }
 
+func TestNormalizeImageToolSourceExtractsFileIDFromAPIURL(t *testing.T) {
+	cases := []struct {
+		name     string
+		imageURL string
+		want     string
+	}{
+		{name: "relative", imageURL: "/api/v1/files/file_abc123", want: "file_abc123"},
+		{name: "absolute", imageURL: "http://127.0.0.1:8080/api/v1/files/file_def456?download=1", want: "file_def456"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fileID := ""
+			objectKey := ""
+			imageURL := tc.imageURL
+			normalizeImageToolSource(&fileID, &objectKey, &imageURL)
+			if fileID != tc.want {
+				t.Fatalf("fileID = %q, want %q", fileID, tc.want)
+			}
+			if imageURL != "" {
+				t.Fatalf("imageURL = %q, want empty after file_id extraction", imageURL)
+			}
+		})
+	}
+}
+
 func TestCartProductNameReturnsDisplayName(t *testing.T) {
 	cart := &domain.Cart{Items: []domain.CartItem{
 		{ProductID: "p_beauty_019", Name: "兰蔻清滢柔肤水大粉水保湿舒缓干性肌肤柔润爽肤水400ml"},
