@@ -697,7 +697,7 @@ Query：
 
 权限：用户
 
-用途：AI 回复完成后，客户端把可见回复文本发给后端，后端代理讯飞在线语音合成并直接返回音频字节。讯飞密钥只保存在服务端配置中心。
+用途：AI 回复完成后，客户端把可见回复文本发给后端，后端按 `tts.provider` 选择语音合成供应商，并直接返回音频字节。供应商密钥只保存在服务端配置中心。
 
 请求头：
 
@@ -718,8 +718,8 @@ Authorization: Bearer <token>
 
 字段：
 
-- `text`：必填，默认最大 800 个字符，可通过 `xunfei.tts.max_runes` 配置。
-- `voice`：可选，不传时使用 `xunfei.tts.voice`。
+- `text`：必填，默认最大 800 个字符，可通过当前 provider 的最大长度配置控制。
+- `voice`：可选，不传时使用当前 provider 的默认音色。
 
 响应：
 
@@ -727,9 +727,13 @@ Authorization: Bearer <token>
 - `400 empty_text`：文本为空。
 - `400 text_too_long`：文本超过服务端限制。
 - `501 tts_not_enabled`：未开启或未配置 TTS。
-- `502 tts_failed`：讯飞合成失败或网络异常。
+- `502 tts_failed`：供应商合成失败或网络异常。
 
 相关配置：
+
+- `tts.provider`：`xunfei` 或 `doubao`
+
+讯飞：
 
 - `xunfei.tts.enabled`
 - `xunfei.tts.app_id`
@@ -742,6 +746,34 @@ Authorization: Bearer <token>
 - `xunfei.tts.pitch`
 - `xunfei.tts.timeout_seconds`
 - `xunfei.tts.max_runes`
+
+豆包/火山：
+
+- `doubao.tts.enabled`
+- `doubao.tts.app_id`
+- `doubao.tts.api_key`
+- `doubao.tts.base_url`
+- `doubao.tts.cluster`
+- `doubao.tts.voice`
+- `doubao.tts.encoding`
+- `doubao.tts.uid`
+- `doubao.tts.speed_ratio`
+- `doubao.tts.volume_ratio`
+- `doubao.tts.pitch_ratio`
+- `doubao.tts.timeout_seconds`
+- `doubao.tts.max_runes`
+
+启用豆包 TTS 时至少需要：
+
+```text
+tts.provider=doubao
+doubao.tts.enabled=true
+doubao.tts.app_id=<AppID>
+doubao.tts.api_key=<Access Token 或 API Key>
+doubao.tts.cluster=volcano_tts
+doubao.tts.voice=<voice_type>
+doubao.tts.encoding=mp3
+```
 
 ## 图片搜索
 

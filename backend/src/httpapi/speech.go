@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha1"
@@ -33,6 +34,7 @@ type speechRealtimeConfig struct {
 }
 
 type speechTTSConfig struct {
+	Provider       string
 	EnabledFlag    bool
 	AppID          string
 	APIKey         string
@@ -46,6 +48,22 @@ type speechTTSConfig struct {
 	TextEncoding   string
 	TimeoutSeconds int
 	MaxRunes       int
+
+	DoubaoEnabledFlag  bool
+	DoubaoAppID        string
+	DoubaoAPIKey       string
+	DoubaoBaseURL      string
+	DoubaoCluster      string
+	DoubaoVoice        string
+	DoubaoEncoding     string
+	DoubaoUID          string
+	DoubaoTextType     string
+	DoubaoOperation    string
+	DoubaoWithFrontend int
+	DoubaoFrontendType string
+	DoubaoSpeedRatio   float64
+	DoubaoVolumeRatio  float64
+	DoubaoPitchRatio   float64
 }
 
 type speechTTSRequest struct {
@@ -61,6 +79,20 @@ type xunfeiTTSFrame struct {
 		Audio  string `json:"audio"`
 		Status int    `json:"status"`
 	} `json:"data"`
+}
+
+type doubaoTTSResponse struct {
+	ReqID    string `json:"reqid"`
+	Code     int    `json:"code"`
+	Message  string `json:"message"`
+	Sequence int    `json:"sequence"`
+	Data     string `json:"data"`
+}
+
+var speechHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		Proxy: nil,
+	},
 }
 
 type speechClientControl struct {
@@ -110,6 +142,16 @@ func (s *Server) handleSpeechRealtime(w http.ResponseWriter, r *http.Request) {
 	}.ServeHTTP(w, r)
 }
 
+func (s *Server) handleSpeechTTSConfig(w http.ResponseWriter, r *http.Request) {
+	cfg := s.speechTTSConfig(r.Context())
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled":        cfg.Enabled(),
+		"provider":       cfg.Provider,
+		"voice":          cfg.DefaultVoice(),
+		"max_text_chars": cfg.MaxRunes,
+	})
+}
+
 func (s *Server) handleSpeechTTS(w http.ResponseWriter, r *http.Request) {
 	cfg := s.speechTTSConfig(r.Context())
 	if !cfg.Enabled() {
@@ -133,7 +175,7 @@ func (s *Server) handleSpeechTTS(w http.ResponseWriter, r *http.Request) {
 	}
 	voice := strings.TrimSpace(request.Voice)
 	if voice == "" {
-		voice = cfg.Voice
+		voice = cfg.DefaultVoice()
 	}
 
 	timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
@@ -145,15 +187,11 @@ func (s *Server) handleSpeechTTS(w http.ResponseWriter, r *http.Request) {
 
 	audio, err := s.synthesizeSpeechTTS(ctx, cfg, text, voice)
 	if err != nil {
-		s.logger.Warn("xunfei tts synthesis failed", "request_id", requestIDFromContext(r.Context()), "error", redactXunfeiDialError(err))
+		s.logger.Warn("tts synthesis failed", "provider", cfg.Provider, "request_id", requestIDFromContext(r.Context()), "error", redactTTSError(err))
 		writeError(w, http.StatusBadGateway, "tts_failed", "语音合成服务暂时不可用")
 		return
 	}
-	contentType := "audio/mpeg"
-	if cfg.AudioEncoding != "lame" {
-		contentType = "application/octet-stream"
-	}
-	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Type", cfg.ContentType())
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(audio)
@@ -246,6 +284,13 @@ func (s *Server) proxySpeechRealtime(ctx context.Context, client *websocket.Conn
 }
 
 func (s *Server) synthesizeSpeechTTS(ctx context.Context, cfg speechTTSConfig, text string, voice string) ([]byte, error) {
+	if cfg.Provider == "doubao" {
+		return s.synthesizeDoubaoSpeechTTS(ctx, cfg, text, voice)
+	}
+	return s.synthesizeXunfeiSpeechTTS(ctx, cfg, text, voice)
+}
+
+func (s *Server) synthesizeXunfeiSpeechTTS(ctx context.Context, cfg speechTTSConfig, text string, voice string) ([]byte, error) {
 	xfURL, err := cfg.SignedURL(time.Now())
 	if err != nil {
 		return nil, err
@@ -298,6 +343,55 @@ func (s *Server) synthesizeSpeechTTS(ctx context.Context, cfg speechTTSConfig, t
 		}
 		return audio, nil
 	}
+}
+
+func (s *Server) synthesizeDoubaoSpeechTTS(ctx context.Context, cfg speechTTSConfig, text string, voice string) ([]byte, error) {
+	payload, err := json.Marshal(cfg.DoubaoRequestPayload(text, voice, newRequestID()))
+	if err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.DoubaoBaseURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Authorization", cfg.DoubaoAuthorizationHeader())
+
+	response, err := speechHTTPClient.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 8*1024*1024))
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("doubao tts http %d: %s", response.StatusCode, string(body))
+	}
+
+	var result doubaoTTSResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+	if result.Code != 3000 && result.Code != 0 {
+		if result.Message == "" {
+			result.Message = "doubao tts error"
+		}
+		return nil, fmt.Errorf("doubao tts code %d: %s", result.Code, result.Message)
+	}
+	if result.Data == "" {
+		return nil, fmt.Errorf("doubao tts returned empty audio")
+	}
+	audio, err := base64.StdEncoding.DecodeString(result.Data)
+	if err != nil {
+		return nil, err
+	}
+	if len(audio) == 0 {
+		return nil, fmt.Errorf("doubao tts returned empty audio")
+	}
+	return audio, nil
 }
 
 func (s *Server) readXunfeiSpeechResults(requestID string, xf *websocket.Conn, client *websocket.Conn, clientWriteMu *sync.Mutex, sessionIDCh chan<- string, done <-chan struct{}) {
@@ -404,7 +498,18 @@ func (s *Server) speechTTSConfig(ctx context.Context) speechTTSConfig {
 	if s != nil && s.configs != nil {
 		values = s.configs.GetMap(ctx)
 	}
+	provider := strings.ToLower(speechConfigValue(values, "TTS_PROVIDER", "tts.provider", "xunfei"))
+	if provider != "doubao" && provider != "xunfei" {
+		provider = "xunfei"
+	}
+	timeoutSeconds := boundedConfigInt(values, "XUNFEI_TTS_TIMEOUT_SECONDS", "xunfei.tts.timeout_seconds", 20, 1, 60)
+	maxRunes := boundedConfigInt(values, "XUNFEI_TTS_MAX_RUNES", "xunfei.tts.max_runes", 800, 1, 2000)
+	if provider == "doubao" {
+		timeoutSeconds = boundedConfigInt(values, "DOUBAO_TTS_TIMEOUT_SECONDS", "doubao.tts.timeout_seconds", timeoutSeconds, 1, 60)
+		maxRunes = boundedConfigInt(values, "DOUBAO_TTS_MAX_RUNES", "doubao.tts.max_runes", maxRunes, 1, 2000)
+	}
 	return speechTTSConfig{
+		Provider:       provider,
 		EnabledFlag:    boolConfigValue(values, "XUNFEI_TTS_ENABLED", "xunfei.tts.enabled", false),
 		AppID:          speechConfigValue(values, "XUNFEI_TTS_APP_ID", "xunfei.tts.app_id", speechConfigValue(values, "XUNFEI_APP_ID", "xunfei.app_id", "")),
 		APIKey:         speechConfigValue(values, "XUNFEI_TTS_API_KEY", "xunfei.tts.api_key", speechConfigValue(values, "XUNFEI_API_KEY", "xunfei.api_key", "")),
@@ -416,8 +521,24 @@ func (s *Server) speechTTSConfig(ctx context.Context) speechTTSConfig {
 		Pitch:          boundedConfigInt(values, "XUNFEI_TTS_PITCH", "xunfei.tts.pitch", 50, 0, 100),
 		AudioEncoding:  speechConfigValue(values, "XUNFEI_TTS_AUDIO_ENCODING", "xunfei.tts.audio_encoding", "lame"),
 		TextEncoding:   speechConfigValue(values, "XUNFEI_TTS_TEXT_ENCODING", "xunfei.tts.text_encoding", "UTF8"),
-		TimeoutSeconds: boundedConfigInt(values, "XUNFEI_TTS_TIMEOUT_SECONDS", "xunfei.tts.timeout_seconds", 20, 1, 60),
-		MaxRunes:       boundedConfigInt(values, "XUNFEI_TTS_MAX_RUNES", "xunfei.tts.max_runes", 800, 1, 2000),
+		TimeoutSeconds: timeoutSeconds,
+		MaxRunes:       maxRunes,
+
+		DoubaoEnabledFlag:  boolConfigValue(values, "DOUBAO_TTS_ENABLED", "doubao.tts.enabled", false),
+		DoubaoAppID:        speechConfigValue(values, "DOUBAO_TTS_APP_ID", "doubao.tts.app_id", ""),
+		DoubaoAPIKey:       speechConfigValue(values, "DOUBAO_TTS_API_KEY", "doubao.tts.api_key", speechConfigValue(values, "DOUBAO_TTS_TOKEN", "doubao.tts.token", "")),
+		DoubaoBaseURL:      speechConfigValue(values, "DOUBAO_TTS_BASE_URL", "doubao.tts.base_url", "https://openspeech.bytedance.com/api/v1/tts"),
+		DoubaoCluster:      speechConfigValue(values, "DOUBAO_TTS_CLUSTER", "doubao.tts.cluster", "volcano_tts"),
+		DoubaoVoice:        speechConfigValue(values, "DOUBAO_TTS_VOICE", "doubao.tts.voice", "BV700_streaming"),
+		DoubaoEncoding:     speechConfigValue(values, "DOUBAO_TTS_ENCODING", "doubao.tts.encoding", speechConfigValue(values, "DOUBAO_TTS_AUDIO_ENCODING", "doubao.tts.audio_encoding", "mp3")),
+		DoubaoUID:          speechConfigValue(values, "DOUBAO_TTS_UID", "doubao.tts.uid", "xzxg-shop"),
+		DoubaoTextType:     speechConfigValue(values, "DOUBAO_TTS_TEXT_TYPE", "doubao.tts.text_type", "plain"),
+		DoubaoOperation:    speechConfigValue(values, "DOUBAO_TTS_OPERATION", "doubao.tts.operation", "query"),
+		DoubaoWithFrontend: boundedConfigInt(values, "DOUBAO_TTS_WITH_FRONTEND", "doubao.tts.with_frontend", 1, 0, 1),
+		DoubaoFrontendType: speechConfigValue(values, "DOUBAO_TTS_FRONTEND_TYPE", "doubao.tts.frontend_type", "unitTson"),
+		DoubaoSpeedRatio:   boundedConfigFloat(values, "DOUBAO_TTS_SPEED_RATIO", "doubao.tts.speed_ratio", 1.0, 0.5, 2.0),
+		DoubaoVolumeRatio:  boundedConfigFloat(values, "DOUBAO_TTS_VOLUME_RATIO", "doubao.tts.volume_ratio", 1.0, 0.1, 3.0),
+		DoubaoPitchRatio:   boundedConfigFloat(values, "DOUBAO_TTS_PITCH_RATIO", "doubao.tts.pitch_ratio", 1.0, 0.5, 2.0),
 	}
 }
 
@@ -452,6 +573,24 @@ func boundedConfigInt(values map[string]string, envKey string, configKey string,
 	return parsed
 }
 
+func boundedConfigFloat(values map[string]string, envKey string, configKey string, fallback float64, min float64, max float64) float64 {
+	raw := speechConfigValue(values, envKey, configKey, "")
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return fallback
+	}
+	if parsed < min {
+		return min
+	}
+	if parsed > max {
+		return max
+	}
+	return parsed
+}
+
 func boolConfigValue(values map[string]string, envKey string, configKey string, fallback bool) bool {
 	raw := strings.ToLower(speechConfigValue(values, envKey, configKey, ""))
 	if raw == "" {
@@ -465,7 +604,34 @@ func (c speechRealtimeConfig) Enabled() bool {
 }
 
 func (c speechTTSConfig) Enabled() bool {
+	if c.Provider == "doubao" {
+		return c.DoubaoEnabledFlag && c.DoubaoAppID != "" && c.DoubaoAPIKey != "" && c.DoubaoBaseURL != "" && c.DoubaoCluster != ""
+	}
 	return c.EnabledFlag && c.AppID != "" && c.APIKey != "" && c.APISecret != "" && c.BaseURL != ""
+}
+
+func (c speechTTSConfig) DefaultVoice() string {
+	if c.Provider == "doubao" {
+		return c.DoubaoVoice
+	}
+	return c.Voice
+}
+
+func (c speechTTSConfig) ContentType() string {
+	encoding := strings.ToLower(c.AudioEncoding)
+	if c.Provider == "doubao" {
+		encoding = strings.ToLower(c.DoubaoEncoding)
+	}
+	switch encoding {
+	case "mp3", "lame":
+		return "audio/mpeg"
+	case "wav":
+		return "audio/wav"
+	case "ogg", "opus":
+		return "audio/ogg"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 func (c speechRealtimeConfig) SignedURL(uuid string) (string, error) {
@@ -540,7 +706,42 @@ func (c speechTTSConfig) RequestPayload(text string, voice string) map[string]an
 	}
 }
 
-func redactXunfeiDialError(err error) string {
+func (c speechTTSConfig) DoubaoRequestPayload(text string, voice string, reqID string) map[string]any {
+	if voice == "" {
+		voice = c.DoubaoVoice
+	}
+	return map[string]any{
+		"app": map[string]any{
+			"appid":   c.DoubaoAppID,
+			"token":   c.DoubaoAPIKey,
+			"cluster": c.DoubaoCluster,
+		},
+		"user": map[string]any{
+			"uid": c.DoubaoUID,
+		},
+		"audio": map[string]any{
+			"voice_type":   voice,
+			"encoding":     c.DoubaoEncoding,
+			"speed_ratio":  c.DoubaoSpeedRatio,
+			"volume_ratio": c.DoubaoVolumeRatio,
+			"pitch_ratio":  c.DoubaoPitchRatio,
+		},
+		"request": map[string]any{
+			"reqid":         reqID,
+			"text":          text,
+			"text_type":     c.DoubaoTextType,
+			"operation":     c.DoubaoOperation,
+			"with_frontend": c.DoubaoWithFrontend,
+			"frontend_type": c.DoubaoFrontendType,
+		},
+	}
+}
+
+func (c speechTTSConfig) DoubaoAuthorizationHeader() string {
+	return "Bearer;" + c.DoubaoAPIKey
+}
+
+func redactTTSError(err error) string {
 	if err == nil {
 		return ""
 	}
@@ -549,6 +750,10 @@ func redactXunfeiDialError(err error) string {
 		message = message[:index] + "?<redacted>"
 	}
 	return message
+}
+
+func redactXunfeiDialError(err error) string {
+	return redactTTSError(err)
 }
 
 func canonicalQuery(values url.Values) string {

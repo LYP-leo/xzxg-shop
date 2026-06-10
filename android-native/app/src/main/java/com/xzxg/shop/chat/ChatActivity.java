@@ -43,6 +43,7 @@ import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
@@ -59,6 +60,7 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.view.ViewTreeObserver;
 import android.view.animation.DecelerateInterpolator;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
@@ -195,6 +197,11 @@ public class ChatActivity extends BaseShopActivity {
     private int appliedBottomInset;
     private boolean chatAutoScrollEnabled = true;
     private boolean userDetachedFromBottom;
+    private boolean keyboardVisible;
+    private int keyboardHeight;
+    private int chatListBottomPadding = -1;
+    private View keyboardListenerRoot;
+    private ViewTreeObserver.OnGlobalLayoutListener keyboardLayoutListener;
     private String lastRiskNoticeText = "";
     private long lastRiskNoticeAt;
     private Uri pendingCameraUri;
@@ -409,7 +416,9 @@ public class ChatActivity extends BaseShopActivity {
     }
 
     private void baseScreen() {
+        unbindKeyboardVisibilityListener();
         chatViewport = null;
+        chatListBottomPadding = -1;
         appliedTopInset = -1;
         appliedBottomInset = -1;
         root = new FrameLayout(this);
@@ -454,6 +463,7 @@ public class ChatActivity extends BaseShopActivity {
         chatViewport.addView(createChatMessageLayer(), new LinearLayout.LayoutParams(-1, 0, 1));
         chatViewport.addView(createComposerBar(), new LinearLayout.LayoutParams(-1, -2));
         applyContentInsets(appliedTopInset < 0 ? 0 : appliedTopInset, appliedBottomInset < 0 ? 0 : appliedBottomInset);
+        bindKeyboardVisibilityListener();
     }
 
     private boolean isChatScrolledToBottom() {
@@ -463,6 +473,76 @@ public class ChatActivity extends BaseShopActivity {
         View child = chatScroll.getChildAt(0);
         int distance = child.getBottom() - (chatScroll.getScrollY() + chatScroll.getHeight());
         return distance <= dp(24);
+    }
+
+    private void bindKeyboardVisibilityListener() {
+        if (root == null) {
+            return;
+        }
+        unbindKeyboardVisibilityListener();
+        keyboardListenerRoot = root;
+        keyboardLayoutListener = () -> {
+            if (root == null || !"chat".equals(activePage)) {
+                return;
+            }
+            Rect visibleFrame = new Rect();
+            root.getWindowVisibleDisplayFrame(visibleFrame);
+            int rootHeight = root.getRootView() == null ? root.getHeight() : root.getRootView().getHeight();
+            int hiddenHeight = Math.max(0, rootHeight - visibleFrame.bottom);
+            boolean nextVisible = hiddenHeight > dp(120);
+            int nextHeight = nextVisible ? hiddenHeight : 0;
+            boolean wasAtBottom = isChatScrolledToBottom();
+            if (keyboardVisible == nextVisible && keyboardHeight == nextHeight) {
+                return;
+            }
+            keyboardVisible = nextVisible;
+            keyboardHeight = nextHeight;
+            applyChatListPadding(nextVisible ? dp(24) : 0);
+            if (nextVisible && (wasAtBottom || !userDetachedFromBottom)) {
+                keepBottomVisibleForKeyboard();
+            }
+        };
+        root.getViewTreeObserver().addOnGlobalLayoutListener(keyboardLayoutListener);
+    }
+
+    private void unbindKeyboardVisibilityListener() {
+        if (keyboardListenerRoot != null && keyboardLayoutListener != null) {
+            ViewTreeObserver observer = keyboardListenerRoot.getViewTreeObserver();
+            if (observer != null && observer.isAlive()) {
+                observer.removeOnGlobalLayoutListener(keyboardLayoutListener);
+            }
+        }
+        keyboardListenerRoot = null;
+        keyboardLayoutListener = null;
+    }
+
+    private void applyChatListPadding(int extraBottomPadding) {
+        if (chatList == null) {
+            return;
+        }
+        int bottomPadding = dp(12) + Math.max(0, extraBottomPadding);
+        if (chatListBottomPadding == bottomPadding) {
+            return;
+        }
+        chatListBottomPadding = bottomPadding;
+        chatList.setPadding(dp(16), dp(12), dp(16), bottomPadding);
+    }
+
+    private void keepBottomVisibleForKeyboard() {
+        if (chatScroll == null || !"chat".equals(activePage)) {
+            return;
+        }
+        if (userDetachedFromBottom && !isChatScrolledToBottom()) {
+            return;
+        }
+        chatAutoScrollEnabled = true;
+        userDetachedFromBottom = false;
+        chatScroll.post(() -> chatScroll.fullScroll(View.FOCUS_DOWN));
+        chatScroll.postDelayed(() -> {
+            if (chatScroll != null && "chat".equals(activePage) && (!userDetachedFromBottom || isChatScrolledToBottom())) {
+                chatScroll.fullScroll(View.FOCUS_DOWN);
+            }
+        }, 180);
     }
 
     private void useKeyboardResize() {
@@ -548,7 +628,7 @@ public class ChatActivity extends BaseShopActivity {
         chatList = new LinearLayout(this);
         chatList.setOrientation(LinearLayout.VERTICAL);
         chatList.setGravity(Gravity.CENTER_HORIZONTAL);
-        chatList.setPadding(dp(16), dp(12), dp(16), dp(12));
+        applyChatListPadding(0);
         chatScroll.addView(chatList, new ScrollView.LayoutParams(-1, -2));
         chatScroll.setOnTouchListener((view, event) -> {
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
@@ -649,6 +729,7 @@ public class ChatActivity extends BaseShopActivity {
         input.setOnFocusChangeListener((v, hasFocus) -> {
             if (hasFocus) {
                 hideAttachmentPanel();
+                keepBottomVisibleForKeyboard();
             }
         });
         input.addTextChangedListener(new TextWatcher() {
@@ -5483,6 +5564,7 @@ public class ChatActivity extends BaseShopActivity {
 
     @Override
     protected void onDestroy() {
+        unbindKeyboardVisibilityListener();
         if (ttsController != null) {
             ttsController.destroy();
         }

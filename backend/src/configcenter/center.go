@@ -90,7 +90,7 @@ P6 open_explore：有潜在购买意图，但没有明确品类，只由风格�
 const DefaultNonGuideIntentPrompt = `你是电商非导购服务意图分类器。当前 query 已被前置路由判定为 non_guide，你只需要把它细分到唯一一个服务域。只输出 JSON，不要输出解释文本。
 
 服务域：
-- cart_service：购物车域，包括查看购物车、加购、删除购物车商品、修改数量或选中状态、优惠试算和购物车页面入口；不包含结算/提交订单。
+- cart_service：购物车域，包括查看购物车、加购、删除购物车商品、修改数量或选中状态、优惠试算、购物车页面入口，以及“只结算购物车中部分商品”的前置选中和提交。
 - order_service：订单与履约域，包括结算、提交订单、创建订单、订单列表、订单详情、物流、支付、取消订单、确认收货、取件、复购。
 - coupon_service：优惠券、领券、已领券、促销活动、满减折扣、凑单、优惠试算。
 - review_service：商品评价、订单评价、评分、好评差评、评价摘要、发布评价。
@@ -102,9 +102,11 @@ const DefaultNonGuideIntentPrompt = `你是电商非导购服务意图分类器�
 
 判定优先级：
 1. 明确页面跳转/入口诉求优先 navigation_service。
-2. 明确业务数据或业务动作按对应 service 归类，不要归 chitchat。
-3. “能不能退/怎么开发票/保修多久”归 after_sales_service；“评价怎么样/差评说什么”归 review_service。
-4. 无法安全判断时输出 unsupported。
+2. 指定购物车局部范围的结算必须归 cart_service，例如“结算购物车里的第一件商品/前两件商品/最后一件商品/SK-II精华水/只结算某几件”。这类请求需要先查看购物车并调整选中状态，不能直接归 order_service。
+3. 泛化结算才归 order_service，例如“结算购物车/提交订单/确认下单/结算已选中的商品”，前提是用户没有指定第几件、前几件、最后一件、商品名或“只结算部分商品”。
+4. 明确业务数据或业务动作按对应 service 归类，不要归 chitchat。
+5. “能不能退/怎么开发票/保修多久”归 after_sales_service；“评价怎么样/差评说什么”归 review_service。
+6. 无法安全判断时输出 unsupported。
 
 输出格式：
 {
@@ -385,10 +387,10 @@ const DefaultIntentToolPolicyPrompt = `{
     "focus": ["非导购兜底策略，只用于二级分类失败；优先用只读工具获取真实状态。", "不要用固定模板回答可查询的订单、优惠、购物车或售后问题。"]
   },
   "cart_service": {
-    "tools": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "preview_discount"],
+    "tools": ["get_cart", "add_cart_item", "update_cart_item", "delete_cart_item", "preview_discount", "checkout"],
     "skills": ["navigate_cart"],
-    "disabled": ["search_products", "search_image_products", "search_knowledge", "checkout"],
-    "focus": ["购物车域只处理查看、加购、删除、改数量、选中状态、优惠试算和购物车页面入口；结算/提交订单属于 order_service。", "加购必须有明确真实 product_id；如果用户说第一个/刚才那个，优先使用相关历史商品里的 item_id/product_id。", "修改或删除购物车前必须有 cart_item_id；如果用户按序号描述，先调用 get_cart。", "如果用户只想打开页面才调用 navigate_cart。", "购物车优惠、应付金额、凑单前先调用 preview_discount。"]
+    "disabled": ["search_products", "search_image_products", "search_knowledge"],
+    "focus": ["购物车域处理查看、加购、删除、改数量、选中状态、优惠试算、购物车页面入口，以及只结算购物车中部分商品。", "加购必须有明确真实 product_id；如果用户说第一个/刚才那个，优先使用相关历史商品里的 item_id/product_id。", "修改、删除或按购物车范围结算前必须有 cart_item_id；如果用户按序号、位置或商品名描述，先调用 get_cart。", "局部结算固定流程：get_cart -> 定位目标 cart_item_id -> 目标项 selected=true -> 非目标项 selected=false -> checkout。", "“第一件/第一个”按 get_cart 返回顺序取第 1 项；“前两件”取第 1-2 项；“最后一件”取最后 1 项；商品名按 name 模糊匹配，不唯一时先澄清。", "只有泛化结算/提交订单才属于 order_service；只要用户指定购物车里的某几件，就必须留在 cart_service 完成选中态调整后再 checkout。", "如果用户只想打开页面才调用 navigate_cart。", "购物车优惠、应付金额、凑单前先调用 preview_discount。"]
   },
   "order_service": {
     "tools": ["get_cart", "preview_discount", "checkout", "list_orders", "get_order", "pay_order", "cancel_order", "confirm_receipt", "search_knowledge"],
@@ -456,7 +458,7 @@ var defaultIntentPrompts = map[string]string{
 	"scene_solution":         "当前导购意图是 P5/scene_solution：用户需要场景驱动的跨品类清单或方案。先给场景方案结构，再按必要性推荐关键品类和候选商品。",
 	"open_explore":           "当前导购意图是 P6/open_explore：用户有潜在购买意图但没有明确品类。先把风格/IP/美学描述收敛为可购买品类，再给探索式建议和澄清问题。",
 	"non_guide":              "当前请求是 non_guide：核心诉求不是商品选购，而是平台服务、订单、物流、优惠、评价、购物车或售后等。优先调用可用工具读取真实数据或执行明确动作；只有用户明确要求打开页面/去某页面/找入口，才调用 navigate 类 skill。不要在未查工具时直接用模板话术回答订单状态、优惠券、评价、购物车或售后问题。缺少必要 ID 时，先调用列表类工具定位；仍无法确定再澄清。",
-	"cart_service":           "当前非导购服务意图是 cart_service：处理购物车查看、加购、删除、改数量、选中状态、优惠试算和购物车页面入口；不处理结算/提交订单。读写都必须通过工具执行：加购必须有明确真实 product_id，删除/改数量必须有 cart_item_id；缺少必要 ID 时先查询或澄清，不要声称没有加购能力。",
+	"cart_service":           "当前非导购服务意图是 cart_service：处理购物车查看、加购、删除、改数量、选中状态、优惠试算、购物车页面入口，以及只结算购物车中部分商品。读写都必须通过工具执行：加购必须有明确真实 product_id，删除/改数量必须有 cart_item_id；用户说“结算第一件/前两件/最后一件/某个商品名/只结算部分商品”时，必须先 get_cart，按顺序或商品名定位 cart_item_id，把目标项 selected=true、非目标项 selected=false，然后调用 checkout。缺少必要 ID 时先查询或澄清，不要声称没有加购或结算能力。",
 	"order_service":          "当前非导购服务意图是 order_service：处理结算、提交订单、创建订单、订单列表、订单详情、物流、支付、取消订单、确认收货、取件和复购。结算/提交订单必须调用 checkout 创建待支付订单，不能只跳转购物车页面；订单查询必须优先调用 list_orders 或 get_order 获取真实状态。输出要展示订单状态、关键时间、金额和下一步动作，不要编造物流或支付结果。",
 	"coupon_service":         "当前非导购服务意图是 coupon_service：处理优惠券、已领券、可领券、促销活动、凑单和优惠试算。根据问题调用 list_user_coupons、list_coupons、list_promotions 或 preview_discount。输出要区分已领取、可领取、可用/不可用和优惠试算结果，不要凭空承诺折扣。列优惠券时可输出 <coupon_list>JSON</coupon_list>；优惠试算时可输出 <discount_preview>JSON</discount_preview>，JSON 必须来自工具 observation。",
 	"review_service":         "当前非导购服务意图是 review_service：处理商品评价查询、评价摘要、评分、差评要点和发布评价。查询评价必须有 product_id；发布评价必须定位已完成订单项。输出要基于工具返回的评分、评论内容和摘要，不要编造用户评价。评价摘要可输出 <review_summary>JSON</review_summary>，JSON 必须来自评价工具 observation。",
@@ -514,6 +516,7 @@ func DefaultConfigs(envAPIKey string) []domain.AppConfig {
 		{ConfigKey: "http.trusted_proxy_cidrs", ConfigValue: "", ValueType: "string", Description: "可信反向代理 CIDR，只有这些来源的 X-Forwarded-For 会被采信", Domain: "infra"},
 		{ConfigKey: "http.trust_all_proxies", ConfigValue: "false", ValueType: "bool", Description: "是否信任所有代理头，仅本地调试可开启", Domain: "infra"},
 		{ConfigKey: "files.max_upload_bytes", ConfigValue: "10485760", ValueType: "int", Description: "文件上传最大字节数", Domain: "infra"},
+		{ConfigKey: "tts.provider", ConfigValue: "xunfei", ValueType: "string", Description: "TTS 供应商：xunfei 或 doubao", Domain: "infra"},
 		{ConfigKey: "xunfei.tts.enabled", ConfigValue: "false", ValueType: "bool", Description: "是否启用讯飞在线语音合成代理；生产环境配置密钥后再开启", Domain: "infra"},
 		{ConfigKey: "xunfei.tts.app_id", ConfigValue: "", ValueType: "string", Description: "讯飞在线语音合成 AppID；为空时复用 xunfei.app_id", Domain: "infra"},
 		{ConfigKey: "xunfei.tts.api_key", ConfigValue: "", ValueType: "string", Description: "讯飞在线语音合成 API Key；为空时复用 xunfei.api_key", Domain: "infra", IsSecret: true},
@@ -525,6 +528,19 @@ func DefaultConfigs(envAPIKey string) []domain.AppConfig {
 		{ConfigKey: "xunfei.tts.pitch", ConfigValue: "50", ValueType: "int", Description: "TTS 音高，0-100", Domain: "infra"},
 		{ConfigKey: "xunfei.tts.timeout_seconds", ConfigValue: "20", ValueType: "int", Description: "TTS 单次合成超时时间", Domain: "infra"},
 		{ConfigKey: "xunfei.tts.max_runes", ConfigValue: "800", ValueType: "int", Description: "TTS 单次合成最大字符数", Domain: "infra"},
+		{ConfigKey: "doubao.tts.enabled", ConfigValue: "false", ValueType: "bool", Description: "是否启用豆包/火山语音合成代理；需同时设置 tts.provider=doubao", Domain: "infra"},
+		{ConfigKey: "doubao.tts.app_id", ConfigValue: "", ValueType: "string", Description: "豆包/火山语音合成 AppID", Domain: "infra"},
+		{ConfigKey: "doubao.tts.api_key", ConfigValue: "", ValueType: "string", Description: "豆包/火山语音合成 Access Token/API Key", Domain: "infra", IsSecret: true},
+		{ConfigKey: "doubao.tts.base_url", ConfigValue: "https://openspeech.bytedance.com/api/v1/tts", ValueType: "string", Description: "豆包/火山语音合成 HTTP API 地址", Domain: "infra"},
+		{ConfigKey: "doubao.tts.cluster", ConfigValue: "volcano_tts", ValueType: "string", Description: "豆包/火山语音合成集群标识", Domain: "infra"},
+		{ConfigKey: "doubao.tts.voice", ConfigValue: "BV700_streaming", ValueType: "string", Description: "豆包/火山语音合成默认音色 voice_type", Domain: "infra"},
+		{ConfigKey: "doubao.tts.encoding", ConfigValue: "mp3", ValueType: "string", Description: "豆包/火山语音合成音频编码，默认 mp3", Domain: "infra"},
+		{ConfigKey: "doubao.tts.uid", ConfigValue: "xzxg-shop", ValueType: "string", Description: "豆包/火山语音合成用户标识", Domain: "infra"},
+		{ConfigKey: "doubao.tts.speed_ratio", ConfigValue: "1.0", ValueType: "number", Description: "豆包/火山语音合成语速倍率", Domain: "infra"},
+		{ConfigKey: "doubao.tts.volume_ratio", ConfigValue: "1.0", ValueType: "number", Description: "豆包/火山语音合成音量倍率", Domain: "infra"},
+		{ConfigKey: "doubao.tts.pitch_ratio", ConfigValue: "1.0", ValueType: "number", Description: "豆包/火山语音合成音高倍率", Domain: "infra"},
+		{ConfigKey: "doubao.tts.timeout_seconds", ConfigValue: "20", ValueType: "int", Description: "豆包/火山语音合成单次超时时间", Domain: "infra"},
+		{ConfigKey: "doubao.tts.max_runes", ConfigValue: "800", ValueType: "int", Description: "豆包/火山语音合成单次最大字符数", Domain: "infra"},
 		{ConfigKey: "minio.endpoint", ConfigValue: "127.0.0.1:9000", ValueType: "string", Description: "MinIO/S3 对象存储地址", Domain: "infra"},
 		{ConfigKey: "minio.access_key", ConfigValue: "minioadmin", ValueType: "string", Description: "MinIO Access Key，生产环境必须改为独立账号", Domain: "infra", IsSecret: true},
 		{ConfigKey: "minio.secret_key", ConfigValue: "minioadmin", ValueType: "string", Description: "MinIO Secret Key，生产环境必须改为强密钥", Domain: "infra", IsSecret: true},

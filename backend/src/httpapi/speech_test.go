@@ -1,8 +1,13 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"testing"
@@ -11,6 +16,12 @@ import (
 	"github.com/LYP-leo/xzxg-shop/backend/src/configcenter"
 	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
 
 func TestParseXunfeiSpeechResult(t *testing.T) {
 	raw := []byte(`{
@@ -136,6 +147,170 @@ func TestSpeechTTSConfigReadsSpecificCredentialsFirst(t *testing.T) {
 	}
 	if cfg.BaseURL != "wss://tts-api.xfyun.cn/v2/tts" {
 		t.Fatalf("expected default tts base url, got %q", cfg.BaseURL)
+	}
+}
+
+func TestSpeechTTSConfigReadsDoubaoProvider(t *testing.T) {
+	server := &Server{configs: configcenter.NewMemoryCenter([]domain.AppConfig{
+		{ConfigKey: "tts.provider", ConfigValue: "doubao", ValueType: "string"},
+		{ConfigKey: "doubao.tts.enabled", ConfigValue: "true", ValueType: "bool"},
+		{ConfigKey: "doubao.tts.app_id", ConfigValue: "doubao-app", ValueType: "string"},
+		{ConfigKey: "doubao.tts.api_key", ConfigValue: "doubao-key", ValueType: "string", IsSecret: true},
+		{ConfigKey: "doubao.tts.base_url", ConfigValue: "https://example.com/tts", ValueType: "string"},
+		{ConfigKey: "doubao.tts.cluster", ConfigValue: "cluster-1", ValueType: "string"},
+		{ConfigKey: "doubao.tts.voice", ConfigValue: "voice-1", ValueType: "string"},
+		{ConfigKey: "doubao.tts.encoding", ConfigValue: "mp3", ValueType: "string"},
+		{ConfigKey: "doubao.tts.speed_ratio", ConfigValue: "1.5", ValueType: "number"},
+		{ConfigKey: "doubao.tts.timeout_seconds", ConfigValue: "10", ValueType: "int"},
+		{ConfigKey: "doubao.tts.max_runes", ConfigValue: "600", ValueType: "int"},
+	})}
+
+	cfg := server.speechTTSConfig(context.Background())
+	if !cfg.Enabled() {
+		t.Fatalf("expected doubao tts enabled, got %#v", cfg)
+	}
+	if cfg.Provider != "doubao" || cfg.DoubaoAppID != "doubao-app" || cfg.DoubaoAPIKey != "doubao-key" {
+		t.Fatalf("unexpected doubao config: %#v", cfg)
+	}
+	if cfg.DefaultVoice() != "voice-1" || cfg.ContentType() != "audio/mpeg" {
+		t.Fatalf("unexpected voice/content-type: %q %q", cfg.DefaultVoice(), cfg.ContentType())
+	}
+	if cfg.TimeoutSeconds != 10 || cfg.MaxRunes != 600 {
+		t.Fatalf("unexpected limits: timeout=%d max=%d", cfg.TimeoutSeconds, cfg.MaxRunes)
+	}
+
+	payload := cfg.DoubaoRequestPayload("你好", "", "req-1")
+	app := payload["app"].(map[string]any)
+	if app["appid"] != "doubao-app" || app["token"] != "doubao-key" || app["cluster"] != "cluster-1" {
+		t.Fatalf("unexpected app payload: %#v", app)
+	}
+	audio := payload["audio"].(map[string]any)
+	if audio["voice_type"] != "voice-1" || audio["speed_ratio"] != 1.5 {
+		t.Fatalf("unexpected audio payload: %#v", audio)
+	}
+	request := payload["request"].(map[string]any)
+	if request["reqid"] != "req-1" || request["text"] != "你好" || request["operation"] != "query" {
+		t.Fatalf("unexpected request payload: %#v", request)
+	}
+}
+
+func TestHandleSpeechTTSConfig(t *testing.T) {
+	server := &Server{configs: configcenter.NewMemoryCenter([]domain.AppConfig{
+		{ConfigKey: "xunfei.tts.enabled", ConfigValue: "true", ValueType: "bool"},
+		{ConfigKey: "xunfei.tts.app_id", ConfigValue: "tts-app", ValueType: "string"},
+		{ConfigKey: "xunfei.tts.api_key", ConfigValue: "tts-key", ValueType: "string", IsSecret: true},
+		{ConfigKey: "xunfei.tts.api_secret", ConfigValue: "tts-secret", ValueType: "string", IsSecret: true},
+		{ConfigKey: "xunfei.tts.voice", ConfigValue: "xiaomei", ValueType: "string"},
+		{ConfigKey: "xunfei.tts.max_runes", ConfigValue: "1200", ValueType: "int"},
+	})}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/speech/tts/config", nil)
+	server.handleSpeechTTSConfig(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["enabled"] != true || response["provider"] != "xunfei" || response["voice"] != "xiaomei" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	if response["max_text_chars"] != float64(1200) {
+		t.Fatalf("unexpected max_text_chars: %#v", response["max_text_chars"])
+	}
+}
+
+func TestHandleSpeechTTSConfigDisabled(t *testing.T) {
+	server := &Server{configs: configcenter.NewMemoryCenter(nil)}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/speech/tts/config", nil)
+	server.handleSpeechTTSConfig(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["enabled"] != false || response["provider"] != "xunfei" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+}
+
+func TestSynthesizeDoubaoSpeechTTS(t *testing.T) {
+	var gotAuth string
+	var gotPayload map[string]any
+	originalClient := speechHTTPClient
+	speechHTTPClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		gotAuth = request.Header.Get("Authorization")
+		raw, err := io.ReadAll(request.Body)
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(raw, &gotPayload); err != nil {
+			return nil, err
+		}
+		body, err := json.Marshal(map[string]any{
+			"code": 3000,
+			"data": base64.StdEncoding.EncodeToString([]byte("mp3-bytes")),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(body)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	defer func() {
+		speechHTTPClient = originalClient
+	}()
+
+	cfg := speechTTSConfig{
+		Provider:           "doubao",
+		DoubaoEnabledFlag:  true,
+		DoubaoAppID:        "doubao-app",
+		DoubaoAPIKey:       "doubao-key",
+		DoubaoBaseURL:      "https://example.com/tts",
+		DoubaoCluster:      "cluster-1",
+		DoubaoVoice:        "voice-1",
+		DoubaoEncoding:     "mp3",
+		DoubaoUID:          "uid-1",
+		DoubaoTextType:     "plain",
+		DoubaoOperation:    "query",
+		DoubaoWithFrontend: 1,
+		DoubaoFrontendType: "unitTson",
+		DoubaoSpeedRatio:   1,
+		DoubaoVolumeRatio:  1,
+		DoubaoPitchRatio:   1,
+	}
+
+	audio, err := (&Server{}).synthesizeDoubaoSpeechTTS(context.Background(), cfg, "你好", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(audio) != "mp3-bytes" {
+		t.Fatalf("unexpected audio: %q", string(audio))
+	}
+	if gotAuth != "Bearer;doubao-key" {
+		t.Fatalf("unexpected auth header: %q", gotAuth)
+	}
+	app := gotPayload["app"].(map[string]any)
+	if app["appid"] != "doubao-app" || app["cluster"] != "cluster-1" {
+		t.Fatalf("unexpected app payload: %#v", app)
+	}
+}
+
+func TestDoubaoAuthorizationHeader(t *testing.T) {
+	cfg := speechTTSConfig{DoubaoAPIKey: "doubao-key"}
+	if cfg.DoubaoAuthorizationHeader() != "Bearer;doubao-key" {
+		t.Fatalf("unexpected authorization header: %q", cfg.DoubaoAuthorizationHeader())
 	}
 }
 
