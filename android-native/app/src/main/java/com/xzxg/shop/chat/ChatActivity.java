@@ -205,6 +205,7 @@ public class ChatActivity extends BaseShopActivity {
     private String lastRiskNoticeText = "";
     private long lastRiskNoticeAt;
     private Uri pendingCameraUri;
+    private String lastRenderedAccountSignature = "";
 
     private String currentAttachmentSessionKey() {
         return attachmentController.sessionKey(localSessionId);
@@ -303,6 +304,12 @@ public class ChatActivity extends BaseShopActivity {
         renderChatHome();
         loadHomeCopy();
         validateStoredToken();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        refreshAccountDependentViews(false);
     }
 
     @Override
@@ -497,7 +504,7 @@ public class ChatActivity extends BaseShopActivity {
             }
             keyboardVisible = nextVisible;
             keyboardHeight = nextHeight;
-            applyChatListPadding(nextVisible ? dp(24) : 0);
+            applyChatListPadding(0);
             if (nextVisible && (wasAtBottom || !userDetachedFromBottom)) {
                 keepBottomVisibleForKeyboard();
             }
@@ -1417,6 +1424,7 @@ public class ChatActivity extends BaseShopActivity {
         if (welcome != null) {
             welcome.setText(greetingText());
         }
+        lastRenderedAccountSignature = accountSignature();
         LinearLayout suggestions = findTaggedLayout(chatList, "suggestions");
         if (suggestions == null) {
             return;
@@ -1456,6 +1464,37 @@ public class ChatActivity extends BaseShopActivity {
     private String displayNickname() {
         String nickname = sessionStore == null ? "" : sessionStore.nickname();
         return nickname == null || nickname.trim().isEmpty() ? "用户名" : nickname.trim();
+    }
+
+    private String accountSignature() {
+        if (sessionStore == null) {
+            return "";
+        }
+        return safeAccountPart(sessionStore.accountId()) + "|" +
+                safeAccountPart(sessionStore.token()) + "|" +
+                safeAccountPart(sessionStore.nickname()) + "|" +
+                safeAccountPart(sessionStore.avatarUrl());
+    }
+
+    private String safeAccountPart(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    private void refreshAccountDependentViews(boolean force) {
+        String signature = accountSignature();
+        if (!force && signature.equals(lastRenderedAccountSignature)) {
+            return;
+        }
+        lastRenderedAccountSignature = signature;
+        if ("chat".equals(activePage) && chatList != null && chatList.getTag() == null) {
+            TextView welcome = findTaggedText(chatList, "welcome");
+            if (welcome != null) {
+                welcome.setText(greetingText());
+            }
+        }
+        if (drawerLayer != null && drawerPanel != null) {
+            refreshDrawerUserBar();
+        }
     }
 
     private void renderHomeSuggestions(LinearLayout suggestions, JSONArray remoteItems) {
@@ -5297,6 +5336,7 @@ public class ChatActivity extends BaseShopActivity {
 
     private View bottomUserBar() {
         LinearLayout bar = new LinearLayout(this);
+        bar.setTag("drawer_user_bar");
         bar.setGravity(Gravity.CENTER_VERTICAL);
         bar.setPadding(dp(6), dp(8), dp(2), dp(8));
         bar.setBackgroundColor(Color.WHITE);
@@ -5326,6 +5366,21 @@ public class ChatActivity extends BaseShopActivity {
         });
         bar.addView(settings, new LinearLayout.LayoutParams(dp(44), dp(44)));
         return bar;
+    }
+
+    private void refreshDrawerUserBar() {
+        if (drawerPanel == null) {
+            return;
+        }
+        for (int i = 0; i < drawerPanel.getChildCount(); i++) {
+            View child = drawerPanel.getChildAt(i);
+            if ("drawer_user_bar".equals(child.getTag())) {
+                ViewGroup.LayoutParams params = child.getLayoutParams();
+                drawerPanel.removeViewAt(i);
+                drawerPanel.addView(bottomUserBar(), i, params);
+                return;
+            }
+        }
     }
 
     private void saveAssistantRunsFromRemote(String targetLocalSessionId, JSONArray runs, long fallbackCreatedAt) {
