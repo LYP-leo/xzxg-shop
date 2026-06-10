@@ -1,501 +1,292 @@
-# xzxg-shop
+# 项目部署与体验方式
 
-小猪小狗电商 AI 导购系统，包含 Go 后端、React 管理/商家/用户 Web 前端、Java 原生 Android 客户端，以及本地评测和中间件配置。
+本文面向比赛评委、验收同学和项目演示人员，目标是用最短路径体验【小猪小狗 AI 导购系统】
 
-## 目录结构
+## **一、最快体验方式**
 
-```text
-backend/        Go API、Agent runtime、RAG、MySQL 存储
-frontend/       React Web 前端，包含用户、商家、管理员页面
-android-native/ Java 原生 Android 客户端
-quality/        评测数据、评测脚本和报告
-deployments/    本地 MySQL、Nacos、Milvus、Redis、MinIO 等中间件
-.ai/            产品、API、技术文档
+如果只想快速体验，不需要本地部署，可以使用我们已部署的公网环境。
+
+> 注意：由于自费服务器带宽较小，上传高清图像时可能卡顿，烦请耐心等待。
+> 
+> 
+
+|服务|地址|用途|
+|---|---|---|
+|Web 管理/商家后台|`http://82.156.207.98:5173/`|管理员后台、商家后台|
+|后端 API|`http://82.156.207.98:8080/`|API 服务入口|
+|健康检查|`http://82.156.207.98:8080/api/v1/health`|判断后端是否在线|
+
+
+
+客户端APK：
+
+\[app\-debug\.apk\]
+
+
+
+演示账号：
+
+|角色|账号|密码|主要体验内容|
+|---|---|---|---|
+|管理员|`admin`|`admin123456`|商品、订单、Prompt、配置、链路追踪、质量测评、风控|
+|商家|`merchant`|`merchant123456`|商品管理、资料上传、订单查看、发货履约|
+|用户|`user`|`user123456`|Android 客户端导购、加购、下单、图片找同款、语音/TTS|
+
+如果用户账号不可用，可以在 Android 客户端注册新用户。
+
+管理员和商家账号建议**使用上表所示的已有账号**，便于看到已有商品、订单和测评数据。
+
+
+
+## **二、推荐体验路线**
+
+### **1\. 系统是否可用**
+
+1. 打开 `http://82.156.207.98:8080/api/v1/health`。
+
+2. 返回健康状态后，打开 `http://82.156.207.98:5173/`。
+
+3. 使用 `admin / admin123456` 登录管理员后台。
+
+这一段主要确认后端、数据库、中间件和 Web 后台都已连通。
+
+
+
+### **2\. 管理员后台看平台能力**
+
+建议优先查看以下页面：
+
+|页面|看点|
+|---|---|
+|平台管理|商品、订单、用户、商家等基础电商数据|
+|Prompt 管理|Agent Prompt 统一落库，可在后台编辑、发布和回滚|
+|调试观测 / 链路追踪|每次 Agent 请求的意图、Prompt、模型输出、工具调用、RAG 片段、耗时|
+|质量测评|意图识别、RAG 召回、Agent 端到端测评报告和明细|
+|风控管理|用户、商品、商家、输入内容等风险控制|
+
+
+
+### **3\. 用户端体验 AI 导购闭环**
+
+用户端以 `android-native/` 原生 Android 客户端为主。若现场已提供 APK，直接安装 APK；如果需要本地打包，参考本文“Android 客户端打包”。
+
+推荐测试问题：
+
+```Plain Text
+我主要写代码和做演示，华为电脑和苹果电脑怎么选？
+帮我找一双适合夏天通勤的运动鞋，不要太厚重
+推荐一款适合敏感肌的面霜，预算 300 左右
+把刚才推荐的第一个商品加入购物车
 ```
 
-## 本地启动顺序
 
-建议按下面顺序启动：
 
-```bash
+### **4\. 商家和管理员看履约闭环**
+
+1. 使用 `merchant / merchant123456` 登录 Web 后台。
+
+2. 进入商家订单页面，查看待发货订单。
+
+3. 对可发货订单执行发货。
+
+4. 切换管理员账号，在订单管理中查看订单状态变化。
+
+如果需要演示管理员代运营能力，也可以在管理员端查看可发货订单并执行发货。
+
+
+
+### **5\. 多模态能力体验**
+
+图片找同款：
+
+1. 在 Android 客户端上传或拍摄商品图片。
+
+2. 输入“帮我找同款”或“找类似这件的商品”。
+
+3. 观察后端是否生成图片向量、是否进入图片检索工具、是否返回相似商品。
+
+语音/TTS：
+
+1. 使用客户端语音输入问题。
+
+2. 等待 Agent 回复后播放语音。
+
+3. 如果语音不可用，优先检查网络、麦克风权限和 TTS 配置。
+
+
+
+## **三、本地完整部署教程**
+
+### **1\. 环境要求**
+
+|组件|用途|
+|---|---|
+|Docker / Docker Compose|启动 MySQL、Nacos、Milvus、MinIO、Redis|
+|Go|运行后端服务|
+|Node\.js / npm|运行 React 管理/商家后台|
+|JDK / Android Studio|构建和运行 Android 原生客户端|
+
+
+
+### **2\. 启动中间件**
+
+在仓库根目录执行：
+
+```Bash
 docker compose -f deployments/docker-compose.yml up -d
-cd backend && go run ./cmd/api
-cd frontend && npm run dev -- --port 5173
 ```
 
-默认访问地址：
 
-```text
-后端 API: http://localhost:8080
-Web 前端: http://localhost:5173
-Nacos:    http://localhost:8848/nacos
-MinIO:    http://localhost:9001
-Milvus:   http://localhost:19530
-MySQL:    127.0.0.1:3306
-Redis:    127.0.0.1:6379
-```
 
-8080 和 5173 端口都已经开放在公网，可快速体验：  
-http://82.156.207.98:8080/  
-http://82.156.207.98:5173/  
+默认会启动：
 
-评委快速体验路线、演示账号和本地部署说明见 [.ai/docs/部署与评委快速体验指南.md](.ai/docs/部署与评委快速体验指南.md)。
+|服务|地址|
+|---|---|
+|MySQL|`127.0.0.1:3306`|
+|Redis|`127.0.0.1:6379`|
+|Nacos|`http://localhost:8848/nacos`|
+|Milvus|`http://localhost:19530`|
+|MinIO 控制台|`http://localhost:9001`|
 
-后端健康检查：
 
-```bash
-curl http://localhost:8080/api/v1/health
-```
 
-## 前端配置
+### **3\. 启动后端**
 
-### Web 前端
-
-Web 前端位于 `frontend/`，使用 React、TypeScript 和 Vite。
-
-常用命令：
-
-```bash
-cd frontend
-npm install
-npm run dev -- --port 5173
-npm run build
-npm run lint
-```
-
-前端请求统一使用相对路径 `/api/v1`。开发环境通过 [frontend/vite.config.ts](frontend/vite.config.ts) 里的 Vite proxy 转发到后端：
-
-```ts
-server: {
-  port: 5173,
-  proxy: {
-    '/api': {
-      target: 'http://localhost:8080',
-      changeOrigin: true
-    }
-  }
-}
-```
-
-如果后端不在 `localhost:8080`，修改 `frontend/vite.config.ts` 中的 `target`，例如：
-
-```ts
-target: 'http://127.0.0.1:8082'
-```
-
-生产构建后，仍需要由网关或静态资源服务器把 `/api` 代理到后端服务。
-
-### Android 原生客户端
-
-Android 原生客户端位于 `android-native/`，使用 Java 原生实现。
-
-常用命令：
-
-```bash
-cd android-native
-sh ./gradlew :app:compileDebugJavaWithJavac
-sh ./gradlew :app:assembleDebug
-```
-
-默认后端地址配置在 [android-native/app/build.gradle](android-native/app/build.gradle)：
-
-```gradle
-buildConfigField 'String', 'DEFAULT_API_BASE', '"http://82.156.207.98:8080/api/v1"'
-```
-
-Debug 包开启了测试后端设置：
-
-```gradle
-buildConfigField 'boolean', 'SHOW_TEST_SERVER_SETTINGS', 'true'
-```
-
-因此调试时可以在 App 登录页或设置页修改后端地址。Release 包默认关闭测试后端设置，需要在 `build.gradle` 中修改 `DEFAULT_API_BASE` 后重新打包。
-
-Android 端本地会话历史使用 SQLite 数据库 `xzxg_chat.db`，账号信息和接口地址保存在 SharedPreferences `xzxg_session` 中。历史会话按 `account_id` 隔离。
-
-### Capacitor 前端壳
-
-仓库中还保留了 `frontend/android` 和 `frontend/ios` 的 Capacitor 工程。相关命令：
-
-```bash
-cd frontend
-npm run native:sync
-npm run native:android
-npm run native:ios
-```
-
-当前主要移动端体验以 `android-native/` 为准。
-
-## 后端配置
-
-后端位于 `backend/`，入口为 [backend/cmd/api/main.go](backend/cmd/api/main.go)。
-
-### 基础启动
-
-```bash
+```Bash
 cd backend
 go run ./cmd/api
 ```
 
-默认监听地址：
+默认后端地址：
 
-```text
-:8080
+```Plain Text
+http://localhost:8080
 ```
 
-可通过环境变量覆盖：
 
-```bash
-API_ADDR=0.0.0.0:8082 go run ./cmd/api
-```
 
-### MySQL
+健康检查：
 
-默认 MySQL DSN：
-
-```text
-root:root@tcp(127.0.0.1:3306)/xzxg_shop?parseTime=true&loc=Local
-```
-
-覆盖方式：
-
-```bash
-MYSQL_DSN='root:root@tcp(127.0.0.1:3306)/xzxg_shop?parseTime=true&loc=Local' go run ./cmd/api
-```
-
-本地开发默认自动执行数据库迁移：
-
-```text
-RUN_MIGRATIONS=true
-```
-
-生产环境 `APP_ENV=production` 时默认不自动迁移。如需显式开启：
-
-```bash
-APP_ENV=production RUN_MIGRATIONS=true go run ./cmd/api
-```
-
-### Nacos 配置中心
-
-后端启动时会连接 Nacos，并把默认配置写入配置中心。Nacos 不可用时会回退到内存默认值，方便本地开发。
-
-默认连接配置：
-
-```text
-NACOS_ADDR=http://127.0.0.1:8848
-NACOS_NAMESPACE=
-NACOS_GROUP=XZXG_SHOP
-NACOS_DATA_ID=xzxg-shop-app-config.json
-```
-
-覆盖示例：
-
-```bash
-NACOS_ADDR=http://127.0.0.1:8848 \
-NACOS_GROUP=XZXG_SHOP \
-NACOS_DATA_ID=xzxg-shop-app-config.json \
-go run ./cmd/api
-```
-
-后台配置接口：
-
-```text
-GET   /api/v1/admin/configs
-PATCH /api/v1/admin/configs/{config_key}
-```
-
-Agent Prompt 有独立的后台接口：
-
-```text
-GET   /api/v1/admin/prompts
-PATCH /api/v1/admin/prompts/{prompt_key}
-POST  /api/v1/admin/prompts/{prompt_key}/publish
-```
-
-运行时会优先读取数据库中 active 状态的 Prompt，然后再回退到代码默认 Prompt。
-
-### 模型配置
-
-本地开发可以直接用环境变量配置模型：
-
-```bash
-export DASHSCOPE_API_KEY='your-api-key'
-export AI_BASE_URL='https://dashscope.aliyuncs.com/compatible-mode/v1'
-export AI_SMALL_MODEL='qwen3.5-flash'
-export AI_LARGE_MODEL='qwen3.7-plus'
-export AI_ENABLE_THINKING=false
-go run ./cmd/api
-```
-
-对应代码入口：
-
-```text
-backend/src/agent/config.go
-```
-
-也可以在 Nacos/后台配置中心中配置：
-
-```text
-ai.active_provider
-ai.qwen.base_url
-ai.qwen.api_key
-ai.qwen.small_model
-ai.qwen.large_model
-ai.doubao.base_url
-ai.doubao.api_key
-ai.doubao.small_model
-ai.doubao.large_model
-ai.enable_thinking
-ai.model.planner_route
-ai.model.planner_guide_intent
-ai.model.planner_non_guide_intent
-ai.model.react_guide
-ai.model.react_non_guide
-```
-
-如果没有配置 `DASHSCOPE_API_KEY` 或 `ai.qwen.api_key`，Agent 会退回本地规则响应，便于无模型密钥时启动项目。
-
-### RAG 和向量检索
-
-本地中间件包含 Milvus、etcd 和 MinIO。默认配置：
-
-```text
-vector.enabled=true
-milvus.address=http://127.0.0.1:19530
-milvus.token=root:Milvus
-milvus.collection.products=product_text_vectors
-milvus.collection.knowledge=knowledge_text_chunks
-milvus.collection.product_images=product_image_vectors_v2
-embedding.base_url=https://dashscope.aliyuncs.com/compatible-mode/v1
-embedding.model=text-embedding-v4
-image_embedding.provider=dashscope
-image_embedding.model=qwen3-vl-embedding
-image_embedding.dimension=512
-```
-
-本地环境默认会启动向量索引初始化。生产环境默认关闭，需要显式开启：
-
-```bash
-BOOTSTRAP_VECTOR_INDEX=true go run ./cmd/api
-```
-
-如果 Milvus 不可用，商品和知识检索会降级到 MySQL 关键词检索。
-
-### 文件与对象存储
-
-默认对象存储使用本地 MinIO：
-
-```text
-minio.endpoint=127.0.0.1:9000
-minio.access_key=minioadmin
-minio.secret_key=minioadmin
-minio.bucket=xzxg-shop-assets
-minio.use_ssl=false
-```
-
-文件上传大小限制：
-
-```text
-files.max_upload_bytes=10485760
-```
-
-文件下载需要登录，且只能访问自己的文件或由管理员访问。
-
-### 语音配置
-
-后端同时支持讯飞语音识别、讯飞 TTS 和豆包 TTS。
-
-实时语音识别相关配置：
-
-```text
-xunfei.app_id
-xunfei.api_key
-xunfei.api_secret
-xunfei.rtasr.base_url
-xunfei.rtasr.path
-xunfei.rtasr.lang
-xunfei.rtasr.audio_encode
-xunfei.rtasr.sample_rate
-```
-
-TTS 供应商选择：
-
-```text
-tts.provider=xunfei
-```
-
-讯飞 TTS：
-
-```text
-xunfei.tts.enabled=true
-xunfei.tts.app_id
-xunfei.tts.api_key
-xunfei.tts.api_secret
-xunfei.tts.base_url=wss://tts-api.xfyun.cn/v2/tts
-xunfei.tts.voice=xiaoyan
-xunfei.tts.speed=50
-xunfei.tts.volume=50
-xunfei.tts.pitch=50
-xunfei.tts.timeout_seconds=20
-xunfei.tts.max_runes=800
-```
-
-豆包 TTS：
-
-```text
-tts.provider=doubao
-doubao.tts.enabled=true
-doubao.tts.app_id
-doubao.tts.api_key
-doubao.tts.base_url=https://openspeech.bytedance.com/api/v1/tts
-doubao.tts.cluster=volcano_tts
-doubao.tts.voice=BV700_streaming
-doubao.tts.encoding=mp3
-doubao.tts.uid=xzxg-shop
-doubao.tts.speed_ratio=1.0
-doubao.tts.volume_ratio=1.0
-doubao.tts.pitch_ratio=1.0
-doubao.tts.timeout_seconds=20
-doubao.tts.max_runes=800
-```
-
-客户端会调用：
-
-```text
-GET  /api/v1/speech/tts/config
-POST /api/v1/speech/tts
-```
-
-### HTTP 与安全配置
-
-常用配置：
-
-```text
-http.cors.allowed_origins=*
-http.trusted_proxy_cidrs=
-http.trust_all_proxies=false
-risk.enabled=true
-risk.account_statuses=risk
-risk.account_message=当前账号命中平台风控限制，暂时无法继续使用导购 Agent。
-```
-
-生产环境会校验不安全配置。`APP_ENV=production` 时，以下配置不能使用本地默认值：
-
-```text
-MYSQL_DSN 不能是 root:root
-http.cors.allowed_origins 不能是 *
-minio.access_key / minio.secret_key 不能是 minioadmin
-milvus.token 不能是 root:Milvus
-ai.qwen.api_key 不能为空
-```
-
-## 本地中间件
-
-启动：
-
-```bash
-docker compose -f deployments/docker-compose.yml up -d
-```
-
-停止：
-
-```bash
-docker compose -f deployments/docker-compose.yml down
-```
-
-清空本地数据卷：
-
-```bash
-docker compose -f deployments/docker-compose.yml down -v
-```
-
-中间件用途：
-
-```text
-MySQL: 业务数据、用户、商品、购物车、订单、Agent 会话、trace、Prompt
-Nacos: 动态配置和应用配置
-Milvus: 商品、知识、图片向量检索
-etcd: Milvus 依赖
-MinIO: Milvus 依赖和对象存储
-Redis: 预留给缓存、限流等扩展
-```
-
-## 评测
-
-常用评测命令：
-
-```bash
-node quality/evals/run_intent_eval.mjs quality/data/eval/intent_cases.jsonl
-node quality/evals/run_rag_recall_eval.mjs quality/data/eval/rag_recall_cases.jsonl
-node quality/evals/run_agent_e2e.mjs quality/data/eval/agent_e2e_20_scenarios.jsonl
-```
-
-报告输出到：
-
-```text
-quality/reports
-```
-
-## 常见问题
-
-### 前端 5173 能打开，但接口 404 或连接失败
-
-确认后端是否运行在 8080：
-
-```bash
+```Bash
 curl http://localhost:8080/api/v1/health
 ```
 
-如果后端端口不是 8080，需要修改 `frontend/vite.config.ts` 的 proxy target。
+本地开发默认会自动迁移数据库，并在中间件可用时初始化基础配置、商品数据和向量索引。Prompt 的主来源是数据库和管理员页面，Nacos 主要负责应用动态配置。
 
-### 后端启动时报 MySQL 连接失败
 
-先启动本地中间件：
 
-```bash
-docker compose -f deployments/docker-compose.yml up -d mysql
+### **4\. 启动 Web 后台**
+
+```Bash
+cd frontend
+npm install
+npm run dev -- --port 5173
 ```
 
-确认 DSN 是否和本地端口一致：
 
-```text
-MYSQL_DSN=root:root@tcp(127.0.0.1:3306)/xzxg_shop?parseTime=true&loc=Local
+
+访问：
+
+```Plain Text
+http://localhost:5173
 ```
 
-### Agent 不调用真实模型
+Web 前端通过 Vite proxy 将 `/api` 转发到 `http://localhost:8080`。如果后端端口变化，需要修改 `frontend/vite.config.ts`。
 
-检查是否配置了模型 Key：
 
-```bash
-echo $DASHSCOPE_API_KEY
+
+### **5\. Android 客户端打包**
+
+```Bash
+cd android-native
+sh ./gradlew :app:assembleDebug
 ```
 
-或者在后台配置中心确认：
+Debug APK 默认输出路径：
 
-```text
-ai.qwen.api_key
-ai.enabled
-ai.active_provider
+```Plain Text
+android-native/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-### TTS 提示不可用
 
-检查当前供应商和密钥配置：
 
-```text
-tts.provider
-xunfei.tts.enabled
-xunfei.tts.app_id
-xunfei.tts.api_key
-xunfei.tts.api_secret
-doubao.tts.enabled
-doubao.tts.app_id
-doubao.tts.api_key
+Android 默认后端地址配置在：
+
+```Plain Text
+android-native/app/build.gradle
 ```
 
-讯飞可用时，建议保持：
 
-```text
-tts.provider=xunfei
-xunfei.tts.enabled=true
+
+当前 Debug 包默认指向公网后端：
+
+```Plain Text
+http://82.156.207.98:8080/api/v1
 ```
+
+
+
+如果要连接本地后端，可以在 Debug 设置页修改服务地址，或修改 `DEFAULT_API_BASE` 后重新打包。
+
+
+
+## **四、常见问题**
+
+### **Web 能打开，但接口失败**
+
+先检查后端：
+
+```Bash
+curl http://localhost:8080/api/v1/health
+```
+
+如果本地后端不是 8080，需要修改 `frontend/vite.config.ts` 的 proxy target。
+
+
+
+### **Agent 回复像模板或没有真实模型输出**
+
+检查模型配置：
+
+|配置|说明|
+|---|---|
+|`ai.active_provider`|当前模型供应商|
+|`ai.qwen.api_key` / 其他供应商 key|模型密钥|
+|`ai.model.react_guide`|导购主 Agent 模型|
+|`ai.model.react_non_guide`|非导购主 Agent 模型|
+|`ai.enable_thinking`|是否开启 thinking|
+
+无模型密钥时，系统会降级到本地规则，便于服务启动，但不适合评审真实 AI 效果。
+
+
+
+### **图片找同款没有结果**
+
+优先检查：
+
+1. 图片是否上传成功。
+
+2. Milvus 是否运行。
+
+3. 图片 embedding 模型配置是否可用。
+
+4. 商品库是否有对应类别和图片向量。
+
+
+
+### **管理员看不到最近请求**
+
+确认当前请求是否真正打到同一个后端环境。公网 Web、Android、本地后端如果混用，会导致管理员后台看不到另一个环境的 trace。
+
+
+
+### **登录失败**
+
+优先使用本文固定演示账号。用户端如果固定账号不可用，可以直接注册新用户；管理员和商家账号需要使用预置账号或由数据库初始化脚本创建。
+
+
+
+
+
+
+
