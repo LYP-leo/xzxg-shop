@@ -2,6 +2,7 @@ package com.xzxg.shop.storage;
 
 import android.content.ContentValues;
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
@@ -11,13 +12,17 @@ import java.util.List;
 import java.util.UUID;
 
 public class LocalChatStore extends SQLiteOpenHelper {
+    private static final String SESSION_PREFS = "xzxg_session";
+    private final Context appContext;
+
     public LocalChatStore(Context context) {
-        super(context, "xzxg_chat.db", null, 5);
+        super(context, "xzxg_chat.db", null, 6);
+        appContext = context.getApplicationContext();
     }
 
     @Override
     public void onCreate(SQLiteDatabase db) {
-        db.execSQL("CREATE TABLE sessions (local_session_id TEXT PRIMARY KEY, server_session_id TEXT, title TEXT, summary TEXT, sync_state TEXT, created_at INTEGER, updated_at INTEGER, pinned_at INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER NOT NULL DEFAULT 0)");
+        db.execSQL("CREATE TABLE sessions (local_session_id TEXT PRIMARY KEY, account_id TEXT NOT NULL DEFAULT '', server_session_id TEXT, title TEXT, summary TEXT, sync_state TEXT, created_at INTEGER, updated_at INTEGER, pinned_at INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER NOT NULL DEFAULT 0)");
         db.execSQL("CREATE TABLE messages (local_message_id TEXT PRIMARY KEY, local_session_id TEXT, role TEXT, content TEXT, attachments_json TEXT NOT NULL DEFAULT '[]', blocks_json TEXT, followups_json TEXT NOT NULL DEFAULT '[]', segments_json TEXT NOT NULL DEFAULT '[]', status TEXT, created_at INTEGER)");
         createIndexes(db);
     }
@@ -38,6 +43,10 @@ public class LocalChatStore extends SQLiteOpenHelper {
         if (oldVersion < 5) {
             createIndexes(db);
         }
+        if (oldVersion < 6) {
+            addColumnIfMissing(db, "sessions", "account_id", "TEXT NOT NULL DEFAULT ''");
+            createIndexes(db);
+        }
     }
 
     public void ensureSession(String localSessionId, String title) {
@@ -45,6 +54,7 @@ public class LocalChatStore extends SQLiteOpenHelper {
         ContentValues values = new ContentValues();
         long now = System.currentTimeMillis();
         values.put("local_session_id", localSessionId);
+        values.put("account_id", currentAccountId());
         values.put("title", title);
         values.put("sync_state", "local_only");
         values.put("created_at", now);
@@ -53,27 +63,33 @@ public class LocalChatStore extends SQLiteOpenHelper {
     }
 
     public void bindServerSession(String localSessionId, String serverSessionId) {
+        String accountId = currentAccountId();
         ContentValues values = new ContentValues();
+        values.put("account_id", accountId);
         values.put("server_session_id", serverSessionId);
         values.put("sync_state", "synced");
         values.put("updated_at", System.currentTimeMillis());
-        getWritableDatabase().update("sessions", values, "local_session_id = ?", new String[]{localSessionId});
+        getWritableDatabase().update("sessions", values, "local_session_id = ? AND (account_id = ? OR account_id = '')", new String[]{localSessionId, accountId});
     }
 
     public void markSessionSyncState(String localSessionId, String state) {
+        String accountId = currentAccountId();
         ContentValues values = new ContentValues();
+        values.put("account_id", accountId);
         values.put("sync_state", state);
-        getWritableDatabase().update("sessions", values, "local_session_id = ?", new String[]{localSessionId});
+        getWritableDatabase().update("sessions", values, "local_session_id = ? AND (account_id = ? OR account_id = '')", new String[]{localSessionId, accountId});
     }
 
     public String upsertRemoteSession(String serverSessionId, String title, String summary, long updatedAt) {
         if (serverSessionId == null || serverSessionId.isEmpty()) {
             return "";
         }
+        String accountId = currentAccountId();
         String existing = localSessionIdForServer(serverSessionId);
-        String localId = existing.isEmpty() ? "remote_" + serverSessionId : existing;
+        String localId = existing.isEmpty() ? remoteLocalSessionId(accountId, serverSessionId) : existing;
         String syncState = existing.isEmpty() ? "" : sessionSyncState(localId);
         ContentValues values = new ContentValues();
+        values.put("account_id", accountId);
         values.put("server_session_id", serverSessionId);
         values.put("title", title == null || title.isEmpty() ? "导购会话" : title);
         values.put("summary", summary == null ? "" : summary);
@@ -94,7 +110,7 @@ public class LocalChatStore extends SQLiteOpenHelper {
     }
 
     public String localSessionIdForServer(String serverSessionId) {
-        Cursor cursor = getReadableDatabase().query("sessions", new String[]{"local_session_id"}, "server_session_id = ?", new String[]{serverSessionId}, null, null, null, "1");
+        Cursor cursor = getReadableDatabase().query("sessions", new String[]{"local_session_id"}, "account_id = ? AND server_session_id = ?", new String[]{currentAccountId(), serverSessionId}, null, null, null, "1");
         try {
             return cursor.moveToFirst() ? cursor.getString(0) : "";
         } finally {
@@ -141,8 +157,10 @@ public class LocalChatStore extends SQLiteOpenHelper {
             db.insertWithOnConflict("messages", null, values, SQLiteDatabase.CONFLICT_REPLACE);
 
             ContentValues sessionValues = new ContentValues();
+            String accountId = currentAccountId();
+            sessionValues.put("account_id", accountId);
             sessionValues.put("updated_at", now);
-            db.update("sessions", sessionValues, "local_session_id = ?", new String[]{localSessionId});
+            db.update("sessions", sessionValues, "local_session_id = ? AND (account_id = ? OR account_id = '')", new String[]{localSessionId, accountId});
             db.setTransactionSuccessful();
         } finally {
             db.endTransaction();
@@ -180,12 +198,14 @@ public class LocalChatStore extends SQLiteOpenHelper {
             }
 
             ContentValues sessionValues = new ContentValues();
+            String accountId = currentAccountId();
+            sessionValues.put("account_id", accountId);
             sessionValues.put("updated_at", now);
             if ("user".equals(role)) {
                 sessionValues.put("title", titleFromMessage(safeContent));
                 sessionValues.put("summary", safeContent);
             }
-            db.update("sessions", sessionValues, "local_session_id = ?", new String[]{localSessionId});
+            db.update("sessions", sessionValues, "local_session_id = ? AND (account_id = ? OR account_id = '')", new String[]{localSessionId, accountId});
             db.setTransactionSuccessful();
         } finally {
             db.endTransaction();
@@ -232,9 +252,9 @@ public class LocalChatStore extends SQLiteOpenHelper {
         ArrayList<SessionSummary> items = new ArrayList<>();
         String sql = "SELECT s.local_session_id, s.server_session_id, s.title, s.summary, s.sync_state, s.pinned_at " +
                 "FROM sessions s " +
-                "WHERE s.deleted_at = 0 AND ((s.server_session_id IS NOT NULL AND s.server_session_id != '') OR EXISTS (SELECT 1 FROM messages m WHERE m.local_session_id = s.local_session_id AND m.role = 'user')) " +
+                "WHERE s.account_id = ? AND s.deleted_at = 0 AND ((s.server_session_id IS NOT NULL AND s.server_session_id != '') OR EXISTS (SELECT 1 FROM messages m WHERE m.local_session_id = s.local_session_id AND m.role = 'user')) " +
                 "ORDER BY CASE WHEN s.pinned_at > 0 THEN 0 ELSE 1 END, s.pinned_at DESC, s.updated_at DESC LIMIT 100";
-        Cursor cursor = getReadableDatabase().rawQuery(sql, null);
+        Cursor cursor = getReadableDatabase().rawQuery(sql, new String[]{currentAccountId()});
         try {
             while (cursor.moveToNext()) {
                 items.add(new SessionSummary(cursor.getString(0), cursor.getString(1), cursor.getString(2), cursor.getString(3), cursor.getString(4)));
@@ -246,7 +266,7 @@ public class LocalChatStore extends SQLiteOpenHelper {
     }
 
     public SessionSummary sessionSummary(String localSessionId) {
-        Cursor cursor = getReadableDatabase().query("sessions", new String[]{"local_session_id", "server_session_id", "title", "summary", "sync_state", "pinned_at"}, "local_session_id = ? AND deleted_at = 0", new String[]{localSessionId}, null, null, null, "1");
+        Cursor cursor = getReadableDatabase().query("sessions", new String[]{"local_session_id", "server_session_id", "title", "summary", "sync_state", "pinned_at"}, "local_session_id = ? AND account_id = ? AND deleted_at = 0", new String[]{localSessionId, currentAccountId()}, null, null, null, "1");
         try {
             return cursor.moveToFirst() ? new SessionSummary(cursor.getString(0), cursor.getString(1), cursor.getString(2), cursor.getString(3), cursor.getString(4), cursor.getLong(5) > 0) : null;
         } finally {
@@ -264,9 +284,9 @@ public class LocalChatStore extends SQLiteOpenHelper {
         int safeOffset = Math.max(0, offset);
         String sql = "SELECT s.local_session_id, s.server_session_id, s.title, s.summary, s.sync_state, s.pinned_at " +
                 "FROM sessions s " +
-                "WHERE s.deleted_at = 0 AND ((s.server_session_id IS NOT NULL AND s.server_session_id != '') OR EXISTS (SELECT 1 FROM messages m WHERE m.local_session_id = s.local_session_id AND m.role = 'user')) " +
+                "WHERE s.account_id = ? AND s.deleted_at = 0 AND ((s.server_session_id IS NOT NULL AND s.server_session_id != '') OR EXISTS (SELECT 1 FROM messages m WHERE m.local_session_id = s.local_session_id AND m.role = 'user')) " +
                 "ORDER BY CASE WHEN s.pinned_at > 0 THEN 0 ELSE 1 END, s.pinned_at DESC, s.updated_at DESC LIMIT ? OFFSET ?";
-        Cursor cursor = getReadableDatabase().rawQuery(sql, new String[]{String.valueOf(safeLimit), String.valueOf(safeOffset)});
+        Cursor cursor = getReadableDatabase().rawQuery(sql, new String[]{currentAccountId(), String.valueOf(safeLimit), String.valueOf(safeOffset)});
         try {
             while (cursor.moveToNext()) {
                 items.add(new SessionSummary(cursor.getString(0), cursor.getString(1), cursor.getString(2), cursor.getString(3), cursor.getString(4), cursor.getLong(5) > 0));
@@ -293,10 +313,10 @@ public class LocalChatStore extends SQLiteOpenHelper {
         String sql = "SELECT DISTINCT s.local_session_id, s.server_session_id, s.title, s.summary, s.sync_state, s.pinned_at, s.updated_at " +
                 "FROM sessions s " +
                 "LEFT JOIN messages m ON m.local_session_id = s.local_session_id " +
-                "WHERE s.deleted_at = 0 AND ((s.server_session_id IS NOT NULL AND s.server_session_id != '') OR EXISTS (SELECT 1 FROM messages um WHERE um.local_session_id = s.local_session_id AND um.role = 'user')) " +
+                "WHERE s.account_id = ? AND s.deleted_at = 0 AND ((s.server_session_id IS NOT NULL AND s.server_session_id != '') OR EXISTS (SELECT 1 FROM messages um WHERE um.local_session_id = s.local_session_id AND um.role = 'user')) " +
                 "AND (s.title LIKE ? OR s.summary LIKE ? OR m.content LIKE ?) " +
                 "ORDER BY CASE WHEN s.pinned_at > 0 THEN 0 ELSE 1 END, s.pinned_at DESC, s.updated_at DESC LIMIT ? OFFSET ?";
-        Cursor cursor = getReadableDatabase().rawQuery(sql, new String[]{like, like, like, String.valueOf(safeLimit), String.valueOf(safeOffset)});
+        Cursor cursor = getReadableDatabase().rawQuery(sql, new String[]{currentAccountId(), like, like, like, String.valueOf(safeLimit), String.valueOf(safeOffset)});
         try {
             while (cursor.moveToNext()) {
                 items.add(new SessionSummary(cursor.getString(0), cursor.getString(1), cursor.getString(2), cursor.getString(3), cursor.getString(4), cursor.getLong(5) > 0));
@@ -308,7 +328,10 @@ public class LocalChatStore extends SQLiteOpenHelper {
     }
 
     public boolean hasMessages(String localSessionId) {
-        Cursor cursor = getReadableDatabase().rawQuery("SELECT 1 FROM messages WHERE local_session_id = ? LIMIT 1", new String[]{localSessionId});
+        Cursor cursor = getReadableDatabase().rawQuery(
+                "SELECT 1 FROM messages m INNER JOIN sessions s ON s.local_session_id = m.local_session_id WHERE m.local_session_id = ? AND s.account_id = ? LIMIT 1",
+                new String[]{localSessionId, currentAccountId()}
+        );
         try {
             return cursor.moveToFirst();
         } finally {
@@ -318,7 +341,10 @@ public class LocalChatStore extends SQLiteOpenHelper {
 
     public List<MessageItem> messages(String localSessionId) {
         ArrayList<MessageItem> items = new ArrayList<>();
-        Cursor cursor = getReadableDatabase().query("messages", new String[]{"role", "content", "status", "attachments_json", "blocks_json", "followups_json", "segments_json"}, "local_session_id = ?", new String[]{localSessionId}, null, null, "created_at ASC");
+        String sql = "SELECT m.role, m.content, m.status, m.attachments_json, m.blocks_json, m.followups_json, m.segments_json " +
+                "FROM messages m INNER JOIN sessions s ON s.local_session_id = m.local_session_id " +
+                "WHERE m.local_session_id = ? AND s.account_id = ? ORDER BY m.created_at ASC";
+        Cursor cursor = getReadableDatabase().rawQuery(sql, new String[]{localSessionId, currentAccountId()});
         try {
             while (cursor.moveToNext()) {
                 items.add(new MessageItem(cursor.getString(0), cursor.getString(1), cursor.getString(2), cursor.getString(3), cursor.getString(4), cursor.getString(5), cursor.getString(6)));
@@ -346,20 +372,39 @@ public class LocalChatStore extends SQLiteOpenHelper {
     private void createIndexes(SQLiteDatabase db) {
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_sessions_server_session_id ON sessions(server_session_id)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_sessions_history_order ON sessions(deleted_at, pinned_at, updated_at)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_sessions_account_history ON sessions(account_id, deleted_at, pinned_at, updated_at)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_sessions_account_server ON sessions(account_id, server_session_id)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_messages_session_created ON messages(local_session_id, created_at)");
     }
 
+    private String currentAccountId() {
+        if (appContext == null) {
+            return "";
+        }
+        SharedPreferences prefs = appContext.getSharedPreferences(SESSION_PREFS, Context.MODE_PRIVATE);
+        String accountId = prefs.getString("account_id", "");
+        return accountId == null ? "" : accountId.trim();
+    }
+
+    private String remoteLocalSessionId(String accountId, String serverSessionId) {
+        String owner = accountId == null || accountId.trim().isEmpty() ? "guest" : accountId.trim();
+        String server = serverSessionId == null ? "" : serverSessionId.trim();
+        return "remote_" + Math.abs(owner.hashCode()) + "_" + server;
+    }
+
     public void touchSession(String localSessionId) {
+        String accountId = currentAccountId();
         ContentValues values = new ContentValues();
+        values.put("account_id", accountId);
         values.put("updated_at", System.currentTimeMillis());
-        getWritableDatabase().update("sessions", values, "local_session_id = ?", new String[]{localSessionId});
+        getWritableDatabase().update("sessions", values, "local_session_id = ? AND (account_id = ? OR account_id = '')", new String[]{localSessionId, accountId});
     }
 
     public void pinSession(String localSessionId, boolean pinned) {
         ContentValues values = new ContentValues();
         values.put("pinned_at", pinned ? System.currentTimeMillis() : 0);
         values.put("sync_state", "pending_sync");
-        getWritableDatabase().update("sessions", values, "local_session_id = ?", new String[]{localSessionId});
+        getWritableDatabase().update("sessions", values, "local_session_id = ? AND account_id = ?", new String[]{localSessionId, currentAccountId()});
     }
 
     public void renameSession(String localSessionId, String title) {
@@ -368,14 +413,14 @@ public class LocalChatStore extends SQLiteOpenHelper {
         values.put("summary", title == null ? "" : title.trim());
         values.put("sync_state", "pending_sync");
         values.put("updated_at", System.currentTimeMillis());
-        getWritableDatabase().update("sessions", values, "local_session_id = ?", new String[]{localSessionId});
+        getWritableDatabase().update("sessions", values, "local_session_id = ? AND account_id = ?", new String[]{localSessionId, currentAccountId()});
     }
 
     public void deleteSession(String localSessionId) {
         ContentValues values = new ContentValues();
         values.put("deleted_at", System.currentTimeMillis());
         values.put("sync_state", "pending_sync");
-        getWritableDatabase().update("sessions", values, "local_session_id = ?", new String[]{localSessionId});
+        getWritableDatabase().update("sessions", values, "local_session_id = ? AND account_id = ?", new String[]{localSessionId, currentAccountId()});
     }
 
     private long sessionUpdatedAt(String localSessionId) {

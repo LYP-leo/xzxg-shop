@@ -57,7 +57,7 @@ public class SessionStore {
     }
 
     public void saveAuth(String token, String role, String nickname, String avatarUrl) {
-        saveAuth(token, role, nickname, avatarUrl, accountId(), username(), phone(), email());
+        saveAuth(token, role, nickname, avatarUrl, "", "", "", "");
     }
 
     public void saveAuth(String token, String role, String nickname, String avatarUrl, String accountId, String username, String phone, String email) {
@@ -70,7 +70,7 @@ public class SessionStore {
                 .putString("username", username == null ? "" : username)
                 .putString("phone", phone == null ? "" : phone)
                 .putString("email", email == null ? "" : email)
-                .apply();
+                .commit();
     }
 
     public void saveProfile(String role, String nickname, String avatarUrl, String accountId, String username, String phone, String email) {
@@ -107,6 +107,6 @@ public class SessionStore {
                 .remove("username")
                 .remove("phone")
                 .remove("email")
-                .apply();
+                .commit();
     }
 }
