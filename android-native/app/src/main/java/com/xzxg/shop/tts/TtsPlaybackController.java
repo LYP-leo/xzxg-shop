@@ -36,6 +36,56 @@ public class TtsPlaybackController {
         mediaPlayer.start();
     }
 
+    public void playAndWait(byte[] audio) throws Exception {
+        if (audio == null || audio.length == 0) {
+            return;
+        }
+        MediaPlayer mediaPlayer;
+        synchronized (this) {
+            stop();
+            File file = new File(context.getCacheDir(), "chat-tts-current.mp3");
+            try (FileOutputStream out = new FileOutputStream(file, false)) {
+                out.write(audio);
+            }
+            mediaPlayer = new MediaPlayer();
+            mediaPlayer.setDataSource(context, Uri.fromFile(file));
+            mediaPlayer.setOnCompletionListener(mp -> {
+                synchronized (TtsPlaybackController.this) {
+                    if (player == mp) {
+                        player = null;
+                    }
+                }
+                try {
+                    mp.release();
+                } catch (Exception ignored) {
+                }
+            });
+            mediaPlayer.setOnErrorListener((mp, what, extra) -> {
+                synchronized (TtsPlaybackController.this) {
+                    if (player == mp) {
+                        player = null;
+                    }
+                }
+                try {
+                    mp.release();
+                } catch (Exception ignored) {
+                }
+                return true;
+            });
+            mediaPlayer.prepare();
+            player = mediaPlayer;
+            mediaPlayer.start();
+        }
+        while (true) {
+            synchronized (this) {
+                if (player != mediaPlayer) {
+                    return;
+                }
+            }
+            Thread.sleep(80);
+        }
+    }
+
     public synchronized void stop() {
         if (player == null) {
             return;

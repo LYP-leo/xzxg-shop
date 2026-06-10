@@ -6,11 +6,12 @@
 
 ## 推荐阅读顺序
 
-1. 产品需求：从 `prd/需求_v1.md`、`prd/需求_v2.md`、`prd/需求_v3.md` 看产品范围演进。
-2. 当前接口：从 `api/README.md` 进入，正式联调以 `api/API接口文档_v3.md` 和 `api/Agent输出协议_v1.md` 为准。
-3. 当前技术主线：看 `tech/RAG设计_v5.md`、`tech/Agent框架设计_v2.md`、`tech/动态配置拆分与Prompt管理设计_v1.md`、`tech/质量测评体系设计_v1.md`。
-4. 项目表达材料：看 `spec/business/项目亮点与方案梳理_v1.md`。
-5. 代码评审：使用 `skill/xzxg-code-review/SKILL.md`。
+1. 评委快速体验：先看 `docs/部署与评委快速体验指南.md`，按公网环境或本地部署路线体验核心闭环。
+2. 产品需求：从 `prd/需求_v1.md`、`prd/需求_v2.md`、`prd/需求_v3.md` 看产品范围演进。
+3. 当前接口：从 `api/README.md` 进入，正式联调以 `api/API接口文档_v3.md` 和 `api/Agent输出协议_v1.md` 为准。
+4. 当前技术主线：看 `tech/RAG设计_v5.md`、`tech/Agent框架设计_v2.md`、`tech/动态配置拆分与Prompt管理设计_v1.md`、`tech/质量测评体系设计_v1.md`。
+5. 项目表达材料：看 `spec/business/项目亮点与方案梳理_v1.md`。
+6. 代码评审：使用 `skill/xzxg-code-review/SKILL.md`。
 
 ## 目录职责
 
@@ -44,4 +45,3 @@
 - Prompt 管理基线：Prompt 统一落库并通过管理员页面编辑，Nacos 不再作为 Prompt 主来源。
 - Web 前端基线：React Web 用户端已废弃，React 只保留管理员/商家后台；用户端以 `android-native/` 为主。
 - RAG 基线：商品搜索工具封装 RDS + 向量库召回、风控过滤、rerank、输出白名单校验。
-

@@ -2243,6 +2243,9 @@ public class ChatActivity extends BaseShopActivity {
         activeFollowups = new JSONArray();
         activeFollowupsView = null;
         activeRenderedProductIds.clear();
+        if (ttsController != null) {
+            ttsController.startAssistantStream();
+        }
         removeLoadingBubbleIfNeeded();
     }
 
@@ -2428,6 +2431,9 @@ public class ChatActivity extends BaseShopActivity {
         }
         activeAssistantMarkdown.append(delta);
         activeAssistantFullMarkdown.append(delta);
+        if (ttsController != null) {
+            ttsController.appendAssistantMarkdownDelta(delta);
+        }
         int tableStart = findMarkdownTableStart(activeAssistantMarkdown.toString());
         if (tableStart >= 0) {
             String current = activeAssistantMarkdown.toString();
@@ -2637,7 +2643,7 @@ public class ChatActivity extends BaseShopActivity {
         saveAssistantTurnForActiveStream(ownerLocalSessionId, visibleMarkdown, activeAssistantBlocks.toString(), activeFollowups.toString(), activeAssistantSegments.toString(), "completed");
         enqueueSessionSync(ownerLocalSessionId, streamController.activeServerSessionId(), streamController.activeTitle(), visibleMarkdown);
         if (ttsController != null && ownerLocalSessionId.equals(localSessionId)) {
-            ttsController.speakAssistantMarkdown(visibleMarkdown);
+            ttsController.finishAssistantStream();
         }
         activeAssistantMarkdown = null;
         activeAssistantFullMarkdown = null;
