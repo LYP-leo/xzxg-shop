@@ -712,6 +712,9 @@ func (r *Runtime) toolGetOrder(ctx context.Context, accountID string, raw json.R
 }
 
 func (r *Runtime) toolPayOrder(ctx context.Context, accountID string, raw json.RawMessage) toolObservation {
+	if mode, ok := r.store.(interface{ MockPaymentsEnabled() bool }); ok && !mode.MockPaymentsEnabled() {
+		return toolObservation{Tool: toolPayOrder, Message: "当前环境尚未接入真实支付，订单仍未支付。请通过商家的正式支付渠道完成支付；我不能代为标记支付成功。"}
+	}
 	var args struct {
 		OrderID string `json:"order_id"`
 		Method  string `json:"method"`

@@ -41,6 +41,9 @@ func main() {
 		os.Exit(1)
 	}
 	defer mysqlStore.Close()
+	// A production checkout may create an unpaid order, but cannot manufacture
+	// a successful payment. Real payment must be completed by a provider.
+	mysqlStore.SetMockPaymentsEnabled(!production && envBool("ENABLE_DEMO_PAYMENTS", true))
 	if envBool("RUN_MIGRATIONS", !production) {
 		if err := mysqlStore.Migrate(ctx); err != nil {
 			logger.Error("mysql migration failed", "error", err)
@@ -91,6 +94,23 @@ func main() {
 	}
 	runtime := agent.NewRuntime(mysqlStore, configCenter, logger, runtimeConfig)
 	server := httpapi.NewServer(mysqlStore, configCenter, runtime, logger)
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			batchCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			closed, err := mysqlStore.ExpirePendingOrdersBatch(batchCtx)
+			cancel()
+			if err != nil && ctx.Err() == nil {
+				logger.Error("order expiry failed; will retry", "closed", closed, "error", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 
 	// 所有 HTTP 中间件都在 Server.Routes 中组装，入口只负责生命周期。
 	httpServer := &http.Server{

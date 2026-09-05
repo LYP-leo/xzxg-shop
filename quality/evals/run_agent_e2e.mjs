@@ -1,3 +1,4 @@
+import { evaluateShoppingCase } from './shopping_assertions.mjs';
 import { authHeaders, loadJSONL, login, requestJSON, streamAgentAnswer, writeJSONReport } from './lib.mjs';
 
 const dataset = process.argv[2] ?? 'quality/data/eval/agent_e2e_queries.jsonl';
@@ -17,8 +18,13 @@ for (const item of cases) {
     headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
     body: JSON.stringify({ title: `eval-${item.id}` })
   });
-  const output = await streamAgentAnswer(token, session.session_id, item.query, item.attachments ?? []);
-  const evaluation = evaluateCase(item, output);
+  const cartBefore = await requestJSON('/cart', { headers: authHeaders(token) });
+  let output;
+  try { output = await streamAgentAnswer(token, session.session_id, item.query, item.attachments ?? []); }
+  catch (error) { output = { ...(error.output ?? {}), transport_error: error.message }; }
+  output.cart_before = cartBefore;
+  output.actual_cart = await requestJSON('/cart', { headers: authHeaders(token) });
+  const evaluation = evaluateShoppingCase(item, output);
   if (evaluation.evaluated) {
     evaluated += 1;
     if (evaluation.passed) hits += 1;
@@ -31,7 +37,10 @@ for (const item of cases) {
     blocks: output.blocks,
     run_id: output.run_id,
     trace_id: output.trace_id,
-    evaluation
+    evaluation,
+    transport_error: output.transport_error,
+    cart_before: output.cart_before,
+    actual_cart: output.actual_cart
   });
 }
 
@@ -42,53 +51,14 @@ const report = {
   total: cases.length,
   evaluated,
   hits,
+  coverage: cases.length ? evaluated / cases.length : 0,
   pass_rate: evaluated ? hits / evaluated : 0,
   results
 };
 const file = await writeJSONReport(reportType, report);
 console.log(file);
 
-function evaluateCase(item, output) {
-  const checks = [];
-  const answer = output.answer ?? '';
-  const productIDs = productIDsFromBlocks(output.blocks ?? []);
-
-  if (item.expected_no_product_refs) {
-    const textProductIDs = Array.from(answer.matchAll(/\bp_[A-Za-z0-9_]+\b/g)).map((match) => match[0]);
-    checks.push({
-      name: 'no_product_refs',
-      passed: productIDs.length === 0 && textProductIDs.length === 0,
-      product_ids: productIDs,
-      text_product_ids: Array.from(new Set(textProductIDs))
-    });
-  }
-  if (Array.isArray(item.forbidden_terms) && item.forbidden_terms.length > 0) {
-    const found = item.forbidden_terms.filter((term) => answer.includes(term));
-    checks.push({
-      name: 'forbidden_terms',
-      passed: found.length === 0,
-      found
-    });
-  }
-  if (Array.isArray(item.expected_ack_terms) && item.expected_ack_terms.length > 0) {
-    checks.push({
-      name: 'expected_ack_terms',
-      passed: item.expected_ack_terms.some((term) => answer.includes(term))
-    });
-  }
-
-  return {
-    evaluated: checks.length > 0,
-    passed: checks.length > 0 ? checks.every((check) => check.passed) : false,
-    checks
-  };
-}
-
-function productIDsFromBlocks(blocks) {
-  const ids = [];
-  for (const block of blocks) {
-    if (Array.isArray(block.product_ids)) ids.push(...block.product_ids);
-    if (block.product?.productId) ids.push(block.product.productId);
-  }
-  return Array.from(new Set(ids));
-}
+const minimumPassRate = Number(process.env.EVAL_MIN_PASS_RATE ?? 1);
+const minimumCoverage = Number(process.env.EVAL_MIN_COVERAGE ?? 1);
+if (![minimumPassRate, minimumCoverage].every(n => Number.isFinite(n) && n >= 0 && n <= 1)) throw new Error('Invalid evaluation thresholds');
+if (!cases.length || report.coverage < minimumCoverage || report.pass_rate < minimumPassRate) process.exitCode = 1;

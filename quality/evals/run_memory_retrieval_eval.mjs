@@ -1,3 +1,4 @@
+import { cartLines, sameSet, evaluateShoppingCase } from './shopping_assertions.mjs';
 import { authHeaders, baseURL, loadJSONL, login, requestJSON, streamAgentAnswer, writeJSONReport } from './lib.mjs';
 
 const dataset = process.argv[2] ?? 'quality/data/eval/memory_retrieval_cases.jsonl';
@@ -29,7 +30,12 @@ for (const item of cases) {
     await sleep(delayMS);
   }
 
-  const output = await streamAgentAnswer(token, session.session_id, item.query, item.attachments ?? []);
+  const cartBefore = await requestJSON('/cart', { headers: authHeaders(token) });
+  let output;
+  try { output = await streamAgentAnswer(token, session.session_id, item.query, item.attachments ?? []); }
+  catch (error) { output = { ...(error.output ?? {}), transport_error: error.message }; }
+  output.cart_before = cartBefore;
+  output.actual_cart = await requestJSON('/cart', { headers: authHeaders(token) });
   const trace = output.run_id ? await requestTrace(adminToken, output.run_id) : [];
   const evaluation = evaluateCase(item, output, trace);
   if (evaluation.evaluated) {
@@ -46,6 +52,9 @@ for (const item of cases) {
     run_id: output.run_id,
     trace_id: output.trace_id,
     memory_trace: memoryTraceSummary(trace),
+    actual_cart: output.actual_cart,
+    cart_before: output.cart_before,
+    transport_error: output.transport_error,
     evaluation
   });
 }
@@ -58,13 +67,15 @@ const report = {
   total: cases.length,
   evaluated,
   hits,
+  coverage: cases.length ? evaluated / cases.length : 0,
   pass_rate: passRate,
   min_pass_rate: minPassRate,
   results
 };
 const file = await writeJSONReport('memory_retrieval_eval', report);
 console.log(file);
-if (passRate < minPassRate) process.exitCode = 1;
+if (!Number.isFinite(minPassRate) || minPassRate < 0 || minPassRate > 1) throw new Error('Invalid memory evaluation threshold');
+if (!cases.length || evaluated !== cases.length || passRate < minPassRate) process.exitCode = 1;
 
 async function registerUser(username, password) {
   const response = await fetch(`${baseURL}/auth/register`, {
@@ -93,7 +104,7 @@ function evaluateCase(item, output, trace) {
   const expectedTerms = item.expected_answer_terms ?? [];
   const memoryProductIDs = productIDsFromMemoryTrace(trace);
   const memoryApplied = trace.some((event) => event.stage === 'memory' && event.event_type === 'applied');
-  const cartProductIDs = productIDsFromCartBlocks(output.blocks ?? []);
+  const cartProductIDs = cartLines(output.actual_cart).map(item => item.product_id);
   const productBlockIDs = productIDsFromProductBlocks(output.blocks ?? []);
   const answer = output.answer ?? '';
 
@@ -105,10 +116,10 @@ function evaluateCase(item, output, trace) {
       actual: memoryApplied
     });
   }
-  if (expectedMemoryProductIDs.length > 0) {
+  if (Array.isArray(item.expected_memory_product_ids)) {
     checks.push({
       name: 'memory_referenced_products',
-      passed: expectedMemoryProductIDs.every((id) => memoryProductIDs.includes(id)),
+      passed: sameSet(memoryProductIDs, expectedMemoryProductIDs),
       expected: expectedMemoryProductIDs,
       actual: memoryProductIDs
     });
@@ -121,18 +132,18 @@ function evaluateCase(item, output, trace) {
       actual: memoryProductIDs
     });
   }
-  if (expectedCartProductIDs.length > 0) {
+  if (Array.isArray(item.expected_cart_product_ids)) {
     checks.push({
-      name: 'cart_contains_products',
-      passed: expectedCartProductIDs.every((id) => cartProductIDs.includes(id)),
+      name: 'exact_actual_cart_products',
+      passed: !!output.actual_cart && sameSet(cartProductIDs, expectedCartProductIDs),
       expected: expectedCartProductIDs,
       actual: cartProductIDs
     });
   }
-  if (Array.isArray(item.expected_product_block_ids) && item.expected_product_block_ids.length > 0) {
+  if (Array.isArray(item.expected_product_block_ids)) {
     checks.push({
       name: 'product_blocks_contain_products',
-      passed: item.expected_product_block_ids.every((id) => productBlockIDs.includes(id)),
+      passed: sameSet(productBlockIDs, item.expected_product_block_ids),
       expected: item.expected_product_block_ids,
       actual: productBlockIDs
     });
@@ -145,11 +156,10 @@ function evaluateCase(item, output, trace) {
     });
   }
 
-  return {
-    evaluated: checks.length > 0,
-    passed: checks.length > 0 ? checks.every((check) => check.passed) : false,
-    checks
-  };
+  const shopping = evaluateShoppingCase(item, output);
+  const evaluated = checks.length > 0 || shopping.evaluated;
+  checks.push(...shopping.checks);
+  return { evaluated, passed: evaluated && checks.every(check => check.passed), checks };
 }
 
 function productIDsFromMemoryTrace(trace) {
@@ -162,14 +172,6 @@ function productIDsFromMemoryTrace(trace) {
   return Array.from(new Set(ids));
 }
 
-function productIDsFromCartBlocks(blocks) {
-  const ids = [];
-  for (const block of blocks) {
-    if (block.type !== 'cart_state' || !Array.isArray(block.cart?.items)) continue;
-    ids.push(...block.cart.items.map((item) => item.productId).filter(Boolean));
-  }
-  return Array.from(new Set(ids));
-}
 
 function productIDsFromProductBlocks(blocks) {
   const ids = [];

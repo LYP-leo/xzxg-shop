@@ -91,6 +91,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/admin/prompts/", s.handleAdminPromptAction)
 	mux.HandleFunc("POST /api/v1/admin/prompts/", s.handleAdminPromptAction)
 	mux.HandleFunc("GET /api/v1/admin/vector/status", s.handleAdminVectorStatus)
+	mux.HandleFunc("GET /api/v1/admin/inventory/audit", s.handleInventoryAudit)
 	mux.HandleFunc("GET /api/v1/admin/evals", s.handleAdminEvalDashboard)
 	mux.HandleFunc("GET /api/v1/admin/evals/reports/", s.handleAdminEvalReportDetail)
 	mux.HandleFunc("GET /api/v1/admin/agent/runs", s.handleListAdminAgentRuns)
@@ -2123,6 +2124,10 @@ func (s *Server) handleUserOrderAction(w http.ResponseWriter, r *http.Request) {
 	}
 	switch action {
 	case "pay":
+		if mode, ok := s.store.(interface{ MockPaymentsEnabled() bool }); ok && !mode.MockPaymentsEnabled() {
+			writeError(w, http.StatusServiceUnavailable, "payment_not_configured", "当前环境未接入真实支付，订单仍未支付，请通过商家正式支付渠道完成支付")
+			return
+		}
 		// 虚拟支付只推进本地订单状态，不接第三方支付网关。
 		var request struct {
 			Method string `json:"method"`

@@ -1,3 +1,4 @@
+import { consumeAgentStream } from './stream_state.mjs';
 import { createReadStream } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
@@ -62,37 +63,5 @@ export async function streamAgentAnswer(token, sessionID, content, attachments =
     throw new Error(`stream failed: ${response.status} ${await response.text()}`);
   }
 
-  let answer = '';
-  let runID = '';
-  let traceID = '';
-  const blocks = [];
-  const events = [];
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const chunks = buffer.split('\n\n');
-    buffer = chunks.pop() ?? '';
-    for (const chunk of chunks) {
-      const dataLine = chunk.split('\n').find((item) => item.startsWith('data:'));
-      if (!dataLine) continue;
-      const event = JSON.parse(dataLine.slice(5).trim());
-      events.push(event);
-      if (event.type === 'message_start') {
-        runID = event.run_id ?? runID;
-        traceID = event.trace_id ?? traceID;
-      }
-      if (event.type === 'text_delta') {
-        answer += event.delta;
-      }
-      if (event.type === 'block_delta' && event.block) {
-        blocks.push(event.block);
-      }
-    }
-  }
-  return { answer, run_id: runID, trace_id: traceID, blocks, events };
+  return consumeAgentStream(response.body);
 }
