@@ -229,8 +229,15 @@ public class ApiClient {
         return get("/orders/" + urlEncode(orderId));
     }
 
-    public JSONArray checkout() throws Exception {
-        JSONObject response = post("/orders:checkout", new JSONObject());
+    public JSONObject createCartQuote() throws Exception {
+        return post("/cart/quote", new JSONObject());
+    }
+
+    public JSONArray checkout(String quoteId, String confirmationToken) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("quote_id", quoteId);
+        body.put("confirmation_token", confirmationToken);
+        JSONObject response = post("/orders:checkout", body);
         return response.optJSONArray("items") == null ? new JSONArray() : response.optJSONArray("items");
     }
 

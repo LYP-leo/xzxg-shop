@@ -118,6 +118,9 @@ func closePendingOrderTx(ctx context.Context, tx *sql.Tx, orderID, status, reaso
 	if err := releaseOrderReservations(ctx, tx, orderID); err != nil {
 		return err
 	}
+	if err := transitionOrderCoupons(ctx, tx, orderID, "released"); err != nil {
+		return err
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE orders SET status = ?, closed_at = NOW(),
 		cancel_reason = ?, updated_at = NOW() WHERE order_id = ? AND status = 'pending_payment'`,
 		status, truncateRunes(reason, 256), orderID)

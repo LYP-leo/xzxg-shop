@@ -35,6 +35,12 @@ records, closes the order and updates pending payments. A paid order cannot be
 released by this path. Repeated cancellation returns the terminal order. Database
 failures roll back the entire close transaction.
 
+## Confirmed quote rollout
+
+Also apply migration 003 and deploy the matching Android client. See the
+[quote API and pricing contract](checkout-quote-contract.md). Empty-body checkout
+requests from older clients are rejected rather than silently authorizing a purchase.
+
 ## Payment boundary
 
 `APP_ENV=production` always disables simulated payment, regardless of

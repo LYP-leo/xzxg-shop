@@ -12,7 +12,7 @@ Base: `36494dc5d48dac9b1e360cba52ba918646192d56`. Scope: implement the complete 
 - [ ] R06 Evidence-backed recommendation outputs and commercial-role boundaries; conservative fallback with hard constraints preserved.
 - [ ] R07 UI/task event synchronization and result-aware followups; canonical stream reducer used by evaluation.
 - [ ] R08 Precise action target, SKU, quantity and authorization; idempotent operation receipts and confirmation bound to immutable parameters.
-- [ ] R09 One quote calculation for preview and checkout: eligibility, stacking, exact totals, version/expiry, coupon reservation/redemption/release.
+- [ ] R09 One quote calculation for preview and checkout: eligibility, stacking, exact totals, version/expiry, coupon reservation/redemption/release; explicit shipping/fulfillment amounts before a delivery-inclusive commitment.
 - [x] R10 Inventory reservation lifecycle: payment, cancellation and expiry; concurrency, exactly-once release and reconciliation.
 - [ ] R11 Durable run/operation results, reconnect/replay, stable retry IDs, cancellation propagation and consistent terminal states.
 - [ ] R12 Task latency/token/cost budgets, workload admission, shared quotas where configured, useful metrics and graceful degradation.
@@ -58,3 +58,28 @@ Base: `36494dc5d48dac9b1e360cba52ba918646192d56`. Scope: implement the complete 
 - Checkout already uses a transaction, row locks and guarded stock deductions. The missing reservation release lifecycle is the defect.
 - Image vectors already have a minimum-score threshold. Missing shared business constraints are the defect.
 - Payment is currently simulated; production claims require a provider handoff, not a fabricated successful payment.
+
+## 2026-09-21 quote checkpoint (partial requirements)
+
+- R08/R09/R11 partial: shared integer-cent quote engine, scoped/exclusive coupon
+  pricing, deterministic discount allocation, quote expiry/cart and policy
+  fingerprint, UI-held confirmation credentials, atomic order/coupon creation,
+  and replayable receipts for repeated confirmations.
+- Coupon reservations now follow payment/cancellation/expiry across merchant
+  orders. Failed SQL operations preserve their retryable error classification;
+  seven injected write-failure stages roll back and retry the same confirmation.
+- Quotes reject combined SKU quantities above the parent product's stock.
+- Android displays the server quote, requires explicit submission, preserves
+  quote identity on temporary failures/restoration, and requires fresh user
+  confirmation after definitive quote changes. Agent checkout only prepares a
+  quote; credentials never enter its observation.
+- Verified this date: real MySQL quote integration tests, full backend tests,
+  frontend TypeScript checks/Vite build, Android offline assembleDebug, and four
+  SSE/business-assertion test groups. Android build retains pre-existing Gradle
+  deprecation warnings; device UI behavior has not been exercised in this run.
+- Shipping/destination fulfillment, real provider handoff, durable Agent runs,
+  other action idempotency, and all unchecked requirements above remain open.
+- Memory design was separately reviewed against dell_remote's different main
+  checkout. No remote code or memory implementation was changed in this checkpoint.
+
+- Real MySQL-backed `go test -race ./src/store ./src/agent ./src/httpapi ./src/pricing` also passed for this checkpoint.

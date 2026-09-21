@@ -3,7 +3,9 @@ package com.xzxg.shop.cart;
 import com.xzxg.shop.base.BaseShopActivity;
 import com.xzxg.shop.chat.ChatActivity;
 import com.xzxg.shop.navigation.Routes;
+import com.xzxg.shop.network.ApiClient;
 import com.xzxg.shop.ui.ShopUi;
+import com.xzxg.shop.ui.DateTimeFormatter;
 import com.xzxg.shop.ui.TopBarHelper;
 
 import android.content.Intent;
@@ -29,6 +31,8 @@ public class CheckoutActivity extends BaseShopActivity {
     private String draftId;
     private JSONObject cartSnapshot;
     private JSONObject discountPreview;
+    private Button submitButton;
+    private boolean submitting;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -36,6 +40,14 @@ public class CheckoutActivity extends BaseShopActivity {
         configureShopSystemBars(BG_COLOR);
         draftId = getIntent() == null ? "" : getIntent().getStringExtra(Routes.EXTRA_CHECKOUT_DRAFT_ID);
         cartSnapshot = CheckoutDraftStore.get(draftId);
+        if (savedInstanceState != null) {
+            try {
+                discountPreview = new JSONObject(savedInstanceState.getString("confirmed_quote", ""));
+                cartSnapshot = discountPreview.getJSONObject("cart");
+                renderCheckoutPage();
+                return;
+            } catch (Exception ignored) { discountPreview = null; }
+        }
         if (cartSnapshot == null) {
             renderExpiredDraft();
             return;
@@ -43,18 +55,26 @@ public class CheckoutActivity extends BaseShopActivity {
         loadDiscountPreview();
     }
 
+    @Override
+    protected void onSaveInstanceState(Bundle state) {
+        super.onSaveInstanceState(state);
+        if (discountPreview != null) state.putString("confirmed_quote", discountPreview.toString());
+    }
+
     private void loadDiscountPreview() {
         new Thread(() -> {
             try {
-                JSONObject preview = api().discountPreview();
+                JSONObject preview = api().createCartQuote();
                 runOnUiThread(() -> {
                     discountPreview = preview;
+                    cartSnapshot = preview.optJSONObject("cart");
                     renderCheckoutPage();
                 });
             } catch (Exception error) {
                 runOnUiThread(() -> {
                     discountPreview = null;
-                    renderCheckoutPage();
+                    showToastLine("无法取得有效报价：" + error.getMessage());
+                    renderExpiredDraft();
                 });
             }
         }).start();
@@ -124,7 +144,8 @@ public class CheckoutActivity extends BaseShopActivity {
             name.setSingleLine(true);
             name.setMaxLines(1);
             name.setEllipsize(TextUtils.TruncateAt.END);
-            TextView quantity = ShopUi.muted(this, "x" + item.optInt("quantity", 1));
+            String skuName = item.optString("skuName", item.optString("skuId", ""));
+            TextView quantity = ShopUi.muted(this, skuName + "  x" + item.optInt("quantity", 1));
             quantity.setSingleLine(true);
             quantity.setMaxLines(1);
             info.addView(name, new LinearLayout.LayoutParams(-1, -2));
@@ -176,14 +197,18 @@ public class CheckoutActivity extends BaseShopActivity {
     private void renderAmountPanel(LinearLayout page) {
         JSONObject summary = cartSnapshot == null ? null : cartSnapshot.optJSONObject("summary");
         LinearLayout amountPanel = ShopUi.panel(this);
-        amountPanel.addView(ShopUi.strong(this, "金额明细"));
+        amountPanel.addView(ShopUi.strong(this, "商品金额明细"));
+        amountPanel.addView(ShopUi.muted(this, "配送费用和送达时间待商家确认，本页仅计算商品金额。"));
+        if (discountPreview != null) {
+            amountPanel.addView(ShopUi.muted(this, "报价有效至：" + DateTimeFormatter.formatOrderTime(discountPreview.optString("expires_at"))));
+        }
         amountPanel.addView(ShopUi.muted(this, "商品总额：¥" + (summary == null ? "0" : summary.optString("totalAmount", "0"))));
         if (discountPreview == null) {
             amountPanel.addView(ShopUi.muted(this, "优惠金额：¥0"));
-            amountPanel.addView(ShopUi.priceStrong(this, "应付：¥" + cartPayAmount(summary)));
+            amountPanel.addView(ShopUi.priceStrong(this, "商品应付：¥" + cartPayAmount(summary)));
         } else {
             amountPanel.addView(ShopUi.muted(this, "优惠金额：¥" + discountPreview.optString("discount_amount", discountPreview.optString("discountAmount", "0"))));
-            amountPanel.addView(ShopUi.priceStrong(this, "应付：¥" + checkoutPayAmount(summary)));
+            amountPanel.addView(ShopUi.priceStrong(this, "商品应付：¥" + checkoutPayAmount(summary)));
             JSONArray lines = discountPreview.optJSONArray("lines");
             if (lines != null && lines.length() > 0) {
                 View divider = new View(this);
@@ -209,19 +234,26 @@ public class CheckoutActivity extends BaseShopActivity {
         bottom.setGravity(Gravity.CENTER_VERTICAL);
         bottom.setPadding(ShopUi.dp(this, 16), ShopUi.dp(this, 8), ShopUi.dp(this, 16), ShopUi.dp(this, 8));
         bottom.setBackgroundColor(Color.WHITE);
-        TextView pay = ShopUi.priceStrong(this, "应付 ¥" + checkoutPayAmount(summary));
+        TextView pay = ShopUi.priceStrong(this, "商品应付 ¥" + checkoutPayAmount(summary));
         pay.setTextSize(18);
         bottom.addView(pay, new LinearLayout.LayoutParams(0, ShopUi.dp(this, 50), 1));
         Button submit = ShopUi.primaryButton(this, "提交订单");
+        submitButton = submit;
+        submit.setEnabled(discountPreview != null && !submitting);
         submit.setOnClickListener(v -> checkoutCart());
         bottom.addView(submit, new LinearLayout.LayoutParams(ShopUi.dp(this, 142), ShopUi.dp(this, 50)));
         content.addView(bottom, new LinearLayout.LayoutParams(-1, ShopUi.dp(this, 66)));
     }
 
     private void checkoutCart() {
+        if (submitting || discountPreview == null) return;
+        submitting = true;
+        if (submitButton != null) submitButton.setEnabled(false);
+        final String quoteId = discountPreview.optString("quote_id");
+        final String confirmationToken = discountPreview.optString("confirmation_token");
         new Thread(() -> {
             try {
-                api().checkout();
+                api().checkout(quoteId, confirmationToken);
                 CheckoutDraftStore.remove(draftId);
                 runOnUiThread(() -> {
                     showToastLine("订单已创建，请尽快支付");
@@ -232,7 +264,24 @@ public class CheckoutActivity extends BaseShopActivity {
                     finish();
                 });
             } catch (Exception error) {
-                runOnUiThread(() -> showToastLine("结算失败：" + error.getMessage()));
+                runOnUiThread(() -> {
+                    submitting = false;
+                    if (submitButton != null) submitButton.setEnabled(true);
+                    showToastLine("结算失败：" + error.getMessage());
+                    if (error instanceof ApiClient.ApiException) {
+                        String code = ((ApiClient.ApiException) error).code;
+                        if ("quote_changed".equals(code) || "quote_expired".equals(code)
+                                || "cart_unavailable".equals(code) || "quote_confirmation_required".equals(code)) {
+                            // Definitive rejection: no order was committed. Display a
+                            // new quote and require another explicit button press.
+                            discountPreview = null;
+                            if (submitButton != null) submitButton.setEnabled(false);
+                            loadDiscountPreview();
+                        }
+                    }
+                    // Transport/5xx failures keep the SAME quote and token so a
+                    // retry retrieves its receipt instead of submitting again.
+                });
             }
         }).start();
     }

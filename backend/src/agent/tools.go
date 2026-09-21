@@ -15,6 +15,7 @@ import (
 	"github.com/LYP-leo/xzxg-shop/backend/src/imagevector"
 	"github.com/LYP-leo/xzxg-shop/backend/src/objectstore"
 	"github.com/LYP-leo/xzxg-shop/backend/src/rag"
+	"github.com/LYP-leo/xzxg-shop/backend/src/store"
 )
 
 const (
@@ -651,21 +652,20 @@ func (r *Runtime) toolDeleteCartItem(ctx context.Context, accountID string, raw 
 }
 
 func (r *Runtime) toolCheckout(ctx context.Context, accountID string) toolObservation {
-	cart := r.store.GetCart(ctx, accountID)
-	if len(cart.Items) == 0 || cart.Summary.SelectedCount == 0 {
-		return toolObservation{Tool: toolCheckout, Message: "购物车没有选中的商品，不能提交订单", Cart: &cart, Result: map[string]any{"cart": compactCart(cart)}}
-	}
-	orders, ok := r.store.CreateOrderFromCart(ctx, accountID)
+	quotes, ok := r.store.(store.QuoteStore)
 	if !ok {
-		return toolObservation{Tool: toolCheckout, Message: "提交订单失败，请确认购物车商品仍然有效"}
+		return toolObservation{Tool: toolCheckout, Message: "报价服务暂不可用，尚未创建订单"}
 	}
-	return toolObservation{
-		Tool:    toolCheckout,
-		OK:      true,
-		Message: fmt.Sprintf("已创建 %d 个待支付订单", len(orders)),
-		Result:  map[string]any{"orders": compactOrders(orders)},
-		Orders:  orders,
+	quote, err := quotes.CreateCartQuote(ctx, accountID)
+	if err != nil {
+		return toolObservation{Tool: toolCheckout, Message: "无法按当前条件报价，请检查商品规格、库存和优惠后重试；尚未创建订单"}
 	}
+	// Confirmation credentials belong to the authenticated UI. The model may
+	// prepare a purchase, but cannot confirm its own proposal or see this token.
+	quote.ConfirmationToken = ""
+	return toolObservation{Tool: toolCheckout, OK: true,
+		Message: fmt.Sprintf("当前商品优惠后金额 %s 元，配送费用尚待商家确认。尚未创建订单，请在购物车点击结算，核对商品规格和最新报价后提交。", quote.PayAmount),
+		Result:  map[string]any{"quote": quote, "requires_confirmation": true, "order_created": false}, Cart: &quote.Cart}
 }
 
 func (r *Runtime) toolListOrders(ctx context.Context, accountID string, raw json.RawMessage) toolObservation {
@@ -785,6 +785,9 @@ func (r *Runtime) toolConfirmReceipt(ctx context.Context, accountID string, raw 
 
 func (r *Runtime) toolPreviewDiscount(ctx context.Context, accountID string) toolObservation {
 	preview := r.store.PreviewCartDiscount(ctx, accountID)
+	if preview.ErrorCode != "" {
+		return toolObservation{Tool: toolPreviewDiscount, Message: "当前无法确认优惠和应付金额，请检查购物车商品后重试"}
+	}
 	return toolObservation{
 		Tool:    toolPreviewDiscount,
 		OK:      true,

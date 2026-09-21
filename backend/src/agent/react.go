@@ -540,7 +540,7 @@ func (r *Runtime) reactSystemPromptForPlan(ctx context.Context, plan runPlan) st
 		"final_output_rules":  r.finalOutputRulesPrompt(ctx, plan),
 		"intent_output_rules": outputRules,
 	}
-	return renderPromptTemplate(template, replacements)
+	return renderPromptTemplate(template, replacements) + "\n\n" + checkoutBoundaryPrompt
 }
 
 func (r *Runtime) finalSystemPromptForPlan(ctx context.Context, plan runPlan) string {
@@ -555,7 +555,7 @@ func (r *Runtime) finalSystemPromptForPlan(ctx context.Context, plan runPlan) st
 	if strings.TrimSpace(outputRules) != "" {
 		parts = append(parts, "当前子意图输出要求：\n"+outputRules)
 	}
-	return strings.Join(parts, "\n\n")
+	return strings.Join(parts, "\n\n") + "\n\n" + checkoutBoundaryPrompt
 }
 
 func reactUserPrompt(query string, plan runPlan) string {
@@ -656,7 +656,7 @@ func statusTextForTool(tool string) string {
 	case toolDeleteCartItem:
 		return "正在删除购物车商品"
 	case toolCheckout:
-		return "正在提交订单"
+		return "正在核对结算报价"
 	default:
 		return "正在调用工具"
 	}
@@ -1071,3 +1071,7 @@ func isMarkdownFencePrefix(line string) bool {
 	}
 	return isMarkdownFenceLine(line)
 }
+
+// This transaction boundary remains true even when an older published prompt
+// still describes checkout as an immediate order-creation tool.
+const checkoutBoundaryPrompt = "交易边界：checkout 只生成报价并要求用户到结算页核对确认，不会创建订单。requires_confirmation=true 或 order_created=false 时必须说明尚未下单。不得自行确认报价、索取 confirmation_token、伪造订单或支付成功；是否完成以业务工具返回的真实状态为准。"

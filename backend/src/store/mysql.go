@@ -19,6 +19,7 @@ import (
 
 	"github.com/LYP-leo/xzxg-shop/backend/src/domain"
 	"github.com/LYP-leo/xzxg-shop/backend/src/imagevector"
+	"github.com/LYP-leo/xzxg-shop/backend/src/pricing"
 	"github.com/LYP-leo/xzxg-shop/backend/src/rag"
 	mysql "github.com/go-sql-driver/mysql"
 )
@@ -84,7 +85,10 @@ func (s *MySQLStore) Migrate(ctx context.Context) error {
 	if err := s.ensureAccessSchema(ctx); err != nil {
 		return err
 	}
-	return s.ensureInventorySchema(ctx)
+	if err := s.ensureInventorySchema(ctx); err != nil {
+		return err
+	}
+	return s.ensureQuoteSchema(ctx)
 }
 
 func (s *MySQLStore) BootstrapVectorIndex(ctx context.Context) error {
@@ -1911,7 +1915,8 @@ func (s *MySQLStore) AddCartItem(ctx context.Context, accountID string, productI
 		skuID = s.firstSKU(ctx, productID)
 	}
 	now := time.Now()
-	_, err := s.db.ExecContext(ctx, `
+	err := s.mutateCart(ctx, accountID, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
 		INSERT INTO cart_items (cart_item_id, account_id, product_id, sku_id, quantity, selected, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, TRUE, ?, ?)
 		ON DUPLICATE KEY UPDATE
@@ -1919,6 +1924,8 @@ func (s *MySQLStore) AddCartItem(ctx context.Context, accountID string, productI
 			selected = TRUE,
 			updated_at = VALUES(updated_at)
 	`, nextID("cart"), accountID, productID, skuID, quantity, now, now)
+		return err
+	})
 	if err != nil {
 		return domain.Cart{}, false
 	}
@@ -1941,43 +1948,48 @@ func (s *MySQLStore) UpdateCartItem(ctx context.Context, accountID string, cartI
 	}
 	sets = append(sets, "updated_at = ?")
 	args = append(args, time.Now(), cartItemID, accountID)
-	result, err := s.db.ExecContext(ctx, `UPDATE cart_items SET `+strings.Join(sets, ", ")+` WHERE cart_item_id = ? AND account_id = ?`, args...)
+	err := s.mutateCart(ctx, accountID, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `UPDATE cart_items SET `+strings.Join(sets, ", ")+` WHERE cart_item_id = ? AND account_id = ?`, args...)
+		if err != nil {
+			return err
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if count == 0 {
+			// A no-op update is still a valid request if the owned item exists.
+			var exists int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM cart_items WHERE cart_item_id = ? AND account_id = ?`, cartItemID, accountID).Scan(&exists); err != nil {
+				return err
+			}
+			if exists != 1 {
+				return ErrCartUnavailable
+			}
+		}
+		return nil
+	})
 	if err != nil {
-		return domain.Cart{}, false
-	}
-	affected, err := result.RowsAffected()
-	if err != nil || affected == 0 {
 		return domain.Cart{}, false
 	}
 	return s.loadCart(ctx, accountID), true
 }
 
 func (s *MySQLStore) DeleteCartItem(ctx context.Context, accountID string, cartItemID string) (domain.Cart, bool) {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM cart_items WHERE cart_item_id = ? AND account_id = ?`, cartItemID, accountID)
+	err := s.mutateCart(ctx, accountID, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `DELETE FROM cart_items WHERE cart_item_id = ? AND account_id = ?`, cartItemID, accountID)
+		return requireUpdatedRow(result, err)
+	})
 	if err != nil {
-		return domain.Cart{}, false
-	}
-	affected, err := result.RowsAffected()
-	if err != nil || affected == 0 {
 		return domain.Cart{}, false
 	}
 	return s.loadCart(ctx, accountID), true
 }
 
-func (s *MySQLStore) CreateOrderFromCart(ctx context.Context, accountID string) ([]domain.Order, bool) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, false
-	}
-	defer tx.Rollback()
-
-	selected, ok := s.lockSelectedCartItems(ctx, tx, accountID)
-	if !ok || len(selected) == 0 {
-		return nil, false
-	}
+func (s *MySQLStore) createQuotedOrdersTx(ctx context.Context, tx *sql.Tx, accountID, quoteID string, selected []domain.CartItem, quote pricing.Result) ([]domain.Order, error) {
 	for _, item := range selected {
-		if !s.reserveOrderStock(ctx, tx, item.ProductID, item.SkuID, item.Quantity) {
-			return nil, false
+		if err := s.reserveOrderStock(ctx, tx, item.ProductID, item.SkuID, item.Quantity); err != nil {
+			return nil, err
 		}
 	}
 
@@ -1988,16 +2000,33 @@ func (s *MySQLStore) CreateOrderFromCart(ctx context.Context, accountID string) 
 	}
 
 	orders := make([]domain.Order, 0, len(byMerchant))
-	for merchantID, items := range byMerchant {
+	merchantIDs := make([]string, 0, len(byMerchant))
+	for id := range byMerchant {
+		merchantIDs = append(merchantIDs, id)
+	}
+	sort.Strings(merchantIDs)
+	for _, merchantID := range merchantIDs {
+		items := byMerchant[merchantID]
 		orderID := nextID("ord")
-		total := 0.0
+		var total, discount pricing.Money
 		merchantName := ""
 		for _, item := range items {
-			price, _ := parseAmount(item.Price)
-			total += price * float64(item.Quantity)
+			unit, err := pricing.ParseMoney(item.Price)
+			if err != nil {
+				return nil, err
+			}
+			amount, err := unit.Times(item.Quantity)
+			if err != nil {
+				return nil, err
+			}
+			total, err = pricing.Add(total, amount)
+			if err != nil {
+				return nil, err
+			}
+			discount += quote.ItemDiscounts[item.CartItemID]
 			merchantName = item.MerchantName
 		}
-		amount := fmt.Sprintf("%.2f", total)
+		amount, discountAmount, payAmount := total.String(), discount.String(), (total - discount).String()
 		createdAt := time.Now()
 		orderNo := nextOrderNo(createdAt)
 		deadline := createdAt.Add(30 * time.Minute)
@@ -2008,15 +2037,15 @@ func (s *MySQLStore) CreateOrderFromCart(ctx context.Context, accountID string) 
 				payment_deadline_at, created_at, updated_at
 			)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, orderID, orderNo, accountID, merchantID, "pending_payment", amount, "0.00", amount, deadline, createdAt, createdAt); err != nil {
-			return nil, false
+		`, orderID, orderNo, accountID, merchantID, "pending_payment", amount, discountAmount, payAmount, deadline, createdAt, createdAt); err != nil {
+			return nil, err
 		}
 		// 当前支付仍是内部模拟支付；保留 payments 表是为了让真实支付网关后续能无缝接入。
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO payments (payment_id, order_id, account_id, amount, status, method, expires_at, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, nextID("pay"), orderID, accountID, amount, "pending", "mock", deadline, createdAt, createdAt); err != nil {
-			return nil, false
+		`, nextID("pay"), orderID, accountID, payAmount, "pending", "unconfigured", deadline, createdAt, createdAt); err != nil {
+			return nil, err
 		}
 		orderItems := make([]domain.OrderItem, 0, len(items))
 		for _, item := range items {
@@ -2035,15 +2064,18 @@ func (s *MySQLStore) CreateOrderFromCart(ctx context.Context, accountID string) 
 				INSERT INTO order_items (order_item_id, order_id, product_id, sku_id, name, image_url, price, quantity, merchant_id, merchant_name, created_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			`, orderItem.OrderItemID, orderID, orderItem.ProductID, orderItem.SkuID, orderItem.Name, orderItem.ImageURL, orderItem.Price, orderItem.Quantity, orderItem.MerchantID, orderItem.MerchantName, createdAt); err != nil {
-				return nil, false
+				return nil, err
 			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_reservations
 				(order_item_id, order_id, product_id, sku_id, quantity, state, created_at, updated_at)
 				VALUES (?, ?, ?, ?, ?, 'reserved', NOW(6), NOW(6))`,
 				orderItem.OrderItemID, orderID, orderItem.ProductID, orderItem.SkuID, orderItem.Quantity); err != nil {
-				return nil, false
+				return nil, err
 			}
 			orderItems = append(orderItems, orderItem)
+		}
+		if err := reserveOrderCoupons(ctx, tx, accountID, quoteID, orderID, items, quote); err != nil {
+			return nil, err
 		}
 		orders = append(orders, domain.Order{
 			OrderID:           orderID,
@@ -2053,8 +2085,8 @@ func (s *MySQLStore) CreateOrderFromCart(ctx context.Context, accountID string) 
 			MerchantName:      merchantName,
 			Status:            "pending_payment",
 			TotalAmount:       amount,
-			DiscountAmount:    "0.00",
-			PayAmount:         amount,
+			DiscountAmount:    discountAmount,
+			PayAmount:         payAmount,
 			PaymentDeadlineAt: deadline,
 			Items:             orderItems,
 			CreatedAt:         createdAt,
@@ -2063,15 +2095,15 @@ func (s *MySQLStore) CreateOrderFromCart(ctx context.Context, accountID string) 
 	}
 	// 订单创建成功后清空已结算项，避免用户重复提交同一批购物车商品。
 	if _, err := tx.ExecContext(ctx, `DELETE FROM cart_items WHERE account_id = ? AND selected = TRUE`, accountID); err != nil {
-		return nil, false
+		return nil, err
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, false
+	if err := bumpCartRevision(ctx, tx, accountID); err != nil {
+		return nil, err
 	}
-	return orders, true
+	return orders, nil
 }
 
-func (s *MySQLStore) lockSelectedCartItems(ctx context.Context, tx *sql.Tx, accountID string) ([]domain.CartItem, bool) {
+func (s *MySQLStore) lockSelectedCartItems(ctx context.Context, tx *sql.Tx, accountID string) ([]domain.CartItem, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT
 			ci.cart_item_id,
@@ -2087,14 +2119,14 @@ func (s *MySQLStore) lockSelectedCartItems(ctx context.Context, tx *sql.Tx, acco
 			m.name AS merchant_name
 		FROM cart_items ci
 		JOIN products p ON p.product_id = ci.product_id AND p.status = 'active'
-		JOIN merchants m ON m.merchant_id = p.merchant_id
+		JOIN merchants m ON m.merchant_id = p.merchant_id AND m.status = 'active'
 		LEFT JOIN product_skus ps ON ps.product_id = p.product_id AND ps.sku_id = ci.sku_id
 		WHERE ci.account_id = ? AND ci.selected = TRUE
 		ORDER BY ci.created_at, ci.cart_item_id
 		FOR UPDATE
 	`, accountID)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 	defer rows.Close()
 	items := make([]domain.CartItem, 0)
@@ -2113,19 +2145,19 @@ func (s *MySQLStore) lockSelectedCartItems(ctx context.Context, tx *sql.Tx, acco
 			&item.MerchantID,
 			&item.MerchantName,
 		); err != nil {
-			return nil, false
+			return nil, err
 		}
 		if item.Quantity <= 0 {
-			return nil, false
+			return nil, ErrCartUnavailable
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err() == nil
+	return items, rows.Err()
 }
 
-func (s *MySQLStore) reserveOrderStock(ctx context.Context, tx *sql.Tx, productID string, skuID string, quantity int) bool {
+func (s *MySQLStore) reserveOrderStock(ctx context.Context, tx *sql.Tx, productID string, skuID string, quantity int) error {
 	if quantity <= 0 {
-		return false
+		return ErrCartUnavailable
 	}
 	now := time.Now()
 	if skuID != "" {
@@ -2137,11 +2169,14 @@ func (s *MySQLStore) reserveOrderStock(ctx context.Context, tx *sql.Tx, productI
 			WHERE product_id = ? AND sku_id = ? AND stock_quantity >= ?
 		`, quantity, quantity, now, productID, skuID, quantity)
 		if err != nil {
-			return false
+			return err
 		}
 		affected, err := result.RowsAffected()
-		if err != nil || affected == 0 {
-			return false
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return ErrCartUnavailable
 		}
 	}
 	result, err := tx.ExecContext(ctx, `
@@ -2152,10 +2187,16 @@ func (s *MySQLStore) reserveOrderStock(ctx context.Context, tx *sql.Tx, productI
 		WHERE product_id = ? AND stock_quantity >= ?
 	`, quantity, quantity, now, productID, quantity)
 	if err != nil {
-		return false
+		return err
 	}
 	affected, err := result.RowsAffected()
-	return err == nil && affected > 0
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrCartUnavailable
+	}
+	return nil
 }
 
 func (s *MySQLStore) ListUserOrders(ctx context.Context, accountID string) []domain.Order {
@@ -2253,6 +2294,9 @@ func (s *MySQLStore) PayOrder(ctx context.Context, accountID string, orderID str
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE inventory_reservations SET state = 'consumed', updated_at = NOW(6)
 		WHERE order_id = ? AND state = 'reserved'`, orderID); err != nil {
+		return domain.Order{}, domain.Payment{}, false
+	}
+	if err := transitionOrderCoupons(ctx, tx, orderID, "consumed"); err != nil {
 		return domain.Order{}, domain.Payment{}, false
 	}
 	// 支付成功后订单进入待发货，真实接入支付渠道时这里应由支付回调驱动。
@@ -2375,63 +2419,11 @@ func (s *MySQLStore) UpdateOrderStatus(ctx context.Context, merchantID string, o
 }
 
 func (s *MySQLStore) PreviewCartDiscount(ctx context.Context, accountID string) domain.DiscountPreview {
-	cart := s.loadCart(ctx, accountID)
-	total := 0.0
-	merchantTotals := make(map[string]float64)
-	// 优惠试算只基于购物车选中项，并同时维护整单金额和商家维度金额。
-	for _, item := range cart.Items {
-		if !item.Selected {
-			continue
-		}
-		price, _ := parseAmount(item.Price)
-		amount := price * float64(item.Quantity)
-		total += amount
-		merchantTotals[item.MerchantID] += amount
+	quote, err := s.CreateCartQuote(ctx, accountID)
+	if err != nil {
+		return domain.DiscountPreview{ErrorCode: "quote_unavailable"}
 	}
-	lines := make([]domain.DiscountLine, 0)
-	discount := 0.0
-	now := time.Now()
-	for _, promotion := range s.ListPromotions(ctx, "") {
-		// 平台券按整单金额计算，商家券只按该商家的商品金额计算。
-		if promotion.Status != "active" || now.Before(promotion.StartAt) || now.After(promotion.EndAt) {
-			continue
-		}
-		base := total
-		if promotion.Scope == "merchant" {
-			base = merchantTotals[promotion.MerchantID]
-		}
-		lineAmount := discountAmountFor(base, promotion.Type, promotion.ThresholdAmount, promotion.DiscountAmount, promotion.DiscountRate)
-		if lineAmount <= 0 {
-			continue
-		}
-		discount += lineAmount
-		lines = append(lines, domain.DiscountLine{Type: "promotion", ID: promotion.PromotionID, Name: promotion.Name, Amount: fmt.Sprintf("%.2f", lineAmount)})
-	}
-	for _, userCoupon := range s.ListUserCoupons(ctx, accountID) {
-		// 这里只做试算，不会把优惠券置为 used；真正核销应放在支付/下单链路里。
-		if userCoupon.Status != "unused" || userCoupon.Coupon.Status != "active" || now.Before(userCoupon.Coupon.StartAt) || now.After(userCoupon.Coupon.EndAt) {
-			continue
-		}
-		base := total
-		if userCoupon.Coupon.Scope == "merchant" {
-			base = merchantTotals[userCoupon.Coupon.MerchantID]
-		}
-		lineAmount := discountAmountFor(base, userCoupon.Coupon.Type, userCoupon.Coupon.ThresholdAmount, userCoupon.Coupon.DiscountAmount, "0")
-		if lineAmount <= 0 {
-			continue
-		}
-		discount += lineAmount
-		lines = append(lines, domain.DiscountLine{Type: "coupon", ID: userCoupon.UserCouponID, Name: userCoupon.Coupon.Name, Amount: fmt.Sprintf("%.2f", lineAmount)})
-	}
-	if discount > total {
-		discount = total
-	}
-	return domain.DiscountPreview{
-		TotalAmount:    fmt.Sprintf("%.2f", total),
-		DiscountAmount: fmt.Sprintf("%.2f", discount),
-		PayAmount:      fmt.Sprintf("%.2f", total-discount),
-		Lines:          lines,
-	}
+	return quote.DiscountPreview
 }
 
 func (s *MySQLStore) ListPromotions(ctx context.Context, merchantID string) []domain.PromotionRule {
@@ -2567,7 +2559,7 @@ func (s *MySQLStore) UpdatePromotionStatus(ctx context.Context, promotionID stri
 func (s *MySQLStore) ListCoupons(ctx context.Context, accountID string) []domain.Coupon {
 	now := time.Now()
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT coupon_id, name, scope, merchant_id, type, threshold_amount, discount_amount, total_count,
+		SELECT coupon_id, name, scope, merchant_id, stackable, type, threshold_amount, discount_amount, total_count,
 			claimed_count, per_user_limit, start_at, end_at, status, created_at, updated_at
 		FROM coupons
 		WHERE status = 'active' AND start_at <= ? AND end_at >= ?
@@ -2580,7 +2572,7 @@ func (s *MySQLStore) ListCoupons(ctx context.Context, accountID string) []domain
 	items := make([]domain.Coupon, 0)
 	for rows.Next() {
 		var item domain.Coupon
-		if err := rows.Scan(&item.CouponID, &item.Name, &item.Scope, &item.MerchantID, &item.Type, &item.ThresholdAmount,
+		if err := rows.Scan(&item.CouponID, &item.Name, &item.Scope, &item.MerchantID, &item.Stackable, &item.Type, &item.ThresholdAmount,
 			&item.DiscountAmount, &item.TotalCount, &item.ClaimedCount, &item.PerUserLimit, &item.StartAt, &item.EndAt,
 			&item.Status, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil
@@ -2599,7 +2591,7 @@ func (s *MySQLStore) ListCouponsPage(ctx context.Context, accountID string, page
 func (s *MySQLStore) ListUserCoupons(ctx context.Context, accountID string) []domain.UserCoupon {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT uc.user_coupon_id, uc.coupon_id, uc.account_id, uc.status, uc.order_id, uc.claimed_at, uc.used_at,
-			c.coupon_id, c.name, c.scope, c.merchant_id, c.type, c.threshold_amount, c.discount_amount,
+			c.coupon_id, c.name, c.scope, c.merchant_id, c.stackable, c.type, c.threshold_amount, c.discount_amount,
 			c.total_count, c.claimed_count, c.per_user_limit, c.start_at, c.end_at, c.status, c.created_at, c.updated_at
 		FROM user_coupons uc
 		JOIN coupons c ON c.coupon_id = uc.coupon_id
@@ -2615,7 +2607,7 @@ func (s *MySQLStore) ListUserCoupons(ctx context.Context, accountID string) []do
 		var item domain.UserCoupon
 		var usedAt sql.NullTime
 		if err := rows.Scan(&item.UserCouponID, &item.CouponID, &item.AccountID, &item.Status, &item.OrderID, &item.ClaimedAt, &usedAt,
-			&item.Coupon.CouponID, &item.Coupon.Name, &item.Coupon.Scope, &item.Coupon.MerchantID, &item.Coupon.Type,
+			&item.Coupon.CouponID, &item.Coupon.Name, &item.Coupon.Scope, &item.Coupon.MerchantID, &item.Coupon.Stackable, &item.Coupon.Type,
 			&item.Coupon.ThresholdAmount, &item.Coupon.DiscountAmount, &item.Coupon.TotalCount, &item.Coupon.ClaimedCount,
 			&item.Coupon.PerUserLimit, &item.Coupon.StartAt, &item.Coupon.EndAt, &item.Coupon.Status,
 			&item.Coupon.CreatedAt, &item.Coupon.UpdatedAt); err != nil {
@@ -2645,12 +2637,12 @@ func (s *MySQLStore) ClaimCoupon(ctx context.Context, accountID string, couponID
 	var coupon domain.Coupon
 	// 锁定优惠券行后再判断库存和每人限领，避免高并发下超发。
 	err = tx.QueryRowContext(ctx, `
-		SELECT coupon_id, name, scope, merchant_id, type, threshold_amount, discount_amount, total_count,
+		SELECT coupon_id, name, scope, merchant_id, stackable, type, threshold_amount, discount_amount, total_count,
 			claimed_count, per_user_limit, start_at, end_at, status, created_at, updated_at
 		FROM coupons
 		WHERE coupon_id = ? AND status = 'active' AND start_at <= ? AND end_at >= ?
 		FOR UPDATE
-	`, couponID, now, now).Scan(&coupon.CouponID, &coupon.Name, &coupon.Scope, &coupon.MerchantID, &coupon.Type,
+	`, couponID, now, now).Scan(&coupon.CouponID, &coupon.Name, &coupon.Scope, &coupon.MerchantID, &coupon.Stackable, &coupon.Type,
 		&coupon.ThresholdAmount, &coupon.DiscountAmount, &coupon.TotalCount, &coupon.ClaimedCount, &coupon.PerUserLimit,
 		&coupon.StartAt, &coupon.EndAt, &coupon.Status, &coupon.CreatedAt, &coupon.UpdatedAt)
 	if err != nil {
@@ -3661,7 +3653,7 @@ func (s *MySQLStore) loadCart(ctx context.Context, accountID string) domain.Cart
 			COALESCE(ps.stock_status, p.stock_status), p.merchant_id, m.name
 		FROM cart_items c
 		JOIN products p ON p.product_id = c.product_id
-		JOIN merchants m ON m.merchant_id = p.merchant_id
+		JOIN merchants m ON m.merchant_id = p.merchant_id AND m.status = 'active'
 		LEFT JOIN product_skus ps ON ps.sku_id = c.sku_id
 		WHERE c.account_id = ?
 		ORDER BY c.created_at, c.cart_item_id
@@ -3925,30 +3917,6 @@ func parseAPITime(input string, fallback time.Time) time.Time {
 		return value
 	}
 	return fallback
-}
-
-func discountAmountFor(base float64, discountType string, threshold string, fixedAmount string, rate string) float64 {
-	thresholdValue, _ := parseAmount(threshold)
-	if thresholdValue > 0 && base < thresholdValue {
-		return 0
-	}
-	switch discountType {
-	case "percentage":
-		rateValue, _ := parseAmount(rate)
-		if rateValue <= 0 || rateValue >= 1 {
-			return 0
-		}
-		return base * rateValue
-	default:
-		amount, _ := parseAmount(fixedAmount)
-		if amount < 0 {
-			return 0
-		}
-		if amount > base {
-			return base
-		}
-		return amount
-	}
 }
 
 func scanProductCard(scanner productCardScanner) (domain.ProductCard, error) {

@@ -126,7 +126,8 @@ public class CartActivity extends BaseShopActivity {
         cartCheckoutBar.addView(selected, new LinearLayout.LayoutParams(0, ShopUi.dp(this, 48), 1));
 
         TextView amount = new TextView(this);
-        amount.setText("合计：¥" + cartPayAmount(summary));
+        boolean amountValid = summary != null && summary.optString("errorCode", "").isEmpty();
+        amount.setText(amountValid ? "合计：¥" + cartPayAmount(summary) : "金额待核实");
         amount.setTextSize(15);
         amount.setTextColor(Color.rgb(220, 38, 38));
         amount.setTypeface(Typeface.DEFAULT_BOLD);
@@ -137,6 +138,7 @@ public class CartActivity extends BaseShopActivity {
 
         Button checkout = ShopUi.primaryButton(this, "结算");
         checkout.setTextSize(17);
+        checkout.setEnabled(amountValid);
         checkout.setOnClickListener(v -> openCheckoutPage(summary));
         cartCheckoutBar.addView(checkout, new LinearLayout.LayoutParams(ShopUi.dp(this, 128), ShopUi.dp(this, 50)));
         content.addView(cartCheckoutBar, new LinearLayout.LayoutParams(-1, ShopUi.dp(this, 66)));

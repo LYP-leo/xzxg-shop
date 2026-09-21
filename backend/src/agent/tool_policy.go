@@ -275,7 +275,7 @@ func toolDescriptions() map[string]string {
 		toolAddCartItem:     `加入购物车；必须已有明确 product_id。参数 {"product_id":"商品ID","sku_id":"SKU ID，可为空","quantity":1}。`,
 		toolUpdateCartItem:  `修改购物车项数量或选中状态；必须已有 cart_item_id。参数 {"cart_item_id":"购物车项ID","quantity":2,"selected":true}。`,
 		toolDeleteCartItem:  `删除购物车项；必须已有 cart_item_id。参数 {"cart_item_id":"购物车项ID"}。`,
-		toolCheckout:        `基于当前选中购物车项创建待支付订单。参数 {}。`,
+		toolCheckout:        `基于当前选中购物车项核对报价，引导用户到结算页确认。此工具不创建订单，不能声称已下单。参数 {}。`,
 		toolListOrders:      `查询当前用户订单列表，用于订单、物流、售后前置定位。参数 {"status":"可选订单状态","limit":5}。`,
 		toolGetOrder:        `查询当前用户单个订单详情。参数 {"order_id":"订单ID"}；用户未提供订单ID时先调用 list_orders。`,
 		toolPayOrder:        `支付待支付订单，推进本地虚拟支付状态。参数 {"order_id":"订单ID","method":"mock"}；必须明确订单ID。`,

@@ -71,7 +71,7 @@ func pendingInventoryOrder(t *testing.T, s *MySQLStore) domain.Order {
 	if _, ok := s.AddCartItem(context.Background(), "test_buyer", "p_001", "sku_001", 5); !ok {
 		t.Fatal("add cart failed")
 	}
-	orders, ok := s.CreateOrderFromCart(context.Background(), "test_buyer")
+	orders, ok := confirmedTestCheckout(s, context.Background(), "test_buyer")
 	if !ok || len(orders) != 1 {
 		t.Fatalf("checkout failed: %#v", orders)
 	}
@@ -240,7 +240,7 @@ func TestMySQLInventoryInsufficientStockRollsBackWholeCart(t *testing.T) {
 	execInventoryTest(t, s, "UPDATE product_skus SET stock_quantity = 0, stock_status = 'out_of_stock' WHERE sku_id = 'sku_002'")
 	s.AddCartItem(ctx, "test_buyer", "p_001", "sku_001", 5)
 	s.AddCartItem(ctx, "test_buyer", "p_002", "sku_002", 1)
-	if _, ok := s.CreateOrderFromCart(ctx, "test_buyer"); ok {
+	if _, ok := confirmedTestCheckout(s, ctx, "test_buyer"); ok {
 		t.Fatal("oversold cart")
 	}
 	assertInventoryStock(t, s, 8, "in_stock")
@@ -261,7 +261,7 @@ func TestMySQLInventoryFinalUnitAndReopen(t *testing.T) {
 	execInventoryTest(t, s, "UPDATE products SET stock_quantity = 1, stock_status = 'in_stock' WHERE product_id = 'p_001'")
 	execInventoryTest(t, s, "UPDATE product_skus SET stock_quantity = 1, stock_status = 'in_stock' WHERE sku_id = 'sku_001'")
 	s.AddCartItem(ctx, "test_buyer", "p_001", "sku_001", 1)
-	orders, ok := s.CreateOrderFromCart(ctx, "test_buyer")
+	orders, ok := confirmedTestCheckout(s, ctx, "test_buyer")
 	if !ok || len(orders) != 1 {
 		t.Fatal("last unit checkout failed")
 	}
@@ -270,4 +270,14 @@ func TestMySQLInventoryFinalUnitAndReopen(t *testing.T) {
 		t.Fatal("cancel failed")
 	}
 	assertInventoryStock(t, s, 1, "in_stock")
+}
+
+// Tests explicitly simulate the separate UI confirmation step.
+func confirmedTestCheckout(s *MySQLStore, ctx context.Context, accountID string) ([]domain.Order, bool) {
+	quote, err := s.CreateCartQuote(ctx, accountID)
+	if err != nil {
+		return nil, false
+	}
+	orders, err := s.CheckoutQuote(ctx, accountID, domain.CheckoutConfirmation{QuoteID: quote.QuoteID, ConfirmationToken: quote.ConfirmationToken})
+	return orders, err == nil
 }

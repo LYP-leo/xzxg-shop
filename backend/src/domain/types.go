@@ -354,20 +354,23 @@ type ProductSKU struct {
 }
 
 type CartItem struct {
-	CartItemID   string `json:"cartItemId"`
-	ProductID    string `json:"productId"`
-	SkuID        string `json:"skuId,omitempty"`
-	Name         string `json:"name"`
-	ImageURL     string `json:"imageUrl"`
-	Price        string `json:"price"`
-	Quantity     int    `json:"quantity"`
-	Selected     bool   `json:"selected"`
-	StockStatus  string `json:"stockStatus"`
-	MerchantID   string `json:"merchantId"`
-	MerchantName string `json:"merchantName"`
+	SkuName      string            `json:"skuName,omitempty"`
+	Specs        map[string]string `json:"specs,omitempty"`
+	CartItemID   string            `json:"cartItemId"`
+	ProductID    string            `json:"productId"`
+	SkuID        string            `json:"skuId,omitempty"`
+	Name         string            `json:"name"`
+	ImageURL     string            `json:"imageUrl"`
+	Price        string            `json:"price"`
+	Quantity     int               `json:"quantity"`
+	Selected     bool              `json:"selected"`
+	StockStatus  string            `json:"stockStatus"`
+	MerchantID   string            `json:"merchantId"`
+	MerchantName string            `json:"merchantName"`
 }
 
 type CartSummary struct {
+	ErrorCode      string `json:"errorCode,omitempty"`
 	SelectedCount  int    `json:"selectedCount"`
 	TotalAmount    string `json:"totalAmount"`
 	DiscountAmount string `json:"discountAmount"`
@@ -388,6 +391,7 @@ type DiscountLine struct {
 }
 
 type DiscountPreview struct {
+	ErrorCode      string         `json:"error_code,omitempty"`
 	TotalAmount    string         `json:"total_amount"`
 	DiscountAmount string         `json:"discount_amount"`
 	PayAmount      string         `json:"pay_amount"`
@@ -476,6 +480,7 @@ type PromotionRuleInput struct {
 }
 
 type Coupon struct {
+	Stackable       bool      `json:"stackable"`
 	CouponID        string    `json:"coupon_id"`
 	Name            string    `json:"name"`
 	Scope           string    `json:"scope"`

@@ -115,6 +115,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/eval/image-search", s.handleEvalImageSearch)
 	mux.HandleFunc("GET /api/v1/cart", s.handleGetCart)
 	mux.HandleFunc("GET /api/v1/cart/discount-preview", s.handleCartDiscountPreview)
+	mux.HandleFunc("POST /api/v1/cart/quote", s.handleCreateCartQuote)
 	mux.HandleFunc("POST /api/v1/cart/items", s.handleAddCartItem)
 	mux.HandleFunc("PATCH /api/v1/cart/items/", s.handleCartItemAction)
 	mux.HandleFunc("DELETE /api/v1/cart/items/", s.handleCartItemAction)
@@ -1988,11 +1989,7 @@ func (s *Server) handleGetCart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCartDiscountPreview(w http.ResponseWriter, r *http.Request) {
-	account, ok := s.requireUser(w, r)
-	if !ok {
-		return
-	}
-	writeJSON(w, http.StatusOK, s.store.PreviewCartDiscount(r.Context(), account.AccountID))
+	s.handleCreateCartQuote(w, r)
 }
 
 func (s *Server) handleAddCartItem(w http.ResponseWriter, r *http.Request) {
@@ -2073,12 +2070,21 @@ func (s *Server) handleCheckout(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	orders, ok := s.store.CreateOrderFromCart(r.Context(), account.AccountID)
-	if !ok {
-		writeError(w, http.StatusBadRequest, "empty_cart", "请选择购物车商品后再下单")
+	var confirmation domain.CheckoutConfirmation
+	if err := json.NewDecoder(r.Body).Decode(&confirmation); err != nil {
+		writeQuoteError(w, store.ErrQuoteConfirmation)
 		return
 	}
-	// checkout 只创建待支付订单，不直接进入待发货；支付动作由 /orders/{id}:pay 完成。
+	quotes, ok := s.store.(store.QuoteStore)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "quote_unavailable", "报价服务暂不可用")
+		return
+	}
+	orders, err := quotes.CheckoutQuote(r.Context(), account.AccountID, confirmation)
+	if err != nil {
+		writeQuoteError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": orders})
 }
 

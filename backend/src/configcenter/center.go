@@ -285,7 +285,7 @@ const DefaultToolProtocolPrompt = `你正在一个 ReAct 工具循环中工作�
 4. add_cart_item：加入购物车。参数 {"product_id":"商品ID","sku_id":"SKU ID，可为空","quantity":1}
 5. update_cart_item：修改购物车项。参数 {"cart_item_id":"购物车项ID","quantity":2,"selected":true}
 6. delete_cart_item：删除购物车项。参数 {"cart_item_id":"购物车项ID"}
-7. checkout：基于当前选中购物车项创建待支付订单。参数 {}
+7. checkout：为选中购物车项生成实时报价并引导用户到结算页确认。参数 {}。工具不创建订单，不能声称下单成功。
 
 输出格式三选一：
 工具调用：
@@ -396,7 +396,7 @@ const DefaultIntentToolPolicyPrompt = `{
     "tools": ["get_cart", "preview_discount", "checkout", "list_orders", "get_order", "pay_order", "cancel_order", "confirm_receipt", "search_knowledge"],
     "skills": ["navigate_orders", "order_help"],
     "disabled": ["search_products", "search_image_products", "add_cart_item", "update_cart_item", "delete_cart_item"],
-    "focus": ["结算/提交订单/确认下单属于订单创建动作，必须调用 checkout；不要只跳转购物车页面。", "checkout 前先调用 get_cart 或 preview_discount，确认存在选中商品和应付金额。", "订单/物流先调用 list_orders 或 get_order 读取真实状态。", "pay_order、cancel_order、confirm_receipt 必须有明确 order_id；缺少时先 list_orders 定位。", "订单规则、物流说明、复购边界可调用 search_knowledge。"]
+    "focus": ["结算/提交订单先调用 checkout 获取报价，再引导用户核对结算页并确认；工具不创建订单，不能声称已提交。", "checkout 前先调用 get_cart 或 preview_discount，确认存在选中商品和应付金额。", "订单/物流先调用 list_orders 或 get_order 读取真实状态。", "pay_order、cancel_order、confirm_receipt 必须有明确 order_id；缺少时先 list_orders 定位。", "订单规则、物流说明、复购边界可调用 search_knowledge。"]
   },
   "coupon_service": {
     "tools": ["list_coupons", "list_user_coupons", "claim_coupon", "list_promotions", "preview_discount"],
@@ -459,7 +459,7 @@ var defaultIntentPrompts = map[string]string{
 	"open_explore":           "当前导购意图是 P6/open_explore：用户有潜在购买意图但没有明确品类。先把风格/IP/美学描述收敛为可购买品类，再给探索式建议和澄清问题。",
 	"non_guide":              "当前请求是 non_guide：核心诉求不是商品选购，而是平台服务、订单、物流、优惠、评价、购物车或售后等。优先调用可用工具读取真实数据或执行明确动作；只有用户明确要求打开页面/去某页面/找入口，才调用 navigate 类 skill。不要在未查工具时直接用模板话术回答订单状态、优惠券、评价、购物车或售后问题。缺少必要 ID 时，先调用列表类工具定位；仍无法确定再澄清。",
 	"cart_service":           "当前非导购服务意图是 cart_service：处理购物车查看、加购、删除、改数量、选中状态、优惠试算、购物车页面入口，以及只结算购物车中部分商品。读写都必须通过工具执行：加购必须有明确真实 product_id，删除/改数量必须有 cart_item_id；用户说“结算第一件/前两件/最后一件/某个商品名/只结算部分商品”时，必须先 get_cart，按顺序或商品名定位 cart_item_id，把目标项 selected=true、非目标项 selected=false，然后调用 checkout。缺少必要 ID 时先查询或澄清，不要声称没有加购或结算能力。",
-	"order_service":          "当前非导购服务意图是 order_service：处理结算、提交订单、创建订单、订单列表、订单详情、物流、支付、取消订单、确认收货、取件和复购。结算/提交订单必须调用 checkout 创建待支付订单，不能只跳转购物车页面；订单查询必须优先调用 list_orders 或 get_order 获取真实状态。输出要展示订单状态、关键时间、金额和下一步动作，不要编造物流或支付结果。",
+	"order_service":          "当前非导购服务意图是 order_service：处理结算、提交订单、创建订单、订单列表、订单详情、物流、支付、取消订单、确认收货、取件和复购。结算/提交订单必须调用 checkout 生成报价，再由用户在结算页核对并确认，工具自身不创建订单；订单查询必须优先调用 list_orders 或 get_order 获取真实状态。输出要展示订单状态、关键时间、金额和下一步动作，不要编造物流或支付结果。",
 	"coupon_service":         "当前非导购服务意图是 coupon_service：处理优惠券、已领券、可领券、促销活动、凑单和优惠试算。根据问题调用 list_user_coupons、list_coupons、list_promotions 或 preview_discount。输出要区分已领取、可领取、可用/不可用和优惠试算结果，不要凭空承诺折扣。列优惠券时可输出 <coupon_list>JSON</coupon_list>；优惠试算时可输出 <discount_preview>JSON</discount_preview>，JSON 必须来自工具 observation。",
 	"review_service":         "当前非导购服务意图是 review_service：处理商品评价查询、评价摘要、评分、差评要点和发布评价。查询评价必须有 product_id；发布评价必须定位已完成订单项。输出要基于工具返回的评分、评论内容和摘要，不要编造用户评价。评价摘要可输出 <review_summary>JSON</review_summary>，JSON 必须来自评价工具 observation。",
 	"after_sales_service":    "当前非导购服务意图是 after_sales_service：处理退款、退货、换货、保修、发票、投诉和售后规则。规则类问题优先查 search_knowledge；已购商品相关问题先定位订单。输出要说明可确认规则、需要用户补充的信息和下一步入口，不承诺未查到的售后结论。规则清单可输出 <after_sales_policy>JSON</after_sales_policy>，JSON 必须来自知识库或订单 observation。",

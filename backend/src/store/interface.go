@@ -79,7 +79,6 @@ type Store interface {
 	UpdateCartItem(ctx context.Context, accountID string, cartItemID string, quantity *int, selected *bool) (domain.Cart, bool)
 	DeleteCartItem(ctx context.Context, accountID string, cartItemID string) (domain.Cart, bool)
 	PreviewCartDiscount(ctx context.Context, accountID string) domain.DiscountPreview
-	CreateOrderFromCart(ctx context.Context, accountID string) ([]domain.Order, bool)
 	GetOrder(ctx context.Context, accountID string, orderID string) (domain.Order, bool)
 	PayOrder(ctx context.Context, accountID string, orderID string, method string) (domain.Order, domain.Payment, bool)
 	CancelOrder(ctx context.Context, accountID string, orderID string, reason string) (domain.Order, bool)
