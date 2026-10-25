@@ -2151,6 +2151,74 @@ func (s *MySQLStore) reserveOrderStock(ctx context.Context, tx *sql.Tx, productI
 	return err == nil && affected > 0
 }
 
+// releaseOrderStock restores the exact product/SKU quantities reserved while
+// creating an order. The caller must lock the pending order row and change its
+// status in this same transaction so a repeated close cannot release twice.
+func (s *MySQLStore) releaseOrderStock(ctx context.Context, tx *sql.Tx, orderID string) bool {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT product_id, sku_id, SUM(quantity)
+		FROM order_items
+		WHERE order_id = ?
+		GROUP BY product_id, sku_id
+		ORDER BY product_id, sku_id
+	`, orderID)
+	if err != nil {
+		return false
+	}
+	type reservedStock struct {
+		productID string
+		skuID     string
+		quantity  int
+	}
+	items := make([]reservedStock, 0)
+	for rows.Next() {
+		var item reservedStock
+		if err := rows.Scan(&item.productID, &item.skuID, &item.quantity); err != nil || item.quantity <= 0 {
+			rows.Close()
+			return false
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return false
+	}
+	rows.Close()
+	now := time.Now()
+	for _, item := range items {
+		if item.skuID != "" {
+			result, err := tx.ExecContext(ctx, `
+				UPDATE product_skus
+				SET stock_quantity = stock_quantity + ?, stock_status = 'in_stock', updated_at = ?
+				WHERE product_id = ? AND sku_id = ?
+			`, item.quantity, now, item.productID, item.skuID)
+			if err != nil || affectedRows(result) != 1 {
+				return false
+			}
+		}
+		result, err := tx.ExecContext(ctx, `
+			UPDATE products
+			SET stock_quantity = stock_quantity + ?, stock_status = 'in_stock', updated_at = ?
+			WHERE product_id = ?
+		`, item.quantity, now, item.productID)
+		if err != nil || affectedRows(result) != 1 {
+			return false
+		}
+	}
+	return true
+}
+
+func affectedRows(result sql.Result) int64 {
+	if result == nil {
+		return 0
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0
+	}
+	return affected
+}
+
 func (s *MySQLStore) ListUserOrders(ctx context.Context, accountID string) []domain.Order {
 	// 查询订单前先收敛超时待支付订单，保证列表看到的是最新业务状态。
 	s.ExpirePendingOrders(ctx)
@@ -2227,15 +2295,25 @@ func (s *MySQLStore) PayOrder(ctx context.Context, accountID string, orderID str
 	}
 	// 锁内再次校验支付截止时间，处理查询和支付提交之间刚好过期的边界情况。
 	if deadline.Valid && now.After(deadline.Time) {
-		_, _ = tx.ExecContext(ctx, `
+		if !s.releaseOrderStock(ctx, tx, orderID) {
+			return domain.Order{}, domain.Payment{}, false
+		}
+		result, err := tx.ExecContext(ctx, `
 			UPDATE orders SET status = 'closed_timeout', closed_at = ?, cancel_reason = '支付超时自动关闭', updated_at = ?
-			WHERE order_id = ?
+			WHERE order_id = ? AND status = 'pending_payment'
 		`, now, now, orderID)
-		_, _ = tx.ExecContext(ctx, `
+		if err != nil || affectedRows(result) != 1 {
+			return domain.Order{}, domain.Payment{}, false
+		}
+		if _, err := tx.ExecContext(ctx, `
 			UPDATE payments SET status = 'expired', updated_at = ?
 			WHERE order_id = ? AND status = 'pending'
-		`, now, orderID)
-		_ = tx.Commit()
+		`, now, orderID); err != nil {
+			return domain.Order{}, domain.Payment{}, false
+		}
+		if err := tx.Commit(); err != nil {
+			return domain.Order{}, domain.Payment{}, false
+		}
 		return domain.Order{}, domain.Payment{}, false
 	}
 	// 支付成功后订单进入待发货，真实接入支付渠道时这里应由支付回调驱动。
@@ -2272,8 +2350,25 @@ func (s *MySQLStore) CancelOrder(ctx context.Context, accountID string, orderID 
 		reason = "用户取消"
 	}
 	now := time.Now()
-	// 当前只允许用户取消待支付订单；已支付订单后续应走售后/退款流程。
-	result, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Order{}, false
+	}
+	defer tx.Rollback()
+	// 锁定待支付订单，把状态变更和库存释放放进同一事务；并发支付、
+	// 重复取消或超时关闭只有一个分支能完成状态迁移和回补。
+	var status string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT status FROM orders
+		WHERE order_id = ? AND account_id = ?
+		FOR UPDATE
+	`, orderID, accountID).Scan(&status); err != nil || status != "pending_payment" {
+		return domain.Order{}, false
+	}
+	if !s.releaseOrderStock(ctx, tx, orderID) {
+		return domain.Order{}, false
+	}
+	result, err := tx.ExecContext(ctx, `
 		UPDATE orders
 		SET status = 'canceled', closed_at = ?, cancel_reason = ?, updated_at = ?
 		WHERE order_id = ? AND account_id = ? AND status = 'pending_payment'
@@ -2281,14 +2376,18 @@ func (s *MySQLStore) CancelOrder(ctx context.Context, accountID string, orderID 
 	if err != nil {
 		return domain.Order{}, false
 	}
-	affected, err := result.RowsAffected()
-	if err != nil || affected == 0 {
+	if affectedRows(result) != 1 {
 		return domain.Order{}, false
 	}
-	_, _ = s.db.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE payments SET status = 'failed', updated_at = ?
 		WHERE order_id = ? AND account_id = ? AND status = 'pending'
-	`, now, orderID, accountID)
+	`, now, orderID, accountID); err != nil {
+		return domain.Order{}, false
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Order{}, false
+	}
 	return s.GetOrder(ctx, accountID, orderID)
 }
 
@@ -2313,27 +2412,76 @@ func (s *MySQLStore) ConfirmReceipt(ctx context.Context, accountID string, order
 
 func (s *MySQLStore) ExpirePendingOrders(ctx context.Context) int {
 	now := time.Now()
-	// 这是轻量的惰性过期机制：每次订单相关查询/操作都会顺手关闭超时待支付订单。
-	result, err := s.db.ExecContext(ctx, `
-		UPDATE orders
-		SET status = 'closed_timeout', closed_at = ?, cancel_reason = '支付超时自动关闭', updated_at = ?
+	// First collect candidates without locking. A range SELECT ... FOR UPDATE on
+	// the status index locks unrelated pending orders and deadlocks with cancel
+	// transactions that already hold an order's primary-key lock.
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT order_id FROM orders
 		WHERE status = 'pending_payment' AND payment_deadline_at IS NOT NULL AND payment_deadline_at < ?
-	`, now, now, now)
+		ORDER BY order_id
+	`, now)
 	if err != nil {
 		return 0
 	}
-	affected, err := result.RowsAffected()
-	if err != nil || affected == 0 {
+	orderIDs := make([]string, 0)
+	for rows.Next() {
+		var orderID string
+		if err := rows.Scan(&orderID); err != nil {
+			rows.Close()
+			return 0
+		}
+		orderIDs = append(orderIDs, orderID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
 		return 0
 	}
-	// 订单超时后同步把仍处于 pending 的支付单标记为 expired，保持两张表状态一致。
-	_, _ = s.db.ExecContext(ctx, `
-		UPDATE payments p
-		JOIN orders o ON o.order_id = p.order_id
-		SET p.status = 'expired', p.updated_at = ?
-		WHERE p.status = 'pending' AND o.status = 'closed_timeout'
-	`, now)
-	return int(affected)
+	rows.Close()
+	expired := 0
+	for _, orderID := range orderIDs {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			continue
+		}
+		// Re-check under the primary-key row lock. Concurrent sweepers can collect
+		// the same candidate, but only one can observe it as still pending.
+		var status string
+		var deadline sql.NullTime
+		if err := tx.QueryRowContext(ctx, `
+			SELECT status, payment_deadline_at FROM orders
+			WHERE order_id = ?
+			FOR UPDATE
+		`, orderID).Scan(&status, &deadline); err != nil || status != "pending_payment" ||
+			!deadline.Valid || !deadline.Time.Before(now) {
+			tx.Rollback()
+			continue
+		}
+		if !s.releaseOrderStock(ctx, tx, orderID) {
+			tx.Rollback()
+			continue
+		}
+		result, err := tx.ExecContext(ctx, `
+			UPDATE orders SET status = 'closed_timeout', closed_at = ?,
+				cancel_reason = '支付超时自动关闭', updated_at = ?
+			WHERE order_id = ? AND status = 'pending_payment'
+		`, now, now, orderID)
+		if err != nil || affectedRows(result) != 1 {
+			tx.Rollback()
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE payments SET status = 'expired', updated_at = ?
+			WHERE order_id = ? AND status = 'pending'
+		`, now, orderID); err != nil {
+			tx.Rollback()
+			continue
+		}
+		if err := tx.Commit(); err != nil {
+			continue
+		}
+		expired++
+	}
+	return expired
 }
 
 func (s *MySQLStore) UpdateOrderStatus(ctx context.Context, merchantID string, orderID string, status string) (domain.Order, bool) {
